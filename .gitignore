@@ -1,0 +1,24 @@
+# secrets – use .env.example as the template
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# local data (never commit photos or caches)
+data/
+*.fits
+*.fit
+*.fts
+*.zip

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Gallery – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Gallery</h1><div class="muted">All final (stacked) images · {{ pager.total }}</div></div>
+  <span class="row">
+    <form method="get" class="row"><input name="q" value="{{ gq }}" placeholder="Search object, project…" style="width:220px"><button class="btn">Search</button></form>
+    {% if all_ids %}<button class="btn primary" onclick="Slideshow.start(GALLERY_IDS, 0, {{ S.slideshow_seconds }})">▶ Slideshow</button>{% endif %}
+  </span>
+</div>
+
+<section class="gallery">
+{% for f in items %}
+  <figure class="gitem">
+    <a href="#" onclick="Slideshow.start(GALLERY_IDS, GALLERY_IDS.indexOf({{ f.id }}), {{ S.slideshow_seconds }}, true);return false;">
+      <img loading="lazy" src="/files/{{ f.id }}/thumb" alt="{{ f.project.name }}"></a>
+    <figcaption>
+      <a href="/projects/{{ f.project_id }}"><b>{{ f.project.name }}</b></a>
+      <span class="muted small">{{ [f.project.target, f.project.capture_date|dmy]|select|join(' · ') }}</span>
+      <span class="gacts"><a href="/files/{{ f.id }}/view" title="Open in viewer">🔍</a> <a href="/files/{{ f.id }}/download" title="Download">⬇</a></span>
+    </figcaption>
+  </figure>
+{% else %}
+  <p class="muted">No stacked images yet. Upload a final image as type “Stack” in a project.</p>
+{% endfor %}
+</section>
+
+{% if pager.pages > 1 %}
+<nav class="pager">
+  {% if pager.page > 1 %}<a class="btn small" href="{{ pager.url(pager.page - 1) }}">‹ Prev</a>{% endif %}
+  {% for n in pager.window %}{% if n == pager.page %}<span class="btn small primary">{{ n }}</span>{% else %}<a class="btn small" href="{{ pager.url(n) }}">{{ n }}</a>{% endif %}{% endfor %}
+  {% if pager.page < pager.pages %}<a class="btn small" href="{{ pager.url(pager.page + 1) }}">Next ›</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script>var GALLERY_IDS = {{ all_ids|tojson }};</script><script src="/static/slideshow.js"></script>{% endblock %}

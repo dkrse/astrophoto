@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Import – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Import from server</h1>
+    <div class="muted">into {% if p %}project <a href="/projects/{{ p.id }}">{{ p.name }}</a>{% else %}calibration set <a href="/calibration/{{ c.id }}">{{ c.name }}</a>{% endif %}</div></div>
+  <a class="btn" href="{{ '/projects/%d'|format(p.id) if p else '/calibration/%d'|format(c.id) }}">← Back</a>
+</div>
+
+{% if not root_ok %}
+<div class="flash err">Import folder <code>{{ import_root }}</code> is not available. Mount it in <code>docker-compose.yml</code>.</div>
+{% else %}
+<section class="card">
+  <p class="muted small">Files are <b>copied</b> from the server folder in the background (originals are left untouched). Frame types are detected from the FITS <code>IMAGETYP</code> header, then from file and folder names (light / dark / flat / bias …) – you can correct them before starting.</p>
+  <div class="crumbs" id="crumbs"></div>
+  <div class="dirlist" id="dirlist"><span class="muted">Loading…</span></div>
+  <div class="row" style="margin-top:10px">
+    <label class="check inline"><input type="checkbox" id="recursive" checked> include subfolders</label>
+    <button class="btn primary" id="scanbtn">🔍 Scan this folder</button>
+    <span class="muted small" id="dirinfo"></span>
+  </div>
+</section>
+
+<section class="card" id="scanres" hidden>
+  <div class="head"><h2>Found files</h2><span class="muted" id="scansum"></span></div>
+  <div class="cols">
+    {% if p and p.sessions %}
+    <label>Session (night)<select id="session"><option value="">— auto by date —</option>
+      {% for s in p.sessions %}<option value="{{ s.id }}">{{ s.date|dmy or ('#' ~ s.id) }}</option>{% endfor %}</select></label>
+    {% endif %}
+    <label>Set type of selected<select id="settype"><option value="">—</option>{% for t in (FRAME_TYPES if p else CALIB_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
+    <label>Filter (if not in header)<input id="filter"></label>
+    <label>Description<input id="desc"></label>
+  </div>
+  <label class="check"><input type="checkbox" id="skipdups" {% if skip_dups %}checked{% endif %}> Skip files that already exist (same content)</label>
+  <div class="tablewrap"><table class="ftable" id="scantable">
+    <thead><tr><th><input type="checkbox" id="selall" checked></th><th>File</th><th>Size</th><th>Filter</th><th>Exp.</th><th>Type</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <div class="row" style="margin-top:12px">
+    <button class="btn primary" id="startbtn">⬇ Import selected</button>
+    <span class="muted small" id="startinfo"></span>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  var TYPES = {{ (FRAME_TYPES if p else CALIB_TYPES)|tojson }}, LABELS = {{ FRAME_LABELS|tojson }};
+  var TARGET = {{ ({'project_id': p.id} if p else {'calib_set_id': c.id})|tojson }};
+  var cur = '', found = [];
+  function fmt(n){var u=['B','KB','MB','GB','TB'],i=0;while(n>=1024&&i<4){n/=1024;i++;}return (i?n.toFixed(1):n)+' '+u[i];}
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function browse(path){
+    fetch('/api/import/browse?path='+encodeURIComponent(path)).then(function(r){return r.json();}).then(function(j){
+      if(j.error){document.getElementById('dirlist').textContent=j.error;return;}
+      cur=j.path;
+      var parts=cur?cur.split('/'):[], acc='';
+      var cr='<a href="#" data-p="">📁 import</a>';
+      parts.forEach(function(x){acc+=(acc?'/':'')+x;cr+=' / <a href="#" data-p="'+esc(acc)+'">'+esc(x)+'</a>';});
+      document.getElementById('crumbs').innerHTML=cr;
+      var html=j.dirs.map(function(d){return '<a href="#" class="dir" data-p="'+esc((cur?cur+'/':'')+d)+'">📁 '+esc(d)+'</a>';}).join('');
+      document.getElementById('dirlist').innerHTML=html||'<span class="muted">No subfolders.</span>';
+      document.getElementById('dirinfo').textContent=j.files+' supported file(s) directly in this folder';
+    });
+  }
+  document.addEventListener('click',function(e){var a=e.target.closest('[data-p]');if(a){e.preventDefault();browse(a.dataset.p);}});
+  browse('');
+
+  document.getElementById('scanbtn').onclick=function(){
+    var b=this;b.disabled=true;b.textContent='Scanning…';
+    fetch('/api/import/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path:cur,recursive:document.getElementById('recursive').checked})})
+      .then(function(r){return r.json();}).then(function(j){
+        b.disabled=false;b.textContent='🔍 Scan this folder';
+        if(j.error||j.detail||!j.files){alert(j.error||j.detail||'Scan failed');return;}
+        found=j.files.map(function(f){if(TYPES.indexOf(f.type)<0)f.type={{ (c.frame_type if c else 'light')|tojson }};f.on=true;return f;});
+        render();
+      });
+  };
+  function render(){
+    var tb=document.querySelector('#scantable tbody');
+    tb.innerHTML=found.map(function(f,i){
+      return '<tr><td><input type="checkbox" class="fsel" data-i="'+i+'" '+(f.on?'checked':'')+'></td><td class="fname">'+esc(f.rel)+'</td><td class="nowrap">'+fmt(f.size)+'</td>'+
+        '<td>'+esc(f.filter||'')+'</td><td>'+(f.exp||'')+'</td><td><select class="ftype" data-i="'+i+'">'+
+        TYPES.map(function(t){return '<option value="'+t+'" '+(t===f.type?'selected':'')+'>'+LABELS[t]+'</option>';}).join('')+'</select></td></tr>';
+    }).join('');
+    document.getElementById('scanres').hidden=false;
+    sum();
+  }
+  function sum(){
+    var on=found.filter(function(f){return f.on;}), c={}, size=0;
+    on.forEach(function(f){c[f.type]=(c[f.type]||0)+1;size+=f.size;});
+    var t=Object.keys(c).map(function(k){return LABELS[k]+': '+c[k];}).join(', ');
+    document.getElementById('scansum').textContent=on.length+' of '+found.length+' selected · '+fmt(size)+(t?' — '+t:'');
+  }
+  document.addEventListener('change',function(e){
+    if(e.target.classList.contains('fsel')){found[e.target.dataset.i].on=e.target.checked;sum();}
+    if(e.target.classList.contains('ftype')){found[e.target.dataset.i].type=e.target.value;sum();}
+    if(e.target.id==='selall'){found.forEach(function(f){f.on=e.target.checked;});render();}
+    if(e.target.id==='settype'&&e.target.value){found.forEach(function(f){if(f.on)f.type=e.target.value;});e.target.value='';render();}
+  });
+  document.getElementById('startbtn').onclick=function(){
+    var sel=found.filter(function(f){return f.on;});
+    if(!sel.length){alert('Nothing selected');return;}
+    var b=this;b.disabled=true;document.getElementById('startinfo').textContent='Starting…';
+    var s=document.getElementById('session');
+    fetch('/api/import/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},TARGET,{
+      path:cur,files:sel.map(function(f){return {rel:f.rel,type:f.type,filter:f.filter||''};}),
+      session_id:s?s.value:'',skip_dups:document.getElementById('skipdups').checked,
+      meta:{filter:document.getElementById('filter').value,description:document.getElementById('desc').value}}))})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j.error||j.detail||!j.redirect){alert(j.error||j.detail||'Import failed');b.disabled=false;return;}
+        location=j.redirect;
+      });
+  };
+})();
+</script>
+{% endblock %}

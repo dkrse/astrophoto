@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "_files.html" import file_groups, bulk_bar, uploader, status_box %}
+{% block title %}{{ c.name }} – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>{{ c.name }}</h1>
+    <div class="muted"><span class="chip t-{{ c.frame_type }}">{{ FRAME_LABELS[c.frame_type] }}</span> calibration set
+      {% if c.capture_date %} · {{ c.capture_date|dmy }}{% endif %} · {{ c.files|length }} files · {{ c.files|sum(attribute='size')|size }}</div></div>
+  <div class="row">
+    <a class="btn" href="/calibration">← Library</a>
+    <a class="btn primary" href="/calibration/{{ c.id }}/zip">⬇ ZIP</a>
+    <a class="btn" href="/calibration/{{ c.id }}/edit">Edit</a>
+    <form method="post" action="/calibration/{{ c.id }}/delete" onsubmit="return confirm('Delete this calibration set including all its files?{% if c.projects %} It is linked to {{ c.projects|length }} project(s).{% endif %}')"><button class="btn danger">Delete</button></form>
+  </div>
+</div>
+
+{{ status_box(status, '/api/calibration/%d/status'|format(c.id)) }}
+
+<section class="card meta">
+  <dl>
+    {% for label, v in [('Camera',c.camera),('Telescope',c.telescope),('Temperature',c.temperature),('Gain',c.gain),('Offset',c.offset),('Exposure (s)',c.exposure_s|num if c.exposure_s else None),('Filter',c.filter),('Binning',c.binning)] %}
+    {% if v %}<dt>{{ label }}</dt><dd>{{ v }}</dd>{% endif %}{% endfor %}
+    <dt>Created</dt><dd>{{ c.created_at|dmy }}</dd>
+    <dt>Modified</dt><dd>{{ c.updated_at|dmy }}</dd>
+    <dt>Used by</dt><dd>{% for p in c.projects %}<a href="/projects/{{ p.id }}">{{ p.name }}</a>{{ ', ' if not loop.last }}{% else %}<span class="muted">no project yet – link it from a project page</span>{% endfor %}</dd>
+  </dl>
+  {% if c.notes %}<h3>Notes</h3><p class="pre">{{ c.notes }}</p>{% endif %}
+</section>
+
+{{ uploader('calib_set_id', c.id, None, settings.skip_duplicates, '/import?calib=%d'|format(c.id), CALIB_TYPES) }}
+<script>window.UPLOAD_DEFAULT = {{ c.frame_type|tojson }};</script>
+
+<section class="card">
+  <h2>Frames</h2>
+  {{ file_groups(groups, sizes, CALIB_TYPES, None, None, False, show) }}
+  {% if not c.files %}<p class="muted">No frames yet – add them above.</p>{% endif %}
+</section>
+{{ bulk_bar(None, others, None, 'calib', CALIB_TYPES) }}
+{% endblock %}
+{% block scripts %}
+<script src="/static/files.js"></script>
+<script src="/static/uploader.js"></script>
+{% endblock %}

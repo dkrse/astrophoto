@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ S.app_title }}{% endblock %}</title>
+<script>(function(){var t=null;try{t=localStorage.getItem('theme')}catch(e){}
+var d='{{ S.default_theme }}';if(!t)t=d!=='auto'?d:(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+document.documentElement.dataset.theme=t;})();</script>
+<link rel="stylesheet" href="/static/vendor/flatpickr.min.css">
+<link rel="stylesheet" href="/static/vendor/dark.css" id="fp-dark">
+<link rel="stylesheet" href="/static/style.css">
+<style>:root{--accent:{{ A.accent }};--accent-fg:{{ A.accent_fg }}}[data-theme=dark]{--accent:{{ A.accent_dark }};--accent-fg:#0d1017}</style>
+</head>
+<body>
+<header class="top">
+  <a href="/" class="brand">✦ {{ S.app_title }}</a>
+  {% if user %}
+  <form action="/" method="get" class="search"><input name="q" value="{{ q or '' }}" placeholder="Search (name, object, notes, files, FITS header…)"></form>
+  <nav>
+    <a href="/" class="navl" title="Projects">Projects</a>
+    <a href="/gallery" class="navl" title="Gallery of final images">Gallery</a>
+    <a href="/calibration" class="navl" title="Calibration frame library">Calibration</a>
+    <a href="/stats" class="navl" title="Statistics">Stats</a>
+    <a href="/projects/new" class="btn primary">+ New project</a>
+    <a href="/manage" title="Manage lists (telescopes, cameras, …)">☰</a>
+    <a href="/settings" title="Settings">⚙</a>
+    <a href="/password" title="Change password">🔑</a>
+    <a href="/logout" title="Log out">⎋</a>
+  </nav>
+  {% endif %}
+  <button class="theme" onclick="toggleTheme()" title="Light / dark mode">◐</button>
+</header>
+<main>
+{% if user and weak_pw %}<div class="flash err">⚠ You are using the default password <b>admin</b>. <a href="/password">Change it now</a>.</div>{% endif %}
+{% if flash %}<div class="flash {{ flash.kind }}">{{ flash.msg }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+<script src="/static/vendor/flatpickr.min.js"></script>
+<script src="/static/catalog.js"></script>
+<script>
+function syncFpTheme(){document.getElementById('fp-dark').disabled=document.documentElement.dataset.theme!=='dark';}
+function toggleTheme(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('theme',h.dataset.theme)}catch(e){}syncFpTheme();}
+syncFpTheme();
+flatpickr('.datepicker',{dateFormat:'d-m-Y',allowInput:true,locale:{firstDayOfWeek:1}});
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+{% if S.show_stats %}
+<section class="stats">
+  <div class="stat"><b>{{ stats.projects }}</b><span>projects</span></div>
+  <div class="stat"><b>{{ stats.files }}</b><span>files</span></div>
+  <div class="stat"><b>{{ stats.size|size }}</b><span>total</span></div>
+  <div class="stat"><b>{{ stats.integration|dur }}</b><span>integration</span></div>
+  {% for t in FRAME_TYPES %}{% if stats.counts.get(t) %}
+  <div class="stat small"><b>{{ stats.counts[t] }}</b><span>{{ FRAME_LABELS[t] }}</span></div>
+  {% endif %}{% endfor %}
+</section>
+{% endif %}
+
+<details class="filters card" {% if active %}open{% endif %}>
+  <summary><b>Filters</b>{% if active %} <span class="chip t-stack">{{ active }} active</span>{% endif %}</summary>
+  <form method="get" action="/">
+    <div class="fgrid">
+      <label>Search<input name="q" value="{{ q }}" placeholder="name, notes, files…"></label>
+      <label>Date from<input class="datepicker" name="date_from" value="{{ flt.date_from }}" placeholder="dd-mm-yyyy"></label>
+      <label>Date to<input class="datepicker" name="date_to" value="{{ flt.date_to }}" placeholder="dd-mm-yyyy"></label>
+      <label>Size from (GB)<input name="size_from" value="{{ flt.size_from }}" inputmode="decimal" placeholder="0"></label>
+      <label>Size to (GB)<input name="size_to" value="{{ flt.size_to }}" inputmode="decimal" placeholder="∞"></label>
+      {% for kind, label in CATALOG_SINGULAR.items() %}
+      <label><span class="lbl">{{ label }}<button type="button" class="mng" data-manage="{{ kind }}" title="Manage {{ CATALOG_KINDS[kind]|lower }}">⚙</button></span><select name="{{ kind }}" data-kind="{{ kind }}">
+        <option value="">— any —</option>
+        <option value="__none__" {% if flt[kind] == '__none__' %}selected{% endif %}>(not set)</option>
+        {% for it in cat[kind] %}<option data-item="1" {% if flt[kind] == it.name %}selected{% endif %}>{{ it.name }}</option>{% endfor %}
+      </select></label>
+      {% endfor %}
+    </div>
+    <div class="row"><button class="btn primary">Apply</button><a class="btn" href="/">Reset</a>
+      <a class="muted small" href="/manage">⚙ manage lists</a></div>
+  </form>
+</details>
+
+<div class="listbar">
+  <span class="muted">{% if pager.total %}{{ pager.from }}–{{ pager.to }} of {{ pager.total }}{% else %}0 projects{% endif %}
+    {% if q or active %} · <a href="/">clear filters</a>{% endif %}</span>
+  <span class="row">
+    <form method="get" action="/" class="sortform">
+      {% for k, v in request.query_params.items() %}{% if k not in ('sort', 'page') and v %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+      <select name="sort" onchange="this.form.submit()" title="Sort">
+        {% for k, label in SORT_LABELS.items() %}<option value="{{ k }}" {% if sort == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </form>
+    <span class="view-toggle"><button onclick="setView('grid')" title="Grid">▦</button><button onclick="setView('list')" title="List">☰</button></span>
+  </span>
+</div>
+
+<section id="projects" class="{{ S.default_view }} cards-{{ S.card_size }}">
+{% for p in projects %}{% set s = summary[p.id] %}
+  <a class="pcard" href="/projects/{{ p.id }}">
+    <div class="cover">{% if s.cover %}<img loading="lazy" src="/files/{{ s.cover.id }}/thumb" alt="">{% else %}<span>✦</span>{% endif %}</div>
+    <div class="body">
+      <h3>{{ p.name }}</h3>
+      <div class="muted">{{ p.target or '' }}{% if p.capture_date %} · {{ p.capture_date|dmy }}{% endif %}</div>
+      {% if p.description %}<p class="desc">{{ p.description[:160] }}</p>{% endif %}
+      <div class="chips">{% for t in FRAME_TYPES %}{% if s.counts.get(t) %}<span class="chip t-{{t}}">{{ FRAME_LABELS[t] }} {{ s.counts[t] }}</span>{% endif %}{% endfor %}
+        <span class="chip">{{ s.size|size }}</span>{% if s.integration %}<span class="chip" title="Integration time (lights)">⏱ {{ s.integration|dur }}</span>{% endif %}</div>
+    </div>
+  </a>
+{% else %}
+  <p class="muted">No projects yet. <a href="/projects/new">Create the first one</a>.</p>
+{% endfor %}
+</section>
+
+{% if pager.pages > 1 %}
+<nav class="pager">
+  {% if pager.page > 1 %}<a class="btn small" href="{{ pager.url(pager.page - 1) }}">‹ Prev</a>{% else %}<span class="btn small disabled">‹ Prev</span>{% endif %}
+  {% set last = namespace(n=0) %}
+  {% for n in pager.window %}
+    {% if n - last.n > 1 %}<span class="muted">…</span>{% endif %}
+    {% if n == pager.page %}<span class="btn small primary">{{ n }}</span>{% else %}<a class="btn small" href="{{ pager.url(n) }}">{{ n }}</a>{% endif %}
+    {% set last.n = n %}
+  {% endfor %}
+  {% if pager.page < pager.pages %}<a class="btn small" href="{{ pager.url(pager.page + 1) }}">Next ›</a>{% else %}<span class="btn small disabled">Next ›</span>{% endif %}
+</nav>
+{% endif %}
+<script>
+function setView(v,save){var el=document.getElementById('projects');el.classList.remove('grid','list');el.classList.add(v);
+  document.querySelectorAll('.view-toggle button').forEach(function(b){b.classList.toggle('on',b.getAttribute('onclick').indexOf(v)>0);});
+  if(save!==false){try{localStorage.setItem('view',v)}catch(e){}}}
+(function(){var v=null;try{v=localStorage.getItem('view')}catch(e){}setView(v||'{{ S.default_view }}',false);})();
+</script>
+{% endblock %}

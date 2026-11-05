@@ -1,0 +1,14 @@
+services:
+  astrophoto:
+    build: .
+    container_name: astrophoto
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      IMPORT_DIR: /import
+    ports:
+      - "8010:8000"
+    volumes:
+      - /mnt/data/media/astrophoto:/data
+      # folder you can import from on the server (read-only) – copy/move data here, then use "Import from server"
+      - /mnt/data/media/astrophoto_import:/import:ro

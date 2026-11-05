@@ -1,0 +1,155 @@
+{# Shared file tables + bulk action bar + processing status. #}
+
+{% macro status_box(status, api_url) %}
+<div class="procbox" id="procbox" data-api="{{ api_url }}" {% if not (status.pending or status.importing or status.jobs) %}hidden{% endif %}>
+  <span class="spinner"></span>
+  <span id="proctext">
+    {% for j in status.jobs %}Importing {{ j.done + j.skipped + j.failed }}/{{ j.total }}{% if j.skipped %} ({{ j.skipped }} duplicates skipped){% endif %} · {% endfor %}
+    {% if status.pending %}Processing {{ status.pending }} file(s) – previews, metadata, statistics…{% endif %}
+  </span>
+  <span class="muted small" id="proccur">{{ status.current or '' }}</span>
+</div>
+{% endmacro %}
+
+{% macro file_groups(groups, sizes, types, zip_base, med=None, light_stats=False, show='', limit=100) %}
+{% for t in types %}{% if groups[t] %}
+<details class="group" id="{{ t }}" open>
+  <summary>
+    <input type="checkbox" class="selgroup" data-group="{{ t }}" title="Select all {{ FRAME_LABELS[t] }}" onclick="event.stopPropagation()">
+    <span class="chip t-{{t}}">{{ FRAME_LABELS[t] }}</span> {{ groups[t]|length }} files · {{ sizes[t]|size }}
+    {% if zip_base %}<a class="btn small" href="{{ zip_base }}{{ t }}" onclick="event.stopPropagation()">⬇ ZIP</a>{% endif %}
+  </summary>
+  <div class="tablewrap">
+  <table class="ftable">
+    <thead><tr><th></th><th></th><th>File</th><th>Size</th><th title="Date added (hover: last modified)">Added</th>
+      {% if light_stats and t == 'light' %}<th title="Median FWHM (px)">FWHM</th><th>Stars</th><th title="Background (median)">Bg</th>{% endif %}
+      <th>Exp. (s)</th><th>Gain</th><th>Temp.</th><th>Filter</th><th>Description</th><th></th></tr></thead>
+    <tbody>
+    {% for f in groups[t] %}{% if loop.index <= limit or show == t or show == 'all' %}
+    <tr class="{{ 'rejected' if f.rejected }} {{ 'suspect' if f.suspect and not f.rejected }}" data-id="{{ f.id }}">
+      <td><input type="checkbox" class="selfile" data-group="{{ t }}" value="{{ f.id }}"></td>
+      <td>{% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img class="mini" loading="lazy" src="/files/{{ f.id }}/thumb" alt=""></a>
+          {% elif f.status in ('pending', 'importing') %}<span class="mini ph" title="Processing…">⏳</span>{% endif %}</td>
+      <td class="fname">
+        <a href="/files/{{ f.id }}/view">{{ f.original_name }}</a>
+        <a href="/files/{{ f.id }}/download" title="Download">⬇</a>
+        {% if f.header %}<a class="chip" href="/files/{{ f.id }}/header" target="_blank" title="FITS header">HDR</a>{% endif %}
+        {% if f.status == 'importing' %}<span class="chip">importing</span>{% elif f.status == 'pending' %}<span class="chip">processing</span>
+        {% elif f.status == 'error' %}<span class="chip t-stack" title="{{ f.error }}">error</span>{% endif %}
+        {% if f.session %}<span class="chip" title="Session">🌙 {{ f.session.date|dmy }}</span>{% endif %}
+        {% if f.rejected %}<span class="chip rej">rejected</span>{% elif f.suspect %}<span class="chip warn" title="Clearly worse than the median of this filter">⚠ suspect</span>{% endif %}
+      </td>
+      <td class="nowrap">{{ f.size|size }}</td>
+      <td class="nowrap small muted" title="Added {{ f.uploaded_at|dmy }}{% if f.updated_at %} · modified {{ f.updated_at|dmy }}{% endif %}">{{ f.uploaded_at.strftime('%d-%m-%Y') if f.uploaded_at else '' }}{% if f.updated_at %} ✎{% endif %}</td>
+      {% if light_stats and t == 'light' %}
+        <td class="num {{ 'bad' if med and med.stat_fwhm and f.stat_fwhm and f.stat_fwhm > med.stat_fwhm * 1.3 }}">{{ f.stat_fwhm|num(2) if f.stat_fwhm else '–' }}</td>
+        <td class="num {{ 'bad' if med and med.stat_stars and f.stat_stars is not none and f.stat_stars < med.stat_stars * 0.5 }}">{{ f.stat_stars if f.stat_stars is not none else '–' }}</td>
+        <td class="num">{{ f.stat_bg|num(0) if f.stat_bg is not none else '–' }}</td>
+      {% endif %}
+      <td colspan="5">
+        <form method="post" action="/files/{{ f.id }}/edit" class="inline-edit">
+          <input name="exposure_s" value="{{ f.exposure_s|num(3) if f.exposure_s is not none else '' }}" size="4" aria-label="Exposure">
+          <input name="gain" value="{{ f.gain or '' }}" size="4" aria-label="Gain">
+          <input name="temperature" value="{{ f.temperature or '' }}" size="4" aria-label="Temperature">
+          <input name="filter" value="{{ f.filter or '' }}" size="4" aria-label="Filter">
+          <input name="description" value="{{ f.description or '' }}" class="grow" aria-label="Description">
+          <button class="btn small" title="Save">✓</button>
+        </form>
+      </td>
+      <td class="nowrap">
+        {% if t == 'light' %}<form method="post" action="/files/{{ f.id }}/reject" class="inl"><button class="btn small" title="{{ 'Restore frame' if f.rejected else 'Reject frame (excluded from ZIP and integration time)' }}">{{ '↺' if f.rejected else '✗' }}</button></form>{% endif %}
+        <form method="post" action="/files/{{ f.id }}/delete" class="inl" onsubmit="return confirm('Delete file?')"><button class="btn small danger" title="Delete">🗑</button></form>
+      </td>
+    </tr>
+    {% endif %}{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if groups[t]|length > limit and show != t and show != 'all' %}
+  <p class="showall"><a class="btn small" href="?show={{ t }}#{{ t }}">Show all {{ groups[t]|length }} {{ FRAME_LABELS[t] }} files</a>
+    <span class="muted small">(first {{ limit }} shown – “select all” selects only visible rows)</span></p>
+  {% endif %}
+</details>
+{% endif %}{% endfor %}
+{% endmacro %}
+
+{% macro bulk_bar(sessions=None, others=None, calib_sets=None, owner_kind='project', types=None) %}
+<div class="bulkbar" id="bulkbar" hidden>
+  <b><span id="bulkcount">0</span> selected</b>
+  <button type="button" class="btn small" data-bulk="clear">Clear</button>
+  <span class="sep"></span>
+  <label class="inline">Type
+    <select data-bulk-sel="type"><option value="">—</option>{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
+  {% if sessions is not none %}
+  <label class="inline">Session
+    <select data-bulk-sel="session"><option value="">—</option><option value="__none__">(none)</option>
+      {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}</option>{% endfor %}</select></label>
+  {% endif %}
+  <label class="inline">Move to
+    <select data-bulk-sel="move"><option value="">—</option>
+      {% if others %}<optgroup label="Projects">{% for o in others %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</optgroup>{% endif %}
+      {% if calib_sets %}<optgroup label="Calibration library">{% for c in calib_sets %}<option value="calib:{{ c.id }}">{{ c.name }}</option>{% endfor %}</optgroup>{% endif %}
+    </select></label>
+  <button type="button" class="btn small" data-bulk="meta">✎ Metadata…</button>
+  <button type="button" class="btn small" data-bulk="reject" title="Exclude lights from ZIP and integration">✗ Reject</button>
+  <button type="button" class="btn small" data-bulk="unreject">↺ Restore</button>
+  <button type="button" class="btn small" data-bulk="reprocess" title="Regenerate preview, metadata and statistics">↻ Reprocess</button>
+  <button type="button" class="btn small danger" data-bulk="delete">🗑 Delete</button>
+</div>
+<dialog id="meta-dlg" class="cat-dialog">
+  <form method="dialog" class="cat-head"><h2>Set metadata</h2><button class="btn small">✕</button></form>
+  <form id="meta-form" class="dlg-body">
+    <p class="muted small">Only filled fields are changed on the selected files.</p>
+    <div class="cols">
+      <label>Exposure (s)<input name="exposure_s" inputmode="decimal"></label>
+      <label>Gain / ISO<input name="gain"></label>
+      <label>Temperature<input name="temperature"></label>
+      <label>Filter<input name="filter"></label>
+    </div>
+    <label>Description<input name="description"></label>
+    <div class="row"><button class="btn primary">Apply</button></div>
+  </form>
+</dialog>
+{% endmacro %}
+
+{% macro uploader(target_key, target_id, sessions=None, skip_dups=True, import_url=None, types=None) %}
+<details class="upload card" id="upload">
+  <summary><b>⬆ Add files</b> <span class="muted small">drag &amp; drop, resumable chunked upload, type auto-detection</span></summary>
+  <div class="uploader" data-target-key="{{ target_key }}" data-target-id="{{ target_id }}">
+    <div class="dropzone" tabindex="0">
+      <b>Drop files or folders here</b>
+      <span class="muted small">or</span>
+      <span class="row">
+        <label class="btn small">Choose files<input type="file" multiple hidden class="pick-files"></label>
+        <label class="btn small">Choose folder<input type="file" multiple hidden webkitdirectory class="pick-dir"></label>
+        {% if import_url %}<a class="btn small" href="{{ import_url }}" title="Import a folder that is already on the server (no browser upload)">📁 Import from server</a>{% endif %}
+      </span>
+    </div>
+    <div class="up-options" hidden>
+      <div class="cols">
+        {% if sessions is not none %}
+        <label>Session (night)<select class="up-session"><option value="">— auto by date —</option>
+          {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}</option>{% endfor %}</select></label>
+        {% endif %}
+        <label>Set type of all
+          <select class="up-alltype"><option value="">— keep detected —</option>{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
+        <label>Filter (if not in header)<input class="up-filter"></label>
+        <label>Description<input class="up-desc"></label>
+      </div>
+      <label class="check"><input type="checkbox" class="up-skipdups" {% if skip_dups %}checked{% endif %}> Skip files that already exist (same content)</label>
+      <div class="tablewrap"><table class="uptable">
+        <thead><tr><th>File</th><th>Size</th><th>Type</th><th>Progress</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="row up-actions">
+        <button type="button" class="btn primary up-start">Start upload</button>
+        <button type="button" class="btn up-pause" hidden>Pause</button>
+        <button type="button" class="btn up-clear">Clear list</button>
+        <span class="muted small up-summary"></span>
+      </div>
+      <div class="progress"><div class="bar up-total"></div></div>
+    </div>
+  </div>
+</details>
+<script>window.UPLOAD_TYPES = {{ (types or FRAME_TYPES)|tojson }}; window.FRAME_LABELS = {{ FRAME_LABELS|tojson }};</script>
+{% endmacro %}

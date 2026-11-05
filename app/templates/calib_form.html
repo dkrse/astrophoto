@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% macro pick(kind, label) %}
+  {% set cur = c[kind] if c else None %}
+  <label><span class="lbl">{{ label }}<button type="button" class="mng" data-manage="{{ kind }}" title="Manage {{ CATALOG_KINDS[kind]|lower }}">⚙</button></span>
+    <select name="{{ kind }}" data-kind="{{ kind }}">
+      <option value="">—</option>
+      {% set names = cat[kind]|map(attribute='name')|list %}
+      {% if cur and cur not in names %}<option data-item="1" selected>{{ cur }}</option>{% endif %}
+      {% for it in cat[kind] %}<option data-item="1" {% if cur == it.name %}selected{% endif %}>{{ it.name }}</option>{% endfor %}
+    </select></label>
+{% endmacro %}
+{% block content %}
+<form method="post" class="card">
+  <h1>{{ 'Edit calibration set' if c else 'New calibration set' }}</h1>
+  <div class="cols">
+    <label>Type
+      <select name="frame_type">{% for t in CALIB_TYPES %}<option value="{{ t }}" {% if ftype == t %}selected{% endif %}>{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
+    <label>Capture date<input class="datepicker" name="capture_date" value="{{ c.capture_date|dmy if c else today|dmy }}" placeholder="dd-mm-yyyy"></label>
+    <label>Name<input name="name" value="{{ c.name if c else '' }}" placeholder="auto: type · camera · temp · exposure · date"></label>
+    {{ pick('camera', 'Camera') }}
+    {{ pick('telescope', 'Telescope (for flats)') }}
+    <label>Temperature (°C)<input name="temperature" value="{{ c.temperature or '' if c else '' }}" placeholder="-10"></label>
+    <label>Gain / ISO<input name="gain" value="{{ c.gain or '' if c else '' }}"></label>
+    <label>Offset<input name="offset" value="{{ c.offset or '' if c else '' }}"></label>
+    <label>Exposure (s)<input name="exposure_s" inputmode="decimal" value="{{ c.exposure_s|num(3) if c and c.exposure_s else '' }}"></label>
+    <label>Filter<input name="filter" value="{{ c.filter or '' if c else '' }}"></label>
+    <label>Binning<input name="binning" value="{{ c.binning or '' if c else '' }}" placeholder="1x1"></label>
+  </div>
+  <label>Notes<textarea name="notes" rows="3">{{ c.notes or '' if c else '' }}</textarea></label>
+  <div class="row"><button class="btn primary">Save</button>
+    <a class="btn" href="{{ '/calibration/%d'|format(c.id) if c else '/calibration' }}">Cancel</a></div>
+</form>
+{% endblock %}

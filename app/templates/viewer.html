@@ -1,0 +1,358 @@
+{% extends "base.html" %}
+{% block title %}{{ f.original_name }} – {{ S.app_title }}{% endblock %}
+{% block content %}
+<script>document.body.classList.add('viewer-page');document.documentElement.style.setProperty('--hh',document.querySelector('header.top').offsetHeight+'px');</script>
+<div class="viewer" id="viewer">
+  <div class="vbar">
+    <a class="btn small" href="{{ owner.url }}#{{ f.frame_type }}" title="Back to {{ 'project' if owner.kind == 'project' else 'calibration set' }}">←</a>
+    {% if prev_f %}<a class="btn small" href="/files/{{ prev_f.id }}/view" id="prev" title="Previous (←)">‹</a>{% else %}<span class="btn small disabled">‹</span>{% endif %}
+    <span class="muted small">{{ pos }}/{{ total }}</span>
+    {% if next_f %}<a class="btn small" href="/files/{{ next_f.id }}/view" id="next" title="Next (→)">›</a>{% else %}<span class="btn small disabled">›</span>{% endif %}
+    <b class="vname" title="{{ f.original_name }}"><span class="chip t-{{ f.frame_type }}">{{ FRAME_LABELS[f.frame_type] }}</span> {{ f.original_name }}</b>
+
+    {% if can_render %}
+    <span class="seg">
+      <button class="btn small" data-mode="fit" title="Fit to window (F)">Fit</button>
+      <button class="btn small" data-mode="one" title="Actual size 100% (1)">1:1</button>
+      <button class="btn small" id="zout" title="Zoom out (-)">−</button>
+      <span id="zlabel" class="zlabel">–</span>
+      <button class="btn small" id="zin" title="Zoom in (+)">+</button>
+    </span>
+    <span class="seg">
+      {% if is_fits %}
+      <label class="inline" title="Bayer pattern – if colors look wrong, try another one.{% if not fits_mono %} This file is already color (3 channels); a manually selected pattern is applied to the first channel.{% endif %}">Bayer{% if not fits_mono %}<sup>*</sup>{% endif %}
+        <select id="o-bayer">{% for c in choices.bayer %}<option value="{{ c }}" {% if opts.bayer == c %}selected{% endif %}>{{ {'auto':'auto (header)','none':'none (mono)'}.get(c, c) }}</option>{% endfor %}</select></label>
+      {% endif %}
+      {% if is_fits %}
+      <label class="inline" title="Image orientation">Flip
+        <select id="o-flip">{% for c in choices.flip %}<option value="{{ c }}" {% if opts.flip == c %}selected{% endif %}>{{ {'auto':'auto (ROWORDER)','none':'none','v':'vertical','h':'horizontal','vh':'both'}[c] }}</option>{% endfor %}</select></label>
+      {% endif %}
+      <label class="inline" title="Channel display (view only, file is never modified)">Channels
+        <select id="o-channels">{% for c in choices.channels %}<option value="{{ c }}" {% if opts.channels == c %}selected{% endif %}>{{ {'rgb':'RGB','bgr':'BGR (swap R↔B)','r':'R only','g':'G only','b':'B only','lum':'luminance (mono)'}[c] }}</option>{% endfor %}</select></label>
+      <label class="inline" title="Histogram stretch">Stretch
+        <select id="o-stretch">{% for c in choices.stretch %}<option value="{{ c }}" {% if opts.stretch == c %}selected{% endif %}>{{ {'unlinked':'auto – unlinked (neutral background)','linked':'auto – linked (original colors)','manual':'manual levels (histogram)','linear':'linear','none':'none'}[c] }}</option>{% endfor %}</select></label>
+      <label class="inline bright" title="Brightness (display only). Double-click to reset.">☀
+        <input type="range" id="o-brightness" min="-100" max="100" step="1" value="{{ opts.brightness }}">
+        <span id="bval" class="bval">{{ opts.brightness }}</span></label>
+      <button class="btn small" id="levelsbtn" title="Histogram &amp; levels (black / midtones / white point)">📊 Levels</button>
+      <button class="btn small" id="resetbtn" title="Reset to default values (auto bayer, auto flip, RGB, unlinked stretch, brightness 0, fit). Not saved.">↺ Reset</button>
+      <button class="btn small" data-save="" title="Save view settings for this file. The original is never modified.">💾 this</button>
+      <button class="btn small" data-save="1" title="Save view settings for all files of this type. Originals are never modified.">💾 all {{ FRAME_LABELS[f.frame_type] }}</button>
+    </span>
+    {% endif %}
+    <span class="seg right">
+      {% if f.frame_type == 'light' %}<button class="btn small {{ 'danger' if f.rejected }}" id="rejbtn" title="Rejected frames are excluded from ZIP and integration time">{{ '↺ Restore' if f.rejected else '✗ Reject' }}</button>{% endif %}
+      <button class="btn small" id="fsbtn" title="Fullscreen (Shift+F)">⛶</button>
+      <a class="btn small" href="/files/{{ f.id }}/download" title="Download original">⬇</a>
+      <button class="btn small" id="infobtn" title="Info panel (I)">ⓘ Info</button>
+    </span>
+  </div>
+
+  <div class="vmain">
+    <div class="stage" id="stage">
+      {% if can_render %}
+      <img id="img" alt="" draggable="false">
+      <div class="loading" id="loading">Loading…</div>
+      <div class="levels" id="levels" hidden>
+        <div class="lv-head"><b>Levels</b>
+          <label class="inline small" title="Show levels on the image (uncheck to compare with the image before levels)"><input type="checkbox" id="lv-preview" checked> preview</label>
+          <label class="inline small" title="Logarithmic histogram"><input type="checkbox" id="lv-log" checked> log</label>
+          <button class="btn small" id="lv-auto" title="Start from the automatic stretch">Auto</button>
+          <button class="btn small" id="lv-reset" title="Back to the levels this file was opened with (saved settings, otherwise automatic). Nothing is saved.">↺ Reset</button>
+          <button class="btn small" id="lv-close" title="Close">✕</button></div>
+        <canvas id="lv-canvas" width="320" height="120" title="Drag the black, midtone and white markers"></canvas>
+        <div class="lv-vals">
+          <label>Black<input type="number" id="lv-bp" min="0" max="0.99" step="0.001"></label>
+          <label>Mid<input type="number" id="lv-mp" min="0.0001" max="0.9999" step="0.001"></label>
+          <label>White<input type="number" id="lv-wp" min="0.01" max="1" step="0.001"></label>
+        </div>
+        <div class="muted small" id="lv-msg">Loading histogram…</div>
+      </div>
+      {% else %}
+      <div class="loading">No preview for this format. <a href="/files/{{ f.id }}/download">Download</a></div>
+      {% endif %}
+    </div>
+
+    <aside class="vinfo" id="vinfo">
+      <h3>File</h3>
+      <dl>
+        <dt>Name</dt><dd>{{ f.original_name }}</dd>
+        <dt>Type</dt><dd>{{ FRAME_LABELS[f.frame_type] }}</dd>
+        <dt>Size</dt><dd>{{ f.size|size }}</dd>
+        {% for k, v in info.image %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}
+        {% if f.exposure_s is not none %}<dt>Exposure</dt><dd>{{ f.exposure_s }} s</dd>{% endif %}
+        {% if f.gain %}<dt>Gain</dt><dd>{{ f.gain }}</dd>{% endif %}
+        {% if f.temperature %}<dt>Temperature</dt><dd>{{ f.temperature }}</dd>{% endif %}
+        {% if f.filter %}<dt>Filter</dt><dd>{{ f.filter }}</dd>{% endif %}
+        <dt>Added</dt><dd>{{ f.uploaded_at|dmy }}</dd>
+        <dt>Modified</dt><dd>{{ f.updated_at|dmy if f.updated_at else '—' }}</dd>
+        {% if f.date_obs %}<dt>Observed</dt><dd>{{ f.date_obs|dmy }}</dd>{% endif %}
+        {% if f.session %}<dt>Session</dt><dd>🌙 {{ f.session.date|dmy }}</dd>{% endif %}
+        <dt>{{ 'Project' if owner.kind == 'project' else 'Calibration set' }}</dt><dd><a href="{{ owner.url }}">{{ owner.name }}</a></dd>
+        {% if f.sha256 %}<dt>SHA-256</dt><dd class="mono small" title="{{ f.sha256 }}">{{ f.sha256[:16] }}…</dd>{% endif %}
+        {% if f.status != 'done' %}<dt>Status</dt><dd>{{ f.status }}{% if f.error %} – {{ f.error }}{% endif %}</dd>{% endif %}
+      </dl>
+      {% if f.frame_type == 'light' and f.stat_stars is not none %}
+      <h3>Frame quality</h3>
+      <dl>
+        <dt>FWHM</dt><dd>{{ f.stat_fwhm|num(2) if f.stat_fwhm else '–' }} px</dd>
+        <dt>Stars</dt><dd>{{ f.stat_stars }}</dd>
+        <dt>Background</dt><dd>{{ f.stat_bg|num(1) }}</dd>
+        <dt>Noise (σ)</dt><dd>{{ f.stat_noise|num(2) }}</dd>
+        <dt>Assessment</dt><dd>{% if f.rejected %}<span class="chip rej">rejected</span>{% elif f.suspect %}<span class="chip warn">⚠ suspect</span>{% else %}ok{% endif %}</dd>
+      </dl>
+      {% endif %}
+      {% if f.description %}<h3>Description</h3><p class="pre">{{ f.description }}</p>{% endif %}
+
+      {% if info.header %}
+      <h3>FITS header <small class="muted">({{ info.header|length }})</small></h3>
+      <input class="hfilter" placeholder="Filter…" oninput="filterRows(this, 'htable')">
+      <table class="kv" id="htable">
+        {% for k, v, c in info.header %}<tr title="{{ c }}"><th>{{ k }}</th><td>{{ v }}{% if c %}<div class="cmt">{{ c }}</div>{% endif %}</td></tr>{% endfor %}
+      </table>
+      {% endif %}
+
+      {% if info.exif %}
+      <h3>EXIF <small class="muted">({{ info.exif|length }})</small></h3>
+      <input class="hfilter" placeholder="Filter…" oninput="filterRows(this, 'etable')">
+      <table class="kv" id="etable">
+        {% for k, v in info.exif %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>{% endfor %}
+      </table>
+      {% endif %}
+    </aside>
+  </div>
+</div>
+
+<form method="post" action="/files/{{ f.id }}/opts" id="saveform" hidden>
+  <input name="bayer"><input name="stretch"><input name="flip"><input name="channels"><input name="brightness"><input name="bp"><input name="mp"><input name="wp"><input name="view"><input name="all">
+</form>
+
+<script>
+function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelectorAll('#'+id+' tr').forEach(function(r){r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';});}
+
+(function(){
+  var V=document.getElementById('viewer'), info=document.getElementById('infobtn');
+  function setInfo(on){V.classList.toggle('noinfo',!on);try{localStorage.setItem('vinfo',on?'1':'0')}catch(e){} if(window._refit)window._refit();}
+  setInfo((function(){try{return localStorage.getItem('vinfo')!=='0'}catch(e){return true}})());
+  info.onclick=function(){setInfo(V.classList.contains('noinfo'));};
+  document.addEventListener('keydown',function(e){
+    if(e.target.matches('input,select,textarea')||e.ctrlKey||e.metaKey||e.altKey)return;
+    if(e.key==='i'||e.key==='I')info.click();
+    if(e.key==='ArrowLeft'&&document.getElementById('prev'))location=document.getElementById('prev').href;
+    if(e.key==='ArrowRight'&&document.getElementById('next'))location=document.getElementById('next').href;
+  });
+})();
+
+{% if can_render %}
+(function(){
+  var stage=document.getElementById('stage'), img=document.getElementById('img'),
+      loading=document.getElementById('loading'), zl=document.getElementById('zlabel');
+  var s=1, tx=0, ty=0, mode='fit', nw=0, nh=0, fullScale=1; // fullScale: preview px -> full px factor
+  mode='{{ opts.view }}'==='one'?'one':'fit';
+
+  var LV={bp:{{ opts.bp }},mp:{{ opts.mp }},wp:{{ opts.wp }}};
+  var baseStretch=('{{ opts.stretch }}'==='manual')?'unlinked':'{{ opts.stretch }}';
+  function lvPreview(){var c=document.getElementById('lv-preview');return !c||c.checked;}
+  function opts(forSave){var o={};['bayer','stretch','flip','channels'].forEach(function(k){var el=document.getElementById('o-'+k);if(el)o[k]=el.value;});
+    if(o.stretch==='manual'){
+      if(!forSave&&!lvPreview()){o.stretch=baseStretch;}
+      else{o.bp=LV.bp.toFixed(4);o.mp=LV.mp.toFixed(4);o.wp=LV.wp.toFixed(4);}}
+    return o;}
+  function url(size){var o=opts();o.size=size;return '/files/{{ f.id }}/render?'+new URLSearchParams(o);}
+
+  function apply(){img.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
+    zl.textContent=Math.round(s/fullScale*100)+'%';
+    document.querySelectorAll('[data-mode]').forEach(function(b){b.classList.toggle('primary',b.dataset.mode===mode);});}
+  function fit(){mode='fit';var W=stage.clientWidth,H=stage.clientHeight;if(!nw)return;
+    s=Math.min(W/nw,H/nh);tx=(W-nw*s)/2;ty=(H-nh*s)/2;apply();}
+  function one(){mode='one';var W=stage.clientWidth,H=stage.clientHeight;
+    var cx=(W/2-tx)/s, cy=(H/2-ty)/s; s=fullScale; tx=W/2-cx*s; ty=H/2-cy*s;apply();}
+  function zoomAt(f,px,py){mode='zoom';var ns=Math.max(0.02,Math.min(s*f,fullScale*32));
+    tx=px-(px-tx)*ns/s;ty=py-(py-ty)*ns/s;s=ns;apply();}
+  function setMode(m){if(m==='fit')fit();else one();}
+  window._refit=function(){setTimeout(function(){if(mode==='fit')fit();},30);};
+
+  var gen=0;
+  function load(previewOnly){
+    var my=++gen;
+    if(previewOnly!==true){loading.style.display='';loading.textContent='Loading…';}
+    var pre=new Image();
+    pre.onload=function(){
+      if(my!==gen)return;
+      var first=!nw;
+      var oldW=nw; nw=pre.naturalWidth; nh=pre.naturalHeight; img.src=pre.src; img.style.width=nw+'px'; img.style.height=nh+'px';
+      if(first){ var want=mode; fit(); if(want==='one')mode='one'; } else { s=s*oldW/nw; apply(); }
+      if(previewOnly===true){loading.style.display='none';return;}
+      // then full resolution
+      var full=new Image();
+      full.onload=function(){
+        if(my!==gen)return;
+        fullScale=1; s=s*nw/full.naturalWidth;
+        nw=full.naturalWidth; nh=full.naturalHeight; img.src=full.src; img.style.width=nw+'px'; img.style.height=nh+'px';
+        loading.style.display='none';
+        if(mode==='fit')fit(); else if(first&&mode==='one'){fit();one();} else apply();
+      };
+      full.onerror=function(){loading.textContent='Failed to load full resolution';};
+      full.src=url('full');
+      // until full arrives, preview px correspond to more full px
+      loading.textContent='Loading full resolution…';
+    };
+    pre.onerror=function(){loading.textContent='Failed to create preview';};
+    pre.src=url('preview');
+  }
+  load();
+
+  document.querySelectorAll('[data-mode]').forEach(function(b){b.onclick=function(){setMode(b.dataset.mode);};});
+  document.getElementById('zin').onclick=function(){zoomAt(1.25,stage.clientWidth/2,stage.clientHeight/2);};
+  document.getElementById('zout').onclick=function(){zoomAt(0.8,stage.clientWidth/2,stage.clientHeight/2);};
+  stage.addEventListener('wheel',function(e){if(e.target.closest('.levels'))return;e.preventDefault();var r=stage.getBoundingClientRect();
+    zoomAt(e.deltaY<0?1.15:1/1.15,e.clientX-r.left,e.clientY-r.top);},{passive:false});
+  var drag=null;
+  stage.addEventListener('pointerdown',function(e){if(e.target.closest('.levels')||e.button!==0)return;drag={x:e.clientX,y:e.clientY,tx:tx,ty:ty};stage.setPointerCapture(e.pointerId);stage.classList.add('grabbing');});
+  stage.addEventListener('pointermove',function(e){if(!drag)return;tx=drag.tx+e.clientX-drag.x;ty=drag.ty+e.clientY-drag.y;if(mode==='fit')mode='zoom';apply();});
+  function endPan(){drag=null;stage.classList.remove('grabbing');}
+  ['pointerup','pointercancel','lostpointercapture'].forEach(function(ev){stage.addEventListener(ev,endPan);});
+  stage.addEventListener('pointermove',function(e){if(drag&&!e.buttons)endPan();});
+  stage.addEventListener('dblclick',function(e){if(e.target.closest('.levels'))return;if(mode==='fit'){var r=stage.getBoundingClientRect();var px=e.clientX-r.left,py=e.clientY-r.top;
+      tx=px-(px-tx)*fullScale/s;ty=py-(py-ty)*fullScale/s;s=fullScale;mode='one';apply();} else fit();});
+  window.addEventListener('resize',function(){if(mode==='fit')fit();});
+  document.addEventListener('keydown',function(e){
+    if(e.target.matches('input,select,textarea')||e.ctrlKey||e.metaKey||e.altKey)return;
+    if((e.key==='f'&&!e.shiftKey)||e.key==='0')setMode('fit');
+    if(e.key==='1')setMode('one');
+    if(e.key==='+'||e.key==='=')document.getElementById('zin').click();
+    if(e.key==='-')document.getElementById('zout').click();
+  });
+  ['bayer','stretch','flip','channels'].forEach(function(k){var el=document.getElementById('o-'+k);if(el)el.onchange=function(){
+    if(k==='bayer'||k==='flip'){hist=null;if(!lvBox.hidden)fetchHist();}
+    if(k==='stretch'&&el.value==='manual')openLevels();
+    if(k==='stretch'&&el.value!=='manual')baseStretch=el.value;
+    load();};});
+
+  // ---------- histogram & levels ----------
+  var lvBox=document.getElementById('levels'), cv=document.getElementById('lv-canvas'), ctx=cv.getContext('2d');
+  var hist=null, lvTimer=null;
+  function setInputs(){document.getElementById('lv-bp').value=LV.bp.toFixed(4);document.getElementById('lv-mp').value=LV.mp.toFixed(4);document.getElementById('lv-wp').value=LV.wp.toFixed(4);}
+  function mtf(m,x){return ((m-1)*x)/((2*m-1)*x-m);}
+  function draw(){
+    var W=cv.width,H=cv.height,css=getComputedStyle(document.documentElement);
+    ctx.clearRect(0,0,W,H);
+    if(!hist)return;
+    var log=document.getElementById('lv-log').checked, n=hist.bins;
+    function series(arr,color){var mx=0,i;var v=arr.map(function(c){return log?Math.log1p(c):c;});for(i=0;i<n;i++)mx=Math.max(mx,v[i]);
+      ctx.beginPath();ctx.moveTo(0,H);for(i=0;i<n;i++)ctx.lineTo(i/(n-1)*W,H-(mx?v[i]/mx:0)*(H-6));ctx.lineTo(W,H);ctx.closePath();
+      ctx.fillStyle=color;ctx.fill();}
+    if(hist.r){series(hist.r,'rgba(230,70,70,.35)');series(hist.g,'rgba(70,200,90,.35)');series(hist.b,'rgba(80,130,255,.35)');}
+    else series(hist.lum,'rgba(160,170,190,.6)');
+    // transfer curve
+    ctx.beginPath();ctx.strokeStyle=css.getPropertyValue('--fg').trim()||'#ccc';ctx.lineWidth=1;ctx.globalAlpha=.6;
+    for(var i=0;i<=W;i++){var x=i/W,t=Math.min(Math.max((x-LV.bp)/(LV.wp-LV.bp),0),1),y=mtf(LV.mp,t);i?ctx.lineTo(i,H-y*H):ctx.moveTo(i,H-y*H);}
+    ctx.stroke();ctx.globalAlpha=1;
+    // markers
+    var acc=css.getPropertyValue('--accent').trim()||'#748ffc';
+    [[LV.bp,'#000'],[LV.bp+LV.mp*(LV.wp-LV.bp),'#888'],[LV.wp,'#fff']].forEach(function(m){
+      var x=m[0]*W;ctx.fillStyle=acc;ctx.fillRect(x-1,0,2,H);
+      ctx.beginPath();ctx.moveTo(x-6,H);ctx.lineTo(x+6,H);ctx.lineTo(x,H-10);ctx.closePath();ctx.fillStyle=m[1];ctx.strokeStyle=acc;ctx.lineWidth=1.5;ctx.fill();ctx.stroke();});
+  }
+  var histGen=0;
+  function fetchHist(){
+    if(hist){draw();return;}
+    var o=opts(), my=++histGen;document.getElementById('lv-msg').textContent='Loading histogram…';
+    fetch('/files/{{ f.id }}/histogram?'+new URLSearchParams({bayer:o.bayer||'auto',flip:o.flip||'auto'}))
+      .then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(h){if(my!==histGen)return;hist=h;
+        document.getElementById('lv-msg').textContent='Drag markers or type values. Display only – the file is never modified.';
+        if(document.getElementById('o-stretch').value!=='manual'){LV={bp:h.auto.bp,mp:h.auto.mp,wp:1};setInputs();}
+        draw();})
+      .catch(function(){document.getElementById('lv-msg').textContent='Histogram not available for this file.';});
+  }
+  function openLevels(){lvBox.hidden=false;setInputs();fetchHist();}
+  function levelsChanged(){
+    var st=document.getElementById('o-stretch');if(st.value!=='manual'){baseStretch=st.value;st.value='manual';}
+    setInputs();draw();
+    if(!lvPreview())return;
+    clearTimeout(lvTimer);
+    if(lvDrag){lvTimer=setTimeout(function(){load(true);},120);}   // live, fast (preview size) while dragging
+    else lvTimer=setTimeout(load,350);
+  }
+  document.getElementById('levelsbtn').onclick=function(){lvBox.hidden?openLevels():(lvBox.hidden=true);};
+  document.getElementById('lv-close').onclick=function(){lvBox.hidden=true;};
+  document.getElementById('lv-log').onchange=draw;
+  var LV0={bp:LV.bp,mp:LV.mp,wp:LV.wp}, savedManual=('{{ opts.stretch }}'==='manual');
+  document.getElementById('lv-reset').onclick=function(){
+    var st=document.getElementById('o-stretch');
+    if(savedManual){LV={bp:LV0.bp,mp:LV0.mp,wp:LV0.wp};levelsChanged();return;}
+    // file had no saved manual levels: show automatic values and return to the original stretch
+    if(hist)LV={bp:hist.auto.bp,mp:hist.auto.mp,wp:1};
+    setInputs();draw();
+    if(st.value!=='{{ opts.stretch }}'){st.value='{{ opts.stretch }}';baseStretch=st.value;load();}
+  };
+  document.getElementById('lv-preview').onchange=function(){if(document.getElementById('o-stretch').value==='manual')load();};
+  document.getElementById('lv-auto').onclick=function(){if(hist){LV={bp:hist.auto.bp,mp:hist.auto.mp,wp:1};levelsChanged();}};
+  ['bp','mp','wp'].forEach(function(k){document.getElementById('lv-'+k).addEventListener('change',function(e){
+    var v=parseFloat(e.target.value);if(isNaN(v))return;LV[k]=v;
+    LV.bp=Math.min(Math.max(LV.bp,0),0.99);LV.wp=Math.min(Math.max(LV.wp,LV.bp+0.005),1);LV.mp=Math.min(Math.max(LV.mp,0.0001),0.9999);levelsChanged();});});
+  var lvDrag=null;
+  cv.addEventListener('pointerdown',function(e){
+    if(e.button!==0)return;e.preventDefault();
+    var r=cv.getBoundingClientRect(),x=(e.clientX-r.left)/r.width;
+    var mid=LV.bp+LV.mp*(LV.wp-LV.bp), d=[['bp',Math.abs(x-LV.bp)],['mp',Math.abs(x-mid)],['wp',Math.abs(x-LV.wp)]].sort(function(a,b){return a[1]-b[1];});
+    lvDrag=d[0][0];cv.setPointerCapture(e.pointerId);move(e);});
+  cv.addEventListener('pointermove',function(e){if(lvDrag&&e.buttons)move(e);else if(lvDrag)endDrag();});
+  function endDrag(){if(!lvDrag)return;lvDrag=null;clearTimeout(lvTimer);load();}
+  cv.addEventListener('pointerup',endDrag);
+  cv.addEventListener('pointercancel',endDrag);
+  cv.addEventListener('lostpointercapture',endDrag);
+  window.addEventListener('pointerup',endDrag);
+  window.addEventListener('blur',endDrag);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){if(lvDrag)endDrag();else if(!lvBox.hidden)lvBox.hidden=true;}});
+  // the panel lives inside the image stage: keep its clicks/drags away from image panning
+  ['pointerdown','dblclick','wheel'].forEach(function(ev){lvBox.addEventListener(ev,function(e){e.stopPropagation();});});
+  function move(e){
+    var r=cv.getBoundingClientRect(),x=Math.min(Math.max((e.clientX-r.left)/r.width,0),1);
+    if(lvDrag==='bp')LV.bp=Math.min(x,LV.wp-0.005);
+    else if(lvDrag==='wp')LV.wp=Math.max(x,LV.bp+0.005);
+    else LV.mp=Math.min(Math.max((x-LV.bp)/(LV.wp-LV.bp),0.0001),0.9999);
+    levelsChanged();
+  }
+  if(document.getElementById('o-stretch').value==='manual')openLevels();
+
+  // ---------- fullscreen ----------
+  var V=document.getElementById('viewer');
+  function toggleFs(){if(document.fullscreenElement)document.exitFullscreen();else if(V.requestFullscreen)V.requestFullscreen();}
+  document.getElementById('fsbtn').onclick=toggleFs;
+  document.addEventListener('fullscreenchange',function(){setTimeout(function(){if(mode==='fit')fit();},60);});
+  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&e.key==='F'&&e.shiftKey)toggleFs();});
+  // reset to defaults – display only, nothing is saved
+  var DEFAULTS={{ defaults|tojson }};
+  // brightness: instant CSS filter in the browser (server applies it only to saved thumbnails)
+  var bri=document.getElementById('o-brightness'), bval=document.getElementById('bval');
+  function setBri(v){bri.value=v;var n=+bri.value;bval.textContent=(n>0?'+':'')+n;img.style.filter=n?'brightness('+(1+n/100)+')':'';}
+  bri.addEventListener('input',function(){setBri(bri.value);});
+  bri.addEventListener('dblclick',function(){setBri(0);});
+  setBri(bri.value);
+  document.getElementById('resetbtn').onclick=function(){
+    setBri(DEFAULTS.brightness);
+    var hb=document.getElementById('o-bayer'),hf=document.getElementById('o-flip');
+    if((hb&&hb.value!==DEFAULTS.bayer)||(hf&&hf.value!==DEFAULTS.flip))hist=null;
+    baseStretch=DEFAULTS.stretch;
+    LV={bp:0,mp:0.5,wp:1};if(hist){LV={bp:hist.auto.bp,mp:hist.auto.mp,wp:1};setInputs();draw();}
+    var changed=false;
+    ['bayer','stretch','flip','channels'].forEach(function(k){var el=document.getElementById('o-'+k);
+      if(el&&el.value!==DEFAULTS[k]){el.value=DEFAULTS[k];changed=true;}});
+    if(changed)load();
+    if(!hist&&!lvBox.hidden)fetchHist();
+    mode='fit';fit();
+  };
+
+  document.querySelectorAll('[data-save]').forEach(function(btn){btn.onclick=function(){
+    var fm=document.getElementById('saveform'), o=opts(true);
+    fm.bayer.value=o.bayer||'auto'; fm.stretch.value=o.stretch||'unlinked'; fm.flip.value=o.flip||'auto'; fm.channels.value=o.channels||'rgb'; fm.brightness.value=bri.value; fm.bp.value=LV.bp.toFixed(4); fm.mp.value=LV.mp.toFixed(4); fm.wp.value=LV.wp.toFixed(4); fm.view.value=(mode==='one')?'one':'fit'; fm.all.value=btn.dataset.save;
+    btn.textContent='⏳'; fm.submit();
+  };});
+})();
+{% endif %}
+(function(){var b=document.getElementById('rejbtn');if(!b)return;
+  b.onclick=function(){fetch('/files/{{ f.id }}/reject',{method:'POST',headers:{'Accept':'application/json'}}).then(function(r){return r.json();})
+    .then(function(j){b.textContent=j.rejected?'↺ Restore':'✗ Reject';b.classList.toggle('danger',j.rejected);});};})();
+</script>
+{% endblock %}

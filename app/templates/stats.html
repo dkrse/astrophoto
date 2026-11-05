@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Statistics – {{ S.app_title }}{% endblock %}
+{% macro ranked(title, rows, unit='dur') %}
+<section class="card">
+  <h3 class="mt0">{{ title }}</h3>
+  {% if rows %}{% set mx = rows[0][1] or 1 %}
+  <table class="ranked">
+    {% for name, v in rows %}
+    <tr title="{{ name }}: {{ v|dur if unit == 'dur' else v|size }}">
+      <td class="rname">{{ name }}</td>
+      <td class="rbar"><span style="width:{{ (v / mx * 100)|round(1) if mx else 0 }}%"></span></td>
+      <td class="num nowrap">{{ v|dur if unit == 'dur' else v|size }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No data yet.</p>{% endif %}
+</section>
+{% endmacro %}
+{% block content %}
+<h1>Statistics</h1>
+<section class="stats">
+  <div class="stat"><b>{{ total|dur }}</b><span>total integration (lights)</span></div>
+  <div class="stat"><b>{{ frames }}</b><span>light frames</span></div>
+  <div class="stat"><b>{{ nights }}</b><span>imaging nights</span></div>
+  <div class="stat"><b>{{ projects }}</b><span>projects</span></div>
+  <div class="stat"><b>{{ files_total|size }}</b><span>stored files</span></div>
+  {% if disk %}<div class="stat"><b>{{ disk.free|size }}</b><span>free on disk ({{ (disk.used / disk.total * 100)|round|int }}% used)</span></div>{% endif %}
+</section>
+
+<section class="card">
+  <h3 class="mt0">Integration per month <small class="muted">last 24 months</small></h3>
+  {% if months %}{% set mx = (months|map(attribute=1)|max) or 1 %}
+  <div class="mchart" role="img" aria-label="Integration hours per month">
+    {% for (y, m), v in months %}
+    <div class="mcol" tabindex="0">
+      <div class="mtip">{{ '%02d'|format(m) }}/{{ y }}: <b>{{ v|dur }}</b></div>
+      <div class="mbar" style="height:{{ (v / mx * 100)|round(1) }}%"></div>
+      <div class="mlab">{% if m == 1 or loop.first %}{{ '%02d'|format(m) }}<br>{{ y }}{% else %}{{ '%02d'|format(m) }}{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <details class="small"><summary class="muted">Table</summary>
+    <table class="kvt">{% for (y, m), v in months|reverse if v %}<tr><td>{{ '%02d'|format(m) }}/{{ y }}</td><td class="num">{{ v|dur }}</td></tr>{% endfor %}</table>
+  </details>
+  {% else %}<p class="muted">No light frames with dates yet (session date, DATE-OBS or project date).</p>{% endif %}
+</section>
+
+<div class="grid2">
+  {{ ranked('Per year', years|sort(attribute=1, reverse=True)) }}
+  {{ ranked('Top objects', objects) }}
+  {{ ranked('Filters', filters) }}
+  {{ ranked('Object types', types) }}
+  {{ ranked('Telescopes', telescopes) }}
+  {{ ranked('Cameras', cameras) }}
+  {{ ranked('Disk usage by frame type', disk_types.items()|sort(attribute=1, reverse=True)|list, 'size') }}
+  <section class="card">
+    <h3 class="mt0">Storage</h3>
+    <dl class="meta-dl">
+      <dt>Project files</dt><dd>{{ (files_total - calib_size)|size }}</dd>
+      <dt>Calibration library</dt><dd>{{ calib_size|size }}</dd>
+      {% if disk %}<dt>Disk total</dt><dd>{{ disk.total|size }}</dd><dt>Disk used</dt><dd>{{ disk.used|size }}</dd><dt>Disk free</dt><dd>{{ disk.free|size }}</dd>{% endif %}
+    </dl>
+    {% if disk %}<div class="progress big" title="{{ (disk.used / disk.total * 100)|round(1) }}% used"><div class="bar" style="width:{{ (disk.used / disk.total * 100)|round(1) }}%"></div></div>{% endif %}
+  </section>
+</div>
+{% endblock %}

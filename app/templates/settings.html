@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Settings – {{ S.app_title }}{% endblock %}
+{% block content %}
+<form method="post" class="card settings">
+  <div class="head"><h1>Settings</h1>
+    <span class="row"><a class="btn" href="/password">🔑 Change password</a><a class="btn" href="/manage">☰ Manage lists</a></span></div>
+
+  <h3>General</h3>
+  <div class="cols">
+    <label>Application title<input name="app_title" value="{{ S.app_title }}" maxlength="60"></label>
+  </div>
+
+  <h3>Appearance</h3>
+  <div class="cols">
+    <label>Accent color
+      <span class="colorrow"><input type="color" name="accent_color" value="{{ S.accent_color }}" id="accent">
+        <code id="accent-hex">{{ S.accent_color }}</code></span>
+      <span class="swatches">
+        {% for c in ['#3b5bdb','#7048e8','#ae3ec9','#d6336c','#e03131','#f76707','#f59f00','#37b24d','#0ca678','#1098ad','#1c7ed6','#495057'] %}
+        <button type="button" class="sw" style="background:{{ c }}" data-c="{{ c }}" title="{{ c }}"></button>{% endfor %}
+      </span></label>
+    <label>Default theme
+      <select name="default_theme">{% for v, l in [('auto','Auto (system)'),('light','Light'),('dark','Dark')] %}<option value="{{ v }}" {% if S.default_theme == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+      <small class="muted">Used until a user toggles ◐ in the browser.</small></label>
+    <label>Default project view
+      <select name="default_view">{% for v, l in [('grid','Grid'),('list','List')] %}<option value="{{ v }}" {% if S.default_view == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+    <label>Card size (grid)
+      <select name="card_size">{% for v in ['small','medium','large'] %}<option value="{{ v }}" {% if S.card_size == v %}selected{% endif %}>{{ v|capitalize }}</option>{% endfor %}</select></label>
+  </div>
+
+  <h3>Projects overview</h3>
+  <div class="cols">
+    <label>Projects per page<input type="number" name="page_size" min="1" max="500" value="{{ S.page_size }}"></label>
+    <label>Default sort
+      <select name="sort">{% for k, l in SORT_LABELS.items() %}<option value="{{ k }}" {% if S.sort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+    <label class="check"><input type="checkbox" name="show_stats" {% if S.show_stats %}checked{% endif %}> Show statistics on overview</label>
+  </div>
+
+  <h3>Downloads</h3>
+  <div class="cols">
+    <label>ZIP compression
+      <select name="zip_compression">{% for v, l in [('none','None – fastest, shows download size (default)'),('fast','Fast'),('best','Best – slow, smallest')] %}<option value="{{ v }}" {% if S.zip_compression == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+      <small class="muted">ZIPs are streamed – download starts immediately. FITS/RAW compress little; “None” is usually best.</small></label>
+    <label class="check"><input type="checkbox" name="skip_duplicates" {% if S.skip_duplicates %}checked{% endif %}> Skip duplicate files on upload / import (default)</label>
+  </div>
+
+  <h3>Gallery</h3>
+  <div class="cols">
+    <label>Slideshow interval (seconds)<input type="number" name="slideshow_seconds" min="2" max="120" value="{{ S.slideshow_seconds }}"></label>
+  </div>
+
+  <div class="row" style="margin-top:16px">
+    <button class="btn primary">Save</button>
+    <button class="btn" name="reset" value="1" formnovalidate onclick="return confirm('Reset all settings to defaults?')">Reset to defaults</button>
+  </div>
+</form>
+<script>
+(function(){var c=document.getElementById('accent'),h=document.getElementById('accent-hex');
+function set(v){c.value=v;h.textContent=v;document.documentElement.style.setProperty('--accent',v);}
+c.addEventListener('input',function(){set(c.value);});
+document.querySelectorAll('.sw').forEach(function(b){b.onclick=function(){set(b.dataset.c);};});})();
+</script>
+{% endblock %}

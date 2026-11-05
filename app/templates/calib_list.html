@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Calibration library – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Calibration library</h1>
+    <div class="muted">Reusable darks, bias, flats and dark flats – link them to any number of projects.</div></div>
+  <a class="btn primary" href="/calibration/new{{ '?type=' ~ ftype if ftype }}">+ New set</a>
+</div>
+
+<form method="get" class="row card filters-inline">
+  <input name="q" value="{{ cq }}" placeholder="Search name, notes, filter…" style="max-width:260px">
+  <select name="type" onchange="this.form.submit()"><option value="">All types</option>
+    {% for t in CALIB_TYPES %}<option value="{{ t }}" {% if ftype == t %}selected{% endif %}>{{ FRAME_LABELS[t] }}</option>{% endfor %}</select>
+  <select name="camera" onchange="this.form.submit()"><option value="">All cameras</option>
+    {% for cam in cameras %}<option {% if camera == cam %}selected{% endif %}>{{ cam }}</option>{% endfor %}</select>
+  <button class="btn">Filter</button>{% if ftype or camera or cq %}<a href="/calibration" class="muted small">reset</a>{% endif %}
+</form>
+
+{% if sets %}
+<div class="tablewrap card"><table class="kvt">
+  <thead><tr><th>Set</th><th>Type</th><th>Date</th><th>Camera</th><th>Telescope</th><th>Temp</th><th>Gain</th><th>Offset</th><th>Exp. (s)</th><th>Filter</th><th>Bin</th><th>Files</th><th>Size</th><th>Projects</th></tr></thead>
+  <tbody>
+  {% for c in sets %}
+  <tr>
+    <td><a href="/calibration/{{ c.id }}"><b>{{ c.name }}</b></a></td>
+    <td><span class="chip t-{{ c.frame_type }}">{{ FRAME_LABELS[c.frame_type] }}</span></td>
+    <td class="nowrap">{{ c.capture_date|dmy }}</td>
+    <td>{{ c.camera or '' }}</td><td>{{ c.telescope or '' }}</td><td>{{ c.temperature or '' }}</td>
+    <td>{{ c.gain or '' }}</td><td>{{ c.offset or '' }}</td><td>{{ c.exposure_s|num if c.exposure_s else '' }}</td>
+    <td>{{ c.filter or '' }}</td><td>{{ c.binning or '' }}</td>
+    <td>{{ c.files|length }}</td><td class="nowrap">{{ c.files|sum(attribute='size')|size }}</td>
+    <td>{{ c.projects|length or '' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}
+<p class="muted">No calibration sets{% if ftype or camera or cq %} match the filter{% endif %}. <a href="/calibration/new">Create one</a>.</p>
+{% endif %}
+{% endblock %}
