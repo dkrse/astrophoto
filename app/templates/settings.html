@@ -46,7 +46,22 @@
 
   <h3>Gallery</h3>
   <div class="cols">
+    <label>Images per page<input type="number" name="gallery_page_size" min="4" max="500" value="{{ S.gallery_page_size }}"></label>
+    <label>Tile size
+      <select name="gallery_tile">{% for v in ['small','medium','large'] %}<option value="{{ v }}" {% if S.gallery_tile == v %}selected{% endif %}>{{ v|capitalize }}</option>{% endfor %}</select></label>
+    <label>Default sort
+      <select name="gallery_sort">{% for k, l in GALLERY_SORTS.items() %}<option value="{{ k }}" {% if S.gallery_sort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
     <label>Slideshow interval (seconds)<input type="number" name="slideshow_seconds" min="2" max="120" value="{{ S.slideshow_seconds }}"></label>
+  </div>
+
+  <h3>Panels – expanded by default</h3>
+  <p class="muted small">How sections look when a page opens. You can still expand / collapse them on the page at any time.</p>
+  <div class="cols panels">
+    {% for k, label in [('open_summary','Overview: summary (projects, files, total …)'),('open_filters','Overview: filters'),
+                        ('open_sessions','Project: Sessions panel'),('open_session_files','Project: sessions in Files'),
+                        ('open_file_groups','File lists: type groups (Light, Dark …)'),('open_stats_table','Statistics: monthly table')] %}
+    <label class="check"><input type="checkbox" name="{{ k }}" {% if S[k] %}checked{% endif %}> {{ label }}</label>
+    {% endfor %}
   </div>
 
   <div class="row" style="margin-top:16px">

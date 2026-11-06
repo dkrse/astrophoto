@@ -46,11 +46,17 @@ from app import worker  # noqa: E402
 from app.core import DATA_DIR, IMPORT_DIR  # noqa: E402
 
 
+def csrf_of(c):
+    import re
+    return re.search(r'name="csrf-token" content="([^"]+)"', c.get("/").text).group(1)
+
+
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:
         r = c.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"] == "/"
+        c.headers["X-CSRF-Token"] = csrf_of(c)           # like the browser: token from the page
         yield c
 
 
@@ -99,9 +105,23 @@ def write_fits(path: Path, data=None, **header):
     return path
 
 
+def default_session(pid):
+    """Files always go into a session – use the project's first one (created if missing)."""
+    from app.models import SessionLocal, ImagingSession
+    with SessionLocal() as db:
+        s = db.query(ImagingSession).filter_by(project_id=pid).order_by(ImagingSession.id).first()
+        if not s:
+            s = ImagingSession(project_id=pid, date=__import__("datetime").date(2025, 10, 12))
+            db.add(s)
+            db.commit()
+        return s.id
+
+
 def upload(client, path: Path, frame_type="light", **target):
     """Chunked upload through the real API (2 chunks)."""
     data = path.read_bytes()
+    if target.get("project_id") and not target.get("session_id"):
+        target["session_id"] = default_session(target["project_id"])
     r = client.post("/api/uploads", json={**target, "filename": path.name, "size": len(data),
                                           "frame_type": frame_type, "skip_dups": True})
     assert r.status_code == 200, r.text
@@ -117,4 +137,4 @@ def tmpdir_path(tmp_path):
     return tmp_path
 
 
-__all__ = ["drain", "write_fits", "star_frame", "upload", "DATA_DIR", "IMPORT_DIR"]
+__all__ = ["csrf_of", "drain", "write_fits", "star_frame", "upload", "DATA_DIR", "IMPORT_DIR"]

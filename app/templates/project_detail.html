@@ -1,10 +1,12 @@
 {% extends "base.html" %}
-{% from "_files.html" import file_groups, bulk_bar, uploader, status_box %}
+{% from "_files.html" import file_groups, bulk_bar, uploader, status_box with context %}
 {% block title %}{{ p.name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
 <div class="head">
   <div class="titlewrap">{% if cover %}<img class="cover-mini" src="/files/{{ cover.id }}/thumb" alt="" title="Project cover{{ '' if p.cover_file_id else ' (automatic)' }}" onclick="document.getElementById('cover-dlg').showModal()">{% endif %}<div><h1>{{ p.name }}</h1>
-    <div class="muted">{{ p.target or '' }}{% if p.object_type %} · {{ p.object_type }}{% endif %}{% if p.capture_date %} · {{ p.capture_date|dmy }}{% endif %}
+    <div class="muted">{{ [p.target, p.object_type]|select|join(' · ') }}
+      {% if date_range %} · 🌙 {{ date_range[0]|dmy }}{% if date_range[1] != date_range[0] %} – {{ date_range[1]|dmy }}{% endif %}{% endif %}
+      · {{ sessions|length }} session{{ 's' if sessions|length != 1 }}
       {% if expo.total %} · <b>{{ expo.total|dur }}</b> integration{% endif %}</div>
     <div class="muted small">Created {{ p.created_at|dmy }} · modified {{ p.updated_at|dmy }}</div></div></div>
   <div class="row">
@@ -20,18 +22,20 @@
 
 {% set stacks = groups['stack'] %}
 {% if stacks %}
-<section class="stack-hero">
+<section class="pgallery">
   {% for f in stacks %}
-  <figure>
-    {% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img src="/files/{{ f.id }}/thumb" alt=""></a>{% endif %}
-    <figcaption><b>{{ f.original_name }}</b> · {{ f.size|size }} {% if f.description %}<br>{{ f.description }}{% endif %}
-      <br><a class="btn primary" href="/files/{{ f.id }}/download">⬇ Download stack</a></figcaption>
+  <figure class="gitem">
+    <a href="/files/{{ f.id }}/view">{% if f.thumb_path %}<img loading="lazy" src="/files/{{ f.id }}/thumb" alt="">{% else %}<span class="gph">⏳</span>{% endif %}</a>
+    <figcaption><b class="ell" title="{{ f.original_name }}">{{ f.original_name }}</b>
+      <span class="muted small">{{ f.size|size }}{% if f.session %} · 🌙 {{ f.session.date|dmy }}{% endif %}</span>
+      {% if f.description %}<span class="small ell">{{ f.description }}</span>{% endif %}
+      <a class="gacts btn small" href="/files/{{ f.id }}/download" title="Download">⬇</a></figcaption>
   </figure>
   {% endfor %}
 </section>
 {% endif %}
 
-{% set meta_rows = [('Location',p.location),('Telescope',p.telescope),('Camera',p.camera),('Mount',p.mount),('Filters',p.filters),('Exposure',p.total_exposure),('Software',p.software),('Tags',p.tags)]|selectattr(1)|list %}
+{% set meta_rows = [('Object type',p.object_type),('Tags',p.tags)]|selectattr(1)|list %}
 {% if meta_rows or p.description or p.notes %}
 <section class="card meta">
   {% if meta_rows %}<dl>{% for label, v in meta_rows %}<dt>{{ label }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>{% endif %}
@@ -40,25 +44,8 @@
 </section>
 {% endif %}
 
-<details class="card fold" id="integration">
-  <summary><h2>Integration time</h2>
-    <span class="muted small">{% if expo.rows %}{{ expo.total|dur }} · {{ expo.count }} lights{% if expo.rows|length > 1 %} · {{ expo.rows|length }} filters{% endif %}{% else %}no light frames yet{% endif %}</span></summary>
-  <div class="fold-body">
-  {% if expo.rows %}
-  <table class="kvt">
-    <thead><tr><th>Filter</th><th>Frames</th><th>Exposures</th><th class="num">Time</th></tr></thead>
-    <tbody>
-    {% for r in expo.rows %}<tr><td>{{ r.filter }}</td><td>{{ r.count }}</td><td class="muted small">{{ r.detail }}</td><td class="num">{{ r.seconds|dur }}</td></tr>{% endfor %}
-    </tbody>
-    <tfoot><tr><th>Total</th><th>{{ expo.count }}</th><th></th><th class="num">{{ expo.total|dur }}</th></tr></tfoot>
-  </table>
-  {% if expo.missing %}<p class="muted small">{{ expo.missing }} light frame(s) have no exposure value.</p>{% endif %}
-  {% if rejected %}<p class="muted small">{{ rejected }} rejected frame(s) not counted.</p>{% endif %}
-  {% else %}<p class="muted">No light frames yet.</p>{% endif %}
-  </div>
-</details>
 
-<details class="card fold" id="sessions">
+<details class="card fold" id="sessions" {% if S.open_sessions %}open{% endif %}>
   <summary><h2>Sessions <small class="muted">nights</small></h2>
     <span class="muted small">{% if sessions %}{{ sessions|length }} night{{ 's' if sessions|length != 1 }}{% if sessions[0].s.date %} · {{ sessions[0].s.date|dmy }}{% if sessions|length > 1 and sessions[-1].s.date %} – {{ sessions[-1].s.date|dmy }}{% endif %}{% endif %}{% else %}none yet{% endif %}</span></summary>
   <div class="fold-body">
@@ -68,65 +55,132 @@
   </div>
   {% if sessions %}
   <div class="tablewrap"><table class="kvt">
-    <thead><tr><th>Night</th><th>Location</th><th>Equipment</th><th>Seeing</th><th>SQM</th><th>Temp / RH</th><th title="Moon illumination">Moon</th><th>Files</th><th class="num">Integration</th><th></th></tr></thead>
+    <thead><tr><th>Night</th><th>Equipment</th><th title="Image scale · field of view (from equipment parameters)">Scale / FOV</th><th title="Moon illumination">Moon</th><th>Files</th><th></th></tr></thead>
     <tbody>
     {% for r in sessions %}{% set s = r.s %}
     <tr>
       <td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>
-      <td>{{ s.location or '' }}</td>
       <td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>
-      <td>{{ s.seeing or '' }}</td><td>{{ s.sqm or '' }}</td>
-      <td class="nowrap">{{ s.temperature or '' }}{% if s.humidity %} / {{ s.humidity }}{% endif %}</td>
+      <td class="small nowrap">{% if r.optic %}{{ '%.2f″/px'|format(r.optic.scale) }}{% if r.optic.fov %} <span class="muted">· {{ '%.0f′×%.0f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</span>{% endif %}{% endif %}</td>
       <td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>
       <td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>
-      <td class="num">{{ r.exposure|dur if r.exposure else '' }}</td>
-      <td class="nowrap">
-        <button type="button" class="btn small" onclick='openSession({{ {"sid": s.id, "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or ""}|tojson }})'>✎</button>
-        <form method="post" action="/sessions/{{ s.id }}/delete" class="inl" onsubmit="return confirm('Delete this session? Files stay in the project.')"><button class="btn small danger">🗑</button></form>
+      <td class="nowrap acts">
+        <button type="button" class="btn small ibtn" title="Session details" onclick="document.getElementById('sinfo-{{ s.id }}').showModal()">i</button>
+        <button type="button" class="btn small" title="Edit" onclick='openSession({{ {"sid": s.id, "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "software": s.software or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or ""}|tojson }})'>✎</button>
+        <form method="post" action="/sessions/{{ s.id }}/delete" class="inl" onsubmit="return confirm({{ ('Delete session ' ~ (s.date|dmy) ~ ' including all its ' ~ r.count ~ ' file(s)? This cannot be undone. Linked calibration library sets are only unlinked.')|tojson|forceescape }})"><button class="btn small danger" title="Delete">🗑</button></form>
       </td>
     </tr>
-    {% if s.notes %}<tr class="subrow"><td></td><td colspan="9" class="muted small pre">{{ s.notes }}</td></tr>{% endif %}
     {% endfor %}
     </tbody>
   </table></div>
-  {% else %}<p class="muted">No sessions yet. Add one per night, or let them be created from the frames’ observation dates.</p>{% endif %}
+  {% for r in sessions %}{% set s = r.s %}
+  <dialog id="sinfo-{{ s.id }}" class="cat-dialog wide">
+    <form method="dialog" class="cat-head"><h2>🌙 Session {{ s.date|dmy or '#' ~ s.id }}</h2><button class="btn small" aria-label="Close">✕</button></form>
+    <div class="dlg-body">
+      {% set spec = namespace(t='', c='', m='') %}
+      {% for it in cat.telescope if it.name == s.telescope %}{% set spec.t = spec_summary('telescope', it.spec) %}{% endfor %}
+      {% for it in cat.camera if it.name == s.camera %}{% set spec.c = spec_summary('camera', it.spec) %}{% endfor %}
+      {% for it in cat.mount if it.name == s.mount %}{% set spec.m = spec_summary('mount', it.spec) %}{% endfor %}
+      <div class="grid2">
+        <div>
+          <h3 class="mt0">Night &amp; place</h3>
+          <dl class="meta-dl">
+            <dt>Date</dt><dd>{{ s.date|dmy or '—' }}</dd>
+            {% if s.location %}<dt>Location</dt><dd>{{ s.location }}</dd>{% endif %}
+            {% if s.moon_illum is not none %}<dt>Moon</dt><dd>{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}% illuminated</dd>{% endif %}
+            {% if s.seeing %}<dt>Seeing</dt><dd>{{ s.seeing }}</dd>{% endif %}
+            {% if s.sqm %}<dt>SQM</dt><dd>{{ s.sqm }}</dd>{% endif %}
+            {% if s.temperature %}<dt>Temperature</dt><dd>{{ s.temperature }}</dd>{% endif %}
+            {% if s.humidity %}<dt>Humidity</dt><dd>{{ s.humidity }}</dd>{% endif %}
+          </dl>
+        </div>
+        <div>
+          <h3 class="mt0">Equipment</h3>
+          <dl class="meta-dl">
+            {% if s.telescope %}<dt>Telescope</dt><dd>{{ s.telescope }}{% if spec.t %}<div class="muted small">{{ spec.t }}</div>{% endif %}</dd>{% endif %}
+            {% if s.camera %}<dt>Camera</dt><dd>{{ s.camera }}{% if spec.c %}<div class="muted small">{{ spec.c }}</div>{% endif %}</dd>{% endif %}
+            {% if s.mount %}<dt>Mount</dt><dd>{{ s.mount }}{% if spec.m %}<div class="muted small">{{ spec.m }}</div>{% endif %}</dd>{% endif %}
+            {% if s.software %}<dt>Software</dt><dd>{{ s.software }}</dd>{% endif %}
+            {% if r.optic %}<dt>Image scale</dt><dd>{{ '%.2f″/px'|format(r.optic.scale) }}</dd>
+              {% if r.optic.fov %}<dt>Field of view</dt><dd>{{ '%.1f′ × %.1f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</dd>{% endif %}{% endif %}
+            {% if not (s.telescope or s.camera or s.mount or s.software) %}<dt></dt><dd class="muted">not set</dd>{% endif %}
+          </dl>
+        </div>
+      </div>
+      <h3>Files</h3>
+      <div class="chips big">{% for t in FRAME_TYPES %}{% set n = r.files|selectattr('frame_type', 'equalto', t)|list|length %}{% if n %}<span class="chip t-{{ t }}">{{ FRAME_LABELS[t] }} {{ n }}</span>{% endif %}{% endfor %}
+        <span class="chip">{{ r.count }} files · {{ r.files|sum(attribute='size')|size }}</span></div>
+      {% if r.expo.rows %}
+      <table class="kvt">
+        <thead><tr><th>Filter</th><th>Frames</th><th>Exposures</th><th class="num">Integration</th></tr></thead>
+        <tbody>{% for x in r.expo.rows %}<tr><td>{{ x.filter }}</td><td>{{ x.count }}</td><td class="muted small">{{ x.detail }}</td><td class="num">{{ x.seconds|dur }}</td></tr>{% endfor %}</tbody>
+        <tfoot><tr><th>Total</th><th>{{ r.expo.count }}</th><th></th><th class="num">{{ r.expo.total|dur }}</th></tr></tfoot>
+      </table>{% endif %}
+      {% if s.calib_sets %}<h3>Calibration library</h3>
+      <div class="chips big">{% for c in s.calib_sets %}<a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ c.files|length }})</a>{% endfor %}</div>{% endif %}
+      {% if s.notes %}<h3>Notes</h3><p class="pre">{{ s.notes }}</p>{% endif %}
+      <p class="muted small">Created {{ s.created_at|dmy }} · modified {{ s.updated_at|dmy }}</p>
+      <div class="row"><a class="btn" href="#{{ 's%d_'|format(s.id) }}" onclick="this.closest('dialog').close()">Go to files</a></div>
+    </div>
+  </dialog>
+  {% endfor %}
+  {% else %}<p class="muted">No sessions yet. Add one per night (date, location, equipment), or let them be created from the frames’ observation dates.</p>{% endif %}
   </div>
 </details>
 
-<details class="card fold" id="calibration">
-  <summary><h2>Calibration library</h2>
-    <span class="muted small">{% if p.calib_sets %}{{ p.calib_sets|length }} set{{ 's' if p.calib_sets|length != 1 }} linked · {% for t in p.calib_sets|map(attribute='frame_type')|unique %}{{ FRAME_LABELS[t] }}{{ ', ' if not loop.last }}{% endfor %}{% else %}nothing linked{% endif %}</span></summary>
-  <div class="fold-body">
-  <div class="row fold-actions"><button type="button" class="btn small primary" onclick="document.getElementById('calib-dlg').showModal()">🔗 Link sets…</button>
-    <a class="btn small" href="/calibration/new">+ New set</a></div>
-  {% if p.calib_sets %}
-  <div class="chips big">
-    {% for c in p.calib_sets %}<a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}">{{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} · {{ c.files|length }} files</a>{% endfor %}
-  </div>
-  <p class="muted small">Linked sets are included in “ZIP for stacking”.</p>
-  {% else %}<p class="muted">No shared calibration sets linked. Darks, bias and flats from the library can be reused by many projects.</p>{% endif %}
-  </div>
-</details>
 
-{{ uploader('project_id', p.id, sessions, settings.skip_duplicates, '/import?project=%d'|format(p.id)) }}
+{% if sessions %}{{ uploader('project_id', p.id, sessions, settings.skip_duplicates, '/import?project=%d'|format(p.id), fixed_session=True) }}{% endif %}
 
-<section class="card">
+<section class="card" id="files">
   <div class="head"><h2>Files</h2>
-    <a class="btn primary" href="/projects/{{ p.id }}/zip">⬇ ZIP for stacking</a></div>
+    <a class="btn primary" href="/projects/{{ p.id }}/zip?types={{ FRAME_TYPES|join(',') }}" title="Every file of every session (01_date, 02_date, …) incl. linked calibration library sets">⬇ ZIP all sessions</a></div>
   <form class="row zipsel" onsubmit="var t=[...this.querySelectorAll('[name=t]:checked')].map(e=>e.value).join(',');if(t)location='/projects/{{ p.id }}/zip?types='+t+(this.rej.checked?'&rejected=1':'');return false;">
-    {% for t in FRAME_TYPES %}{% if groups[t] or (t in CALIB_TYPES and p.calib_sets) %}<label class="inline"><input type="checkbox" name="t" value="{{ t }}" {% if t not in ('stack','other') %}checked{% endif %}> {{ FRAME_LABELS[t] }}</label>{% endif %}{% endfor %}
+    {% for t in FRAME_TYPES %}{% if groups[t] or t in CALIB_TYPES %}<label class="inline"><input type="checkbox" name="t" value="{{ t }}" {% if t not in ('stack','other') %}checked{% endif %}> {{ FRAME_LABELS[t] }}</label>{% endif %}{% endfor %}
     <label class="inline muted"><input type="checkbox" name="rej"> include rejected</label>
-    <button class="btn">⬇ ZIP selected</button>
+    <button class="btn" title="Only the checked types from all sessions – e.g. frames for stacking">⬇ ZIP selected types</button>
   </form>
   {% if suspects %}
   <div class="flash warnbox">⚠ {{ suspects }} light frame(s) look clearly worse than the rest (FWHM, star count or background).
     <form method="post" action="/projects/{{ p.id }}/rejectsuspects" class="inl"><button class="btn small">Reject all suspicious</button></form></div>
   {% endif %}
-  {{ file_groups(groups, sizes, FRAME_TYPES, '/projects/%d/zip?types='|format(p.id), med, True, show) }}
-  {% if not p.files %}<p class="muted">No files yet – add them above.</p>{% endif %}
+  {% for g in sess_groups %}{% set r = g.r %}
+  <details class="sessblock" id="{{ g.key }}" {% if S.open_session_files %}open{% endif %}>
+    <summary class="sesshead">
+      {% if r %}{% set s = r.s %}
+      <div><b>🌙 {{ s.date|dmy or 'Session #' ~ s.id }}</b>
+        <span class="muted small">{{ [s.location, s.telescope, s.camera, s.mount]|select|join(' · ') }}</span>
+        <div class="muted small">{{ r.count }} files{% if r.lights %} · {{ r.lights }} lights{% endif %}{% if r.exposure %} · {{ r.exposure|dur }}{% endif %}
+          {% for c in s.calib_sets %} <a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}" title="Linked calibration library set">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ c.files|length }})</a>{% endfor %}</div></div>
+      <div class="row">
+        <button type="button" class="btn small primary" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}" onclick="uploadTo(this.dataset.sid, this.dataset.label)" title="Upload lights / calibration frames of this night">⬆ Add files</button>
+        <a class="btn small" href="/import?project={{ p.id }}&session={{ s.id }}" title="Import a folder already on the server into this session">📁 Import</a>
+        <button type="button" class="btn small" onclick="openCalib({{ s.id }})" title="Link darks / flats / bias from the calibration library">🔗 Calibration library…</button>
+        {% if r.count or s.calib_sets %}<a class="btn small" href="/projects/{{ p.id }}/zip?session={{ s.id }}&types={{ FRAME_TYPES|join(',') }}" title="All files of this session">⬇ ZIP session</a>{% endif %}
+      </div>
+      {% else %}
+      <div><b>{{ 'Not assigned to a session' if sessions else 'Files' }}</b>
+        {% if sessions %}<div class="muted small">Select files and use “Session” in the action bar (or a file’s <b>i</b>), or ⚡ Auto from dates.</div>{% endif %}</div>
+      {% endif %}
+    </summary>
+    {% if r %}{% set s = r.s %}
+      {% if r.expo.rows %}
+      <table class="kvt sessexpo">
+        <thead><tr><th>Filter</th><th>Frames</th><th>Exposures</th><th class="num">Integration</th></tr></thead>
+        <tbody>{% for x in r.expo.rows %}<tr><td>{{ x.filter }}</td><td>{{ x.count }}</td><td class="muted small">{{ x.detail }}</td><td class="num">{{ x.seconds|dur }}</td></tr>{% endfor %}</tbody>
+        {% if r.expo.rows|length > 1 %}<tfoot><tr><th>Total</th><th>{{ r.expo.count }}</th><th></th><th class="num">{{ r.expo.total|dur }}</th></tr></tfoot>{% endif %}
+      </table>
+      {% if r.expo.missing %}<p class="muted small">{{ r.expo.missing }} light frame(s) without exposure value.</p>{% endif %}
+      {% endif %}
+      <div class="upslot" id="upslot-{{ s.id }}"></div>
+    {% endif %}
+    {{ file_groups(g.groups, g.sizes, FRAME_TYPES, ('/projects/%d/zip?session=%d&types='|format(p.id, r.s.id)) if r else None, med, True, show, 100, g.key) }}
+    {% if r and not r.count %}<p class="muted small">No files in this session yet – use ⬆ Add files.</p>{% endif %}
+  </details>
+  {% endfor %}
+  {% if not sessions %}<p class="muted">Add a session (night) first – files are always uploaded into a session.</p>{% endif %}
 </section>
 
-{{ bulk_bar(sessions, others, calib|map(attribute='c')|list) }}
+{{ bulk_bar(sessions, others, all_calib) }}
 
 <!-- session dialog -->
 <dialog id="session-dlg" class="cat-dialog">
@@ -135,7 +189,7 @@
     <input type="hidden" name="sid">
     <div class="cols">
       <label>Night (date)<input class="datepicker" name="date" placeholder="dd-mm-yyyy"></label>
-      {% for kind, label in [('location','Location'),('telescope','Telescope'),('camera','Camera'),('mount','Mount')] %}
+      {% for kind, label in [('location','Location'),('telescope','Telescope'),('camera','Camera'),('mount','Mount'),('software','Software')] %}
       <label><span class="lbl">{{ label }}<button type="button" class="mng" data-manage="{{ kind }}">⚙</button></span>
         <select name="{{ kind }}" data-kind="{{ kind }}"><option value="">—</option>
           {% for it in cat[kind] %}<option data-item="1">{{ it.name }}</option>{% endfor %}</select></label>
@@ -145,39 +199,29 @@
       <label>Temperature<input name="temperature" placeholder="e.g. -3 °C"></label>
       <label>Humidity<input name="humidity" placeholder="e.g. 80 %"></label>
     </div>
-    <label>Notes<textarea name="notes" rows="3"></textarea></label>
+    <label>Notes<textarea name="notes" rows="3" class="resizable"></textarea></label>
     <p class="muted small">Moon illumination is computed from the date. Frames taken that night are assigned automatically.</p>
     <div class="row"><button class="btn primary">Save</button></div>
   </form>
 </dialog>
 
-<!-- calibration link dialog -->
+<!-- calibration library link dialog (one for all sessions, filled when opened) -->
 <dialog id="calib-dlg" class="cat-dialog wide">
-  <form method="dialog" class="cat-head"><h2>Link calibration sets</h2><button class="btn small">✕</button></form>
-  <form method="post" action="/projects/{{ p.id }}/calibration" class="dlg-body">
-    {% if calib %}
-    <p class="muted small">Best matches first (same camera, closest date).</p>
+  <form method="dialog" class="cat-head"><h2 id="calib-title">Calibration</h2><button class="btn small">✕</button></form>
+  <form method="post" class="dlg-body" id="calib-form">
+    <p class="muted small" id="calib-hint"></p>
+    <input class="cat-search" id="calib-q" placeholder="Filter by name, camera, type…" autocomplete="off" style="margin:0 0 8px;width:100%">
     <div class="tablewrap"><table class="kvt">
       <thead><tr><th></th><th>Set</th><th>Type</th><th>Date</th><th>Camera</th><th>Temp</th><th>Gain</th><th>Exp.</th><th>Files</th></tr></thead>
-      <tbody>
-      {% for r in calib %}{% set c = r.c %}
-      <tr>
-        <td><input type="checkbox" name="set_id" value="{{ c.id }}" {% if r.linked %}checked{% endif %}></td>
-        <td><a href="/calibration/{{ c.id }}" target="_blank">{{ c.name }}</a>{% if r.camera_match %} <span class="chip t-bias">camera ✓</span>{% endif %}</td>
-        <td><span class="chip t-{{ c.frame_type }}">{{ FRAME_LABELS[c.frame_type] }}</span></td>
-        <td class="nowrap">{{ c.capture_date|dmy }}{% if r.days is not none %} <span class="muted small">({{ r.days }} d)</span>{% endif %}</td>
-        <td>{{ c.camera or '' }}</td><td>{{ c.temperature or '' }}</td><td>{{ c.gain or '' }}</td>
-        <td>{{ c.exposure_s|num if c.exposure_s else '' }}</td><td>{{ r.count }}</td>
-      </tr>
-      {% endfor %}
-      </tbody>
+      <tbody id="calib-rows"></tbody>
     </table></div>
     <div class="row"><button class="btn primary">Save links</button></div>
-    {% else %}
-    <p class="muted">The library is empty. <a href="/calibration/new">Create the first calibration set</a>.</p>
-    {% endif %}
   </form>
 </dialog>
+<script>var CALIB_LIB = {{ calib_lib|tojson }};
+var SESS_CALIB = {{ {}|tojson }};
+{% for r in sessions %}SESS_CALIB[{{ r.s.id }}] = {{ {"date": r.s.date.isoformat() if r.s.date else None, "label": r.s.date|dmy, "camera": r.s.camera or "", "linked": r.s.calib_sets|map(attribute='id')|list}|tojson }};
+{% endfor %}</script>
 
 <!-- cover dialog -->
 <dialog id="cover-dlg" class="cat-dialog cover-dialog">
@@ -209,10 +253,43 @@
 <script src="/static/files.js"></script>
 <script src="/static/uploader.js"></script>
 <script>
+function openCalib(sid){
+  var S=SESS_CALIB[sid], dlg=document.getElementById('calib-dlg'), f=document.getElementById('calib-form');
+  var esc=function(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
+  f.action='/sessions/'+sid+'/calibration';
+  document.getElementById('calib-title').textContent='Calibration for '+(S.label||'session');
+  document.getElementById('calib-hint').textContent=CALIB_LIB.length?'Best matches first (same camera'+(S.camera?' – '+S.camera:'')+', closest date). Linked sets are included in this session’s ZIP.':'The library is empty – create a set under Calibration first.';
+  var day=function(d){return d?Date.parse(d)/864e5:null;}, sd=day(S.date);
+  var rows=CALIB_LIB.map(function(c){var dd=(sd!=null&&c.date)?Math.round(Math.abs(day(c.date)-sd)):null;
+    return {c:c,days:dd,cam:!!(S.camera&&c.camera===S.camera),linked:S.linked.indexOf(c.id)>=0,
+            score:(S.camera&&c.camera===S.camera?-1e6:0)+(dd==null?500:dd)};}).sort(function(a,b){return a.score-b.score;});
+  document.getElementById('calib-rows').innerHTML=rows.map(function(x){var c=x.c;
+    return '<tr data-q="'+esc((c.name+' '+c.camera+' '+c.type_label).toLowerCase())+'"><td><input type="checkbox" name="set_id" value="'+c.id+'"'+(x.linked?' checked':'')+'></td>'+
+      '<td><a href="/calibration/'+c.id+'" target="_blank">'+esc(c.name)+'</a>'+(x.cam?' <span class="chip t-bias">camera ✓</span>':'')+'</td>'+
+      '<td><span class="chip t-'+esc(c.type)+'">'+esc(c.type_label)+'</span></td>'+
+      '<td class="nowrap">'+esc(c.date_dmy)+(x.days!=null?' <span class="muted small">('+x.days+' d)</span>':'')+'</td>'+
+      '<td>'+esc(c.camera)+'</td><td>'+esc(c.temperature)+'</td><td>'+esc(c.gain)+'</td><td>'+esc(c.exposure==null?'':c.exposure)+'</td><td>'+c.files+'</td></tr>';}).join('');
+  var q=document.getElementById('calib-q'); q.value='';
+  dlg.showModal();
+}
+document.getElementById('calib-q').addEventListener('input',function(){var v=this.value.toLowerCase();
+  document.querySelectorAll('#calib-rows tr').forEach(function(tr){tr.hidden=v&&tr.dataset.q.indexOf(v)<0;});});
+function uploadTo(sid, label){
+  var up=document.getElementById('upload'), slot=document.getElementById('upslot-'+sid);
+  var inp=up.querySelector('.up-session');
+  if(inp.disabled&&inp.value!==String(sid)){alert('An upload into another session is still running.');return;}
+  var queued=up.querySelectorAll('.uptable tbody tr:not(.st-done):not(.st-duplicate)').length;
+  if(queued&&inp.value&&inp.value!==String(sid)&&!confirm(queued+' file(s) waiting in the upload list were meant for another session. Upload them into '+label+' instead?'))return;
+  inp.value=sid; up.querySelector('.up-sesslabel').textContent=label;
+  var blk=slot.closest('details.sessblock'); if(blk)blk.open=true;
+  slot.appendChild(up); up.hidden=false; up.open=true; up.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 function openSession(d){
   var dlg=document.getElementById('session-dlg'), f=document.getElementById('session-form');
-  d=d||{sid:'',date:{{ (today|dmy)|tojson }},location:{{ (p.location or '')|tojson }},telescope:{{ (p.telescope or '')|tojson }},
-        camera:{{ (p.camera or '')|tojson }},mount:{{ (p.mount or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:''};
+  // new session: equipment pre-filled from the latest session
+  d=d||{sid:'',date:{{ (today|dmy)|tojson }},location:{{ ((last_s.location if last_s else '') or '')|tojson }},
+        telescope:{{ ((last_s.telescope if last_s else '') or '')|tojson }},camera:{{ ((last_s.camera if last_s else '') or '')|tojson }},
+        mount:{{ ((last_s.mount if last_s else '') or '')|tojson }},software:{{ ((last_s.software if last_s else '') or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:''};
   document.getElementById('session-title').textContent=d.sid?'Edit session':'New session';
   Object.keys(d).forEach(function(k){var el=f.elements[k];if(!el)return;
     if(el.tagName==='SELECT'&&d[k]&&![...el.options].some(function(o){return o.value===d[k];})){var o=new Option(d[k],d[k]);o.dataset.item='1';el.add(o);}
@@ -221,7 +298,9 @@ function openSession(d){
   dlg.showModal();
 }
 // open a folded panel when linked to (e.g. after saving a session)
-function openHash(){var el=location.hash&&document.getElementById(location.hash.slice(1));if(el&&el.tagName==='DETAILS'){el.open=true;}}
+function openHash(){var el=location.hash&&document.getElementById(location.hash.slice(1));
+  for(var d=el&&el.closest('details');d;d=d.parentElement&&d.parentElement.closest('details'))d.open=true;  // incl. parents
+  if(el)el.scrollIntoView({block:'start'});}
 openHash();window.addEventListener('hashchange',openHash);
 document.querySelectorAll('dialog').forEach(function(d){d.addEventListener('click',function(e){if(e.target===d)d.close();});});
 (function(){var d=document.getElementById('cover-dlg');

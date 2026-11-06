@@ -18,16 +18,9 @@
     <label>Name *<input name="name" value="{{ p.name if p else '' }}" required></label>
     <label>Object (e.g. M31)<input name="target" value="{{ p.target or '' if p else '' }}"></label>
     {{ pick('object_type', 'Object type') }}
-    <label>Capture date<input class="datepicker" name="capture_date" value="{{ p.capture_date|dmy if p else today|dmy }}" placeholder="dd-mm-yyyy"></label>
-    {{ pick('location', 'Location') }}
-    {{ pick('telescope', 'Telescope / lens') }}
-    {{ pick('camera', 'Camera') }}
-    {{ pick('mount', 'Mount') }}
-    {{ pick('software', 'Software') }}
-    <label>Filters<input name="filters" value="{{ p.filters or '' if p else '' }}"></label>
-    <label>Total exposure<input name="total_exposure" value="{{ p.total_exposure or '' if p else '' }}" placeholder="120×180s"></label>
     <label>Tags<input name="tags" value="{{ p.tags or '' if p else '' }}" placeholder="comma separated"></label>
   </div>
+  <p class="muted small">A project is one object. Dates, location and equipment are entered per session (night) on the project page.</p>
   <label>Description<textarea name="description" rows="4">{{ p.description or '' if p else '' }}</textarea></label>
   <label>Notes<textarea name="notes" rows="6">{{ p.notes or '' if p else '' }}</textarea></label>
   {% if p %}<p class="muted small">Created {{ p.created_at|dmy }} · last modified {{ p.updated_at|dmy }}</p>{% endif %}

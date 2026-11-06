@@ -30,8 +30,9 @@ def wake():
 
 def get_opts(ff: FrameFile) -> dict:
     try:
-        return clean_opts(json.loads(ff.view_opts or "{}"))
-    except ValueError:
+        o = json.loads(ff.view_opts or "{}")
+        return clean_opts(o if isinstance(o, dict) else None)
+    except (ValueError, TypeError):
         return clean_opts(None)
 
 
@@ -41,6 +42,10 @@ def sha256_file(path: Path) -> str:
         while chunk := fh.read(CHUNK):
             h.update(chunk)
     return h.hexdigest()
+
+
+# "check for duplicate + store hash" must be atomic across uploads (request threads) and imports (worker)
+DUP_LOCK = threading.Lock()
 
 
 def find_duplicate(db, sha: str, exclude_id=None):
@@ -57,14 +62,15 @@ def compute_preview(stored_path: str, opts: dict):
     if ext not in PREVIEW_EXT:
         return None
     thumb = DATA_DIR / thumb_rel(stored_path)
-    ok, header = make_preview(src, thumb, opts)
+    ok, header, error = make_preview(src, thumb, opts)
     meta = {}
     if header is not None:
         meta = header_meta(header)
     elif ext in RAW_EXT or ext in IMAGE_EXT:
         meta = exif_meta(src)
     return {"stored_path": stored_path, "thumb": str(thumb.relative_to(DATA_DIR)) if ok else None,
-            "header": header_text(header) if header is not None else None, "meta": meta}
+            "header": header_text(header) if header is not None else None, "meta": meta,
+            "error": f"Cannot read file: {error}" if error else None}
 
 
 def apply_preview(ff: FrameFile, res):
@@ -74,6 +80,7 @@ def apply_preview(ff: FrameFile, res):
     if ff.thumb_path and ff.thumb_path != res["thumb"]:
         (DATA_DIR / ff.thumb_path).unlink(missing_ok=True)
     ff.thumb_path = res["thumb"]
+    ff.error = res.get("error")                   # shown in the file list / info dialog (status stays "done")
     if res["header"] is not None:
         ff.header = res["header"]
     for k, v in res["meta"].items():
@@ -102,11 +109,14 @@ def reflag_project(db, project_id):
                                                    FrameFile.status.in_(["pending", "importing"])))
     if pending:
         return
-    lights = db.scalars(select(FrameFile).where(FrameFile.project_id == project_id,
-                                               FrameFile.frame_type == "light")).all()
-    groups = {}
-    for f in lights:
-        groups.setdefault(f.filter or "", []).append(f)
+    files = db.scalars(select(FrameFile).where(FrameFile.project_id == project_id)).all()
+    for f in files:
+        if f.frame_type != "light":
+            f.suspect = False
+    groups = {}                                   # compare within one night and filter (same optics/conditions)
+    for f in files:
+        if f.frame_type == "light":
+            groups.setdefault((f.session_id, f.filter or ""), []).append(f)
     for g in groups.values():
         flag_suspects(g)
 
@@ -163,14 +173,21 @@ def do_import(db, ff: FrameFile):
             job.failed += 1
         return
     sha = h.hexdigest()
-    if job and job.skip_dups and find_duplicate(db, sha, ff.id):
-        dest.unlink(missing_ok=True)
-        db.delete(ff)
-        job.skipped += 1
-        return
-    ff.sha256, ff.size, ff.status, ff.source_path = sha, dest.stat().st_size, "pending", None
-    if job:
-        job.done += 1
+    with DUP_LOCK:
+        if job and job.skip_dups and find_duplicate(db, sha, ff.id):
+            dest.unlink(missing_ok=True)
+            db.delete(ff)
+            job.skipped += 1
+            db.commit()
+            return
+        ff.sha256, ff.size, ff.status, ff.source_path = sha, dest.stat().st_size, "pending", None
+        if job:
+            job.done += 1
+        try:
+            db.commit()                           # visible to concurrent uploads before the lock is released
+        except Exception:                         # row/project deleted while copying -> drop the copy
+            db.rollback()
+            dest.unlink(missing_ok=True)
 
 
 def finish_jobs(db):
@@ -257,7 +274,7 @@ def step() -> bool:
         current.update(file=ff.original_name, since=time.time())
         try:
             if process_file(db, ff) is not False:
-                ff.status, ff.error = "done", None
+                ff.status = "done"                # error (unreadable preview) is set by apply_preview
         except Exception as e:
             fid = ff.id
             db.rollback()
@@ -288,9 +305,12 @@ def loop():
             time.sleep(5)
         current.update(file=None, since=None)
         if time.time() - last_cleanup > 3600:
-            cleanup_uploads()
-            cleanup_cache()
             last_cleanup = time.time()
+            for job in (cleanup_uploads, cleanup_cache):
+                try:
+                    job()
+                except Exception:                 # never let housekeeping kill the worker thread
+                    traceback.print_exc()
         if not busy:
             _wake.wait(5)
             _wake.clear()

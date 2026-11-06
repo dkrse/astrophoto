@@ -12,15 +12,15 @@ from sqlalchemy.orm import Session
 
 from .core import (clean_filename, download_name, app, page, flash, get_db, current_user, catalog, none_if_empty, parse_dmy, get_project,
                    get_calib, project_dir, DATA_DIR, load_settings, safe_name, fmt_dmy, fmt_dur,
-                   exposure_summary, moon_illumination, night_of)
+                   exposure_summary, moon_illumination, night_of, optics)
 from .models import (User, Project, FrameFile, ImagingSession, CalibrationSet, FRAME_TYPES, RAW_FRAME_TYPES,
                      FRAME_LABELS)
 from .routes_main import project_cover
 from . import worker
 
-PROJECT_FIELDS = ["name", "target", "object_type", "location", "telescope", "camera", "mount",
-                  "filters", "total_exposure", "software", "tags", "description", "notes"]
-SESSION_FIELDS = ["location", "telescope", "camera", "mount", "seeing", "sqm", "temperature", "humidity", "notes"]
+PROJECT_FIELDS = ["name", "target", "object_type", "tags", "description", "notes"]
+EQUIP_KINDS = ("location", "telescope", "camera", "mount", "software")
+SESSION_FIELDS = ["location", "telescope", "camera", "mount", "software", "seeing", "sqm", "temperature", "humidity", "notes"]
 
 
 async def apply_form(request: Request, p: Project):
@@ -28,7 +28,6 @@ async def apply_form(request: Request, p: Project):
     for f in PROJECT_FIELDS:
         v = none_if_empty(form.get(f))
         setattr(p, f, None if v == "__new__" else v)
-    p.capture_date = parse_dmy(form.get("capture_date"))
     if not p.name:
         p.name = p.target or "Untitled"
 
@@ -48,33 +47,35 @@ async def project_create(request: Request, user: User = Depends(current_user), d
     return RedirectResponse(f"/projects/{p.id}", status_code=303)
 
 
-def session_rows(p: Project):
+def session_rows(p: Project, cat=None):
+    spec_of = (lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}) \
+        if cat else (lambda kind, name: {})
     out = []
     for s in p.sessions:
         files = [f for f in p.files if f.session_id == s.id]
-        out.append({"s": s, "count": len(files), "lights": sum(1 for f in files if f.frame_type == "light"),
-                    "exposure": exposure_summary(files)["total"]})
+        out.append({"s": s, "files": files, "count": len(files),
+                    "lights": sum(1 for f in files if f.frame_type == "light"),
+                    "exposure": exposure_summary(files)["total"], "expo": exposure_summary(files),
+                    "optic": optics(spec_of("telescope", s.telescope), spec_of("camera", s.camera))})
     return out
 
 
-def calib_suggestions(db, p: Project):
-    """All calibration sets, best matches first (same camera, closest date)."""
-    sets = db.scalars(select(CalibrationSet)).all()
-    linked = {c.id for c in p.calib_sets}
-    ref = p.capture_date
+def session_label(s: ImagingSession) -> str:
+    """Unique, sortable folder name: <nr>_<date> (nr = position in the project, so equal dates never collide)."""
+    nr = next((i for i, x in enumerate(s.project.sessions, 1) if x.id == s.id), 0)
+    return f"{nr:02d}_{s.date.isoformat() if s.date else 'nodate'}"
 
-    def score(c):
-        s = 0
-        if p.camera and c.camera == p.camera:
-            s -= 1000
-        if ref and c.capture_date:
-            s += abs((c.capture_date - ref).days)
-        else:
-            s += 500
-        return s
-    return [{"c": c, "linked": c.id in linked, "camera_match": bool(p.camera and c.camera == p.camera),
-             "days": abs((c.capture_date - ref).days) if ref and c.capture_date else None,
-             "count": len(c.files)} for c in sorted(sets, key=score)]
+
+def calib_library(db) -> list:
+    """All calibration sets as plain dicts (one query + one count query); sorting per session happens in the
+    browser when the dialog opens, so page size and DB work do not grow with sessions × sets."""
+    counts = dict(db.execute(select(FrameFile.calib_set_id, func.count()).where(FrameFile.calib_set_id.is_not(None))
+                             .group_by(FrameFile.calib_set_id)).all())
+    return [{"id": c.id, "name": c.name, "type": c.frame_type, "type_label": FRAME_LABELS[c.frame_type],
+             "date": c.capture_date.isoformat() if c.capture_date else None, "date_dmy": fmt_dmy(c.capture_date),
+             "camera": c.camera or "", "temperature": c.temperature or "", "gain": c.gain or "",
+             "exposure": c.exposure_s, "files": counts.get(c.id, 0)}
+            for c in db.scalars(select(CalibrationSet).order_by(CalibrationSet.capture_date.desc().nulls_last()))]
 
 
 @app.get("/projects/{pid}")
@@ -90,10 +91,24 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
         med[k] = vals[len(vals) // 2] if vals else None
     others = db.execute(select(Project.id, Project.name).where(Project.id != p.id)
                         .order_by(func.lower(Project.name))).all()
+    cat = catalog(db)
+    rows = session_rows(p, cat)
+    unassigned = [f for f in p.files if not f.session_id]
+    sess_groups = [{"key": f"s{r['s'].id}_", "r": r, "groups": {t: [f for f in r["files"] if f.frame_type == t]
+                                                               for t in FRAME_TYPES}} for r in rows]
+    if unassigned or not rows:
+        sess_groups.append({"key": "u_", "r": None,
+                            "groups": {t: [f for f in unassigned if f.frame_type == t] for t in FRAME_TYPES}})
+    for g in sess_groups:
+        g["sizes"] = {t: sum(f.size for f in fs) for t, fs in g["groups"].items()}
+    dates = [s.date for s in p.sessions if s.date]
+    last_s = p.sessions[-1] if p.sessions else None
     return page(request, "project_detail.html", user=user, p=p, groups=groups, sizes=sizes,
+                sess_groups=sess_groups, unassigned=len(unassigned), last_s=last_s,
+                date_range=(min(dates), max(dates)) if dates else None,
                 cover=project_cover(p), thumbs=[f for f in p.files if f.thumb_path],
-                expo=exposure_summary(p.files), sessions=session_rows(p), cat=catalog(db),
-                calib=calib_suggestions(db, p), status=worker.queue_status(db, project_id=p.id),
+                expo=exposure_summary(p.files), sessions=rows, cat=cat,
+                calib_lib=calib_library(db), all_calib=db.scalars(select(CalibrationSet)).all(), status=worker.queue_status(db, project_id=p.id),
                 suspects=sum(1 for f in lights if f.suspect and not f.rejected),
                 rejected=sum(1 for f in lights if f.rejected), med=med, others=others,
                 settings=load_settings(db), show=show)
@@ -126,7 +141,10 @@ async def project_update(request: Request, pid: int, user: User = Depends(curren
 
 @app.post("/projects/{pid}/delete")
 def project_delete(request: Request, pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    p = get_project(db, pid)
+    p = db.get(Project, pid)
+    if not p:                                    # already deleted (double submit / resubmitted form)
+        flash(request, "Project was already deleted")
+        return RedirectResponse("/", status_code=303)
     if any(f.status == "importing" for f in p.files):
         flash(request, "An import into this project is still running – wait until it finishes", "err")
         return RedirectResponse(f"/projects/{pid}", status_code=303)
@@ -182,7 +200,11 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     if not s:
         s = ImagingSession(project_id=p.id)
         db.add(s)
-    s.date = parse_dmy(form.get("date"))
+    d = parse_dmy(form.get("date"))
+    if not d:
+        flash(request, "Please enter a valid night date (dd-mm-yyyy)", "err")
+        return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
+    s.date = d
     for f in SESSION_FIELDS:
         v = none_if_empty(form.get(f))
         setattr(s, f, None if v == "__new__" else v)
@@ -193,8 +215,6 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
         for f in p.files:
             if not f.session_id and f.date_obs and night_of(f.date_obs) == s.date:
                 f.session_id = s.id
-    if s.date and (not p.capture_date or s.date < p.capture_date):
-        p.capture_date = s.date
     db.commit()
     flash(request, "Session saved")
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
@@ -202,15 +222,23 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
 
 @app.post("/sessions/{sid}/delete")
 def session_delete(request: Request, sid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Deletes the session together with all its files (DB rows, stored files, thumbnails, cache).
+    Linked calibration library sets are only unlinked – library files are never deleted here."""
+    from .routes_files import delete_files
     s = db.get(ImagingSession, sid)
-    if not s:
-        raise HTTPException(404)
+    if not s:                                    # already deleted (double submit)
+        flash(request, "Session was already deleted")
+        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
     pid = s.project_id
-    for f in s.files:
-        f.session_id = None
+    files = list(s.files)
+    if any(f.status == "importing" for f in files):
+        flash(request, "An import into this session is still running – wait until it finishes", "err")
+        return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
+    delete_files(db, files)
+    s.calib_sets = []
     db.delete(s)
     db.commit()
-    flash(request, "Session deleted (files kept)")
+    flash(request, f"Session deleted including {len(files)} file{'s' if len(files) != 1 else ''}")
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
 
 
@@ -219,6 +247,7 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
     """Create one session per night found in DATE-OBS / EXIF dates and assign files."""
     p = get_project(db, pid)
     existing = {s.date: s for s in p.sessions if s.date}
+    tmpl = p.sessions[-1] if p.sessions else None        # new nights inherit equipment of the latest session
     nights = defaultdict(list)
     for f in p.files:
         if f.date_obs and not f.session_id:
@@ -227,8 +256,8 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
     for night, files in sorted(nights.items()):
         s = existing.get(night)
         if not s:
-            s = ImagingSession(project_id=p.id, date=night, location=p.location, telescope=p.telescope,
-                               camera=p.camera, mount=p.mount, moon_illum=moon_illumination(night))
+            s = ImagingSession(project_id=p.id, date=night, moon_illum=moon_illumination(night),
+                               **{k: getattr(tmpl, k) if tmpl else None for k in EQUIP_KINDS})
             db.add(s)
             db.flush()
             existing[night] = s
@@ -236,8 +265,6 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
         for f in files:
             f.session_id = s.id
             assigned += 1
-    if existing and not p.capture_date:
-        p.capture_date = min(existing)
     db.commit()
     if not nights:
         flash(request, "No unassigned files with an observation date (DATE-OBS / EXIF) found", "err")
@@ -246,17 +273,19 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
 
 
-# ---------- calibration links ----------
-@app.post("/projects/{pid}/calibration")
-async def calib_link(request: Request, pid: int, user: User = Depends(current_user),
+# ---------- calibration library links (per session) ----------
+@app.post("/sessions/{sid}/calibration")
+async def calib_link(request: Request, sid: int, user: User = Depends(current_user),
                      db: Session = Depends(get_db)):
-    p = get_project(db, pid)
+    s = db.get(ImagingSession, sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
     form = await request.form()
     wanted = {int(x) for x in form.getlist("set_id") if str(x).isdigit()}
-    p.calib_sets = [c for c in db.scalars(select(CalibrationSet)) if c.id in wanted]
+    s.calib_sets = [c for c in db.scalars(select(CalibrationSet)) if c.id in wanted]
     db.commit()
-    flash(request, f"Linked calibration sets: {len(wanted)}")
-    return RedirectResponse(f"/projects/{pid}#calibration", status_code=303)
+    flash(request, f"Linked calibration sets: {len(s.calib_sets)}")
+    return RedirectResponse(f"/projects/{s.project_id}#files", status_code=303)
 
 
 # ---------- streaming ZIP ----------
@@ -282,8 +311,11 @@ def zip_response(name: str, entries: list, info_text: str | None, comp: str, ext
     if info_text:
         zs.add(info_text.encode(), "INFO.txt")
     for arc, data in extra or []:
-        if arc in used:
-            continue
+        base, n = arc, 1
+        while arc in used:
+            stem, dot, ext = base.rpartition(".")
+            arc = f"{stem}_{n}.{ext}" if dot else f"{base}_{n}"
+            n += 1
         used.add(arc)
         zs.add(data, arc)
     name = download_name(name)
@@ -294,18 +326,28 @@ def zip_response(name: str, entries: list, info_text: str | None, comp: str, ext
     return StreamingResponse(zs, media_type="application/zip", headers=headers)
 
 
-def project_info_text(p: Project) -> str:
-    ex = exposure_summary(p.files)
-    lines = [f"Project: {p.name}", f"Object: {p.target or ''}", f"Date: {fmt_dmy(p.capture_date)}",
-             f"Telescope: {p.telescope or ''}", f"Camera: {p.camera or ''}", f"Mount: {p.mount or ''}",
-             f"Filters: {p.filters or ''}", f"Integration: {fmt_dur(ex['total'])} ({ex['count']} lights)"]
+def scope(p: Project, only=None):
+    """(sessions, files) of the whole project, or of one session when `only` is given."""
+    if only is None:
+        return list(p.sessions), list(p.files)
+    return [only], [f for f in p.files if f.session_id == only.id]
+
+
+def project_info_text(p: Project, only=None) -> str:
+    sessions, files = scope(p, only)
+    ex = exposure_summary(files)
+    lines = [f"Project: {p.name}", f"Object: {p.target or ''}", f"Object type: {p.object_type or ''}"]
+    if only is not None:
+        lines.append(f"Contents: session {fmt_dmy(only.date)} only [{session_label(only)}/]")
+    lines.append(f"Integration: {fmt_dur(ex['total'])} ({ex['count']} lights)")
     for r in ex["rows"]:
         lines.append(f"  {r['filter']}: {r['count']} frames, {fmt_dur(r['seconds'])} ({r['detail']})")
-    for s in p.sessions:
-        lines.append(f"Session {fmt_dmy(s.date)}: {s.location or ''} seeing {s.seeing or '-'} "
+    for s in sessions:
+        lines.append(f"Session {fmt_dmy(s.date)} [{session_label(s)}/]: {s.location or ''} | "
+                     f"{' · '.join(x for x in (s.telescope, s.camera, s.mount) if x)} | seeing {s.seeing or '-'} "
                      f"SQM {s.sqm or '-'} moon {int(s.moon_illum or 0)}%")
-    for c in p.calib_sets:
-        lines.append(f"Calibration: {FRAME_LABELS[c.frame_type]} – {c.name} ({fmt_dmy(c.capture_date)})")
+        for c in s.calib_sets:
+            lines.append(f"  Calibration: {FRAME_LABELS[c.frame_type]} – {c.name} ({fmt_dmy(c.capture_date)})")
     lines += ["", p.description or "", "", p.notes or ""]
     return "\n".join(lines)
 
@@ -374,30 +416,34 @@ def file_record(f: FrameFile) -> dict:
     return d
 
 
-def project_metadata(p: Project) -> dict:
+def project_metadata(p: Project, only=None) -> dict:
     from datetime import datetime as _dt
-    ex = exposure_summary(p.files)
-    proj = {k: _iso(getattr(p, k)) for k in ["id", *PROJECT_FIELDS, "capture_date", "cover_file_id",
+    sessions, files = scope(p, only)
+    ex = exposure_summary(files)
+    sets = {c.id: c for s in sessions for c in s.calib_sets}
+    proj = {k: _iso(getattr(p, k)) for k in ["id", *PROJECT_FIELDS, "cover_file_id",
                                               "created_at", "updated_at"]}
     return {
         "format": "astrophoto-metadata", "version": 1, "exported_at": _dt.now().isoformat(timespec="seconds"),
         "project": proj,
+        "scope": "project" if only is None else {"session_id": only.id, "folder": session_label(only)},
         "integration": {"total_seconds": ex["total"], "light_frames": ex["count"],
                         "by_filter": [{"filter": r["filter"], "frames": r["count"], "seconds": r["seconds"],
                                        "exposures": r["detail"]} for r in ex["rows"]]},
-        "sessions": [{k: _iso(getattr(s, k)) for k in ["id", "date", *SESSION_FIELDS, "moon_illum",
-                                                       "created_at", "updated_at"]} for s in p.sessions],
+        "sessions": [{**{k: _iso(getattr(s, k)) for k in ["id", "date", *SESSION_FIELDS, "moon_illum",
+                                                          "created_at", "updated_at"]},
+                      "calibration_set_ids": [c.id for c in s.calib_sets]} for s in sessions],
         "calibration_sets": [{**{k: _iso(getattr(c, k)) for k in ["id", "name", "frame_type", "capture_date", "camera",
                                                                    "telescope", "temperature", "gain", "offset",
                                                                    "exposure_s", "filter", "binning", "notes",
                                                                    "created_at", "updated_at"]},
-                              "files": [file_record(f) for f in c.files]} for c in p.calib_sets],
-        "files": [file_record(f) for f in p.files],
+                              "files": [file_record(f) for f in c.files]} for c in sets.values()],
+        "files": [file_record(f) for f in files],
     }
 
 
-def metadata_json_bytes(p: Project) -> bytes:
-    return json.dumps(project_metadata(p), ensure_ascii=False, indent=2, default=str).encode()
+def metadata_json_bytes(p: Project, only=None) -> bytes:
+    return json.dumps(project_metadata(p, only), ensure_ascii=False, indent=2, default=str).encode()
 
 
 @app.get("/projects/{pid}/export")
@@ -405,30 +451,56 @@ def project_export(pid: int, user: User = Depends(current_user), db: Session = D
     """ZIP with metadata.json (everything incl. FITS headers / EXIF) + raw header text files."""
     p = get_project(db, pid)
     extra = [("metadata.json", metadata_json_bytes(p))]
-    for f in list(p.files) + [f for c in p.calib_sets for f in c.files]:
+    for f in p.files:                        # one folder per session, like the ZIP (names repeat between nights)
         if f.header:
-            extra.append((f"headers/{f.frame_type}/{clean_filename(f.original_name)}.txt", f.header.encode()))
+            pre = session_label(f.session) if f.session else "unassigned"
+            extra.append((f"headers/{pre}/{f.frame_type}/{clean_filename(f.original_name)}.txt", f.header.encode()))
+    for c in linked_sets(p):
+        for f in c.files:
+            if f.header:
+                extra.append((f"headers/library-{c.id}/{f.frame_type}/{clean_filename(f.original_name)}.txt",
+                              f.header.encode()))
     return zip_response(f"{p.name}_metadata.zip", [], project_info_text(p), "best", extra)
 
 
+def linked_sets(p: Project) -> list:
+    seen = {}
+    for s in p.sessions:
+        for c in s.calib_sets:
+            seen.setdefault(c.id, c)
+    return list(seen.values())
+
+
 @app.get("/projects/{pid}/zip")
-def project_zip(pid: int, types: str = "light,dark,bias,flat,darkflat", rejected: int = 0,
+def project_zip(pid: int, types: str = "light,dark,bias,flat,darkflat", rejected: int = 0, session: str = "",
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """ZIP selected frame types incl. linked calibration library sets; rejected lights excluded."""
+    """ZIP selected frame types, one folder per session (<date>/<type>/…) incl. the session's linked
+    calibration library sets – the layout multi-session stacking (WBPP, Siril) expects. Rejected lights excluded."""
     p = get_project(db, pid)
     wanted = [t for t in types.split(",") if t in FRAME_TYPES]
-    files = [f for f in p.files if f.frame_type in wanted and (rejected or not f.rejected)
-             and f.status != "importing"]
-    entries = [(DATA_DIR / f.stored_path, f"{f.frame_type}/{f.original_name}") for f in files]
-    for c in p.calib_sets:
-        for f in c.files:
-            if f.frame_type in wanted and f.status != "importing":
-                entries.append((DATA_DIR / f.stored_path, f"{f.frame_type}/{f.original_name}"))
+    sel = [s for s in p.sessions if str(s.id) == session] if session else list(p.sessions)
+    if session and not sel:
+        raise HTTPException(404, "Session not found")
+    ok = lambda f: f.frame_type in wanted and f.status != "importing"
+    entries = []
+    for s in sel:
+        pre = session_label(s) + "/"
+        entries += [(DATA_DIR / f.stored_path, f"{pre}{f.frame_type}/{f.original_name}")
+                    for f in s.files if ok(f) and (rejected or not f.rejected)]
+        entries += [(DATA_DIR / f.stored_path, f"{pre}{f.frame_type}/{f.original_name}")
+                    for c in s.calib_sets for f in c.files if ok(f)]
+    if not session:
+        pre = "unassigned/" if p.sessions else ""
+        entries += [(DATA_DIR / f.stored_path, f"{pre}{f.frame_type}/{f.original_name}")
+                    for f in p.files if not f.session_id and ok(f) and (rejected or not f.rejected)]
     if not entries:
         raise HTTPException(404, "No files to download")
     suffix = "-".join(wanted) if set(wanted) != set(RAW_FRAME_TYPES) else "frames"
-    return zip_response(f"{p.name}_{suffix}.zip", entries, project_info_text(p),
-                        load_settings(db)["zip_compression"], [("metadata.json", metadata_json_bytes(p))])
+    if session:
+        suffix = f"{session_label(sel[0])}_{suffix}"
+    only = sel[0] if session else None
+    return zip_response(f"{p.name}_{suffix}.zip", entries, project_info_text(p, only),
+                        load_settings(db)["zip_compression"], [("metadata.json", metadata_json_bytes(p, only))])
 
 
 @app.get("/calibration/{cid}/zip")

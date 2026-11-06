@@ -11,52 +11,50 @@
 </div>
 {% endmacro %}
 
-{% macro file_groups(groups, sizes, types, zip_base, med=None, light_stats=False, show='', limit=100) %}
+{% macro file_groups(groups, sizes, types, zip_base, med=None, light_stats=False, show='', limit=100, prefix='') %}
 {% for t in types %}{% if groups[t] %}
-<details class="group" id="{{ t }}" open>
+{% set gk = prefix ~ t %}
+<details class="group" id="{{ gk }}" {% if S.open_file_groups %}open{% endif %}>
   <summary>
-    <input type="checkbox" class="selgroup" data-group="{{ t }}" title="Select all {{ FRAME_LABELS[t] }}" onclick="event.stopPropagation()">
+    <input type="checkbox" class="selgroup" data-group="{{ gk }}" title="Select all {{ FRAME_LABELS[t] }}" onclick="event.stopPropagation()">
     <span class="chip t-{{t}}">{{ FRAME_LABELS[t] }}</span> {{ groups[t]|length }} files · {{ sizes[t]|size }}
     {% if zip_base %}<a class="btn small" href="{{ zip_base }}{{ t }}" onclick="event.stopPropagation()">⬇ ZIP</a>{% endif %}
   </summary>
   <div class="tablewrap">
   <table class="ftable">
-    <thead><tr><th></th><th></th><th>File</th><th>Size</th><th title="Date added (hover: last modified)">Added</th>
-      {% if light_stats and t == 'light' %}<th title="Median FWHM (px)">FWHM</th><th>Stars</th><th title="Background (median)">Bg</th>{% endif %}
-      <th>Exp. (s)</th><th>Gain</th><th>Temp.</th><th>Filter</th><th>Description</th><th></th></tr></thead>
+    <thead><tr><th></th><th></th><th>File</th><th class="num">Size</th><th title="Date added">Added</th><th title="Capture time (FITS DATE-OBS / EXIF)">Captured</th><th></th></tr></thead>
     <tbody>
-    {% for f in groups[t] %}{% if loop.index <= limit or show == t or show == 'all' %}
+    {% for f in groups[t] %}{% if loop.index <= limit or show == gk or show == 'all' %}
+    {% set info = {"id": f.id, "name": f.original_name, "type": FRAME_LABELS[f.frame_type], "size": f.size|size,
+        "added": f.uploaded_at|dmy, "modified": f.updated_at|dmy, "captured": f.date_obs|dmy,
+        "session": (f.session.date|dmy) if f.session else "", "status": f.status, "error": f.error or "",
+        "exposure_s": f.exposure_s|num(3) if f.exposure_s is not none else "", "gain": f.gain or "",
+        "temperature": f.temperature or "", "filter": f.filter or "", "description": f.description or "",
+        "fwhm": f.stat_fwhm|num(2) if f.stat_fwhm else "", "stars": f.stat_stars if f.stat_stars is not none else "",
+        "bg": f.stat_bg|num(0) if f.stat_bg is not none else "", "noise": f.stat_noise|num(2) if f.stat_noise is not none else "",
+        "med_fwhm": (med.stat_fwhm|num(2)) if med and med.stat_fwhm and f.frame_type == 'light' else "",
+        "med_stars": (med.stat_stars) if med and med.stat_stars and f.frame_type == 'light' else "",
+        "suspect": f.suspect, "rejected": f.rejected, "sha256": f.sha256 or "", "header": f.header is not none and f.header != "",
+        "thumb": f.thumb_path is not none, "stored": f.stored_path, "ftype": f.frame_type,
+        "sid": f.session_id or ""} %}
     <tr class="{{ 'rejected' if f.rejected }} {{ 'suspect' if f.suspect and not f.rejected }}" data-id="{{ f.id }}">
-      <td><input type="checkbox" class="selfile" data-group="{{ t }}" value="{{ f.id }}"></td>
+      <td><input type="checkbox" class="selfile" data-group="{{ gk }}" value="{{ f.id }}"></td>
       <td>{% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img class="mini" loading="lazy" src="/files/{{ f.id }}/thumb" alt=""></a>
           {% elif f.status in ('pending', 'importing') %}<span class="mini ph" title="Processing…">⏳</span>{% endif %}</td>
       <td class="fname">
         <a href="/files/{{ f.id }}/view">{{ f.original_name }}</a>
-        <a href="/files/{{ f.id }}/download" title="Download">⬇</a>
-        {% if f.header %}<a class="chip" href="/files/{{ f.id }}/header" target="_blank" title="FITS header">HDR</a>{% endif %}
         {% if f.status == 'importing' %}<span class="chip">importing</span>{% elif f.status == 'pending' %}<span class="chip">processing</span>
-        {% elif f.status == 'error' %}<span class="chip t-stack" title="{{ f.error }}">error</span>{% endif %}
-        {% if f.session %}<span class="chip" title="Session">🌙 {{ f.session.date|dmy }}</span>{% endif %}
+        {% elif f.status == 'error' %}<span class="chip t-stack" title="{{ f.error }}">error</span>
+        {% elif f.error %}<span class="chip warn" title="{{ f.error }}">⚠ unreadable</span>{% endif %}
+        {% if f.session and not prefix %}<span class="chip" title="Session">🌙 {{ f.session.date|dmy }}</span>{% endif %}
         {% if f.rejected %}<span class="chip rej">rejected</span>{% elif f.suspect %}<span class="chip warn" title="Clearly worse than the median of this filter">⚠ suspect</span>{% endif %}
       </td>
-      <td class="nowrap">{{ f.size|size }}</td>
-      <td class="nowrap small muted" title="Added {{ f.uploaded_at|dmy }}{% if f.updated_at %} · modified {{ f.updated_at|dmy }}{% endif %}">{{ f.uploaded_at.strftime('%d-%m-%Y') if f.uploaded_at else '' }}{% if f.updated_at %} ✎{% endif %}</td>
-      {% if light_stats and t == 'light' %}
-        <td class="num {{ 'bad' if med and med.stat_fwhm and f.stat_fwhm and f.stat_fwhm > med.stat_fwhm * 1.3 }}">{{ f.stat_fwhm|num(2) if f.stat_fwhm else '–' }}</td>
-        <td class="num {{ 'bad' if med and med.stat_stars and f.stat_stars is not none and f.stat_stars < med.stat_stars * 0.5 }}">{{ f.stat_stars if f.stat_stars is not none else '–' }}</td>
-        <td class="num">{{ f.stat_bg|num(0) if f.stat_bg is not none else '–' }}</td>
-      {% endif %}
-      <td colspan="5">
-        <form method="post" action="/files/{{ f.id }}/edit" class="inline-edit">
-          <input name="exposure_s" value="{{ f.exposure_s|num(3) if f.exposure_s is not none else '' }}" size="4" aria-label="Exposure">
-          <input name="gain" value="{{ f.gain or '' }}" size="4" aria-label="Gain">
-          <input name="temperature" value="{{ f.temperature or '' }}" size="4" aria-label="Temperature">
-          <input name="filter" value="{{ f.filter or '' }}" size="4" aria-label="Filter">
-          <input name="description" value="{{ f.description or '' }}" class="grow" aria-label="Description">
-          <button class="btn small" title="Save">✓</button>
-        </form>
-      </td>
-      <td class="nowrap">
+      <td class="num nowrap">{{ f.size|size }}</td>
+      <td class="nowrap small muted">{{ f.uploaded_at.strftime('%d-%m-%Y') if f.uploaded_at else '' }}</td>
+      <td class="nowrap small">{{ f.date_obs|dmy if f.date_obs else '' }}</td>
+      <td class="nowrap acts">
+        <button type="button" class="btn small ibtn" title="File details" data-info='{{ info|tojson }}' onclick="fileInfo(this)">i</button>
+        <a class="btn small" href="/files/{{ f.id }}/download" title="Download">⬇</a>
         {% if t == 'light' %}<form method="post" action="/files/{{ f.id }}/reject" class="inl"><button class="btn small" title="{{ 'Restore frame' if f.rejected else 'Reject frame (excluded from ZIP and integration time)' }}">{{ '↺' if f.rejected else '✗' }}</button></form>{% endif %}
         <form method="post" action="/files/{{ f.id }}/delete" class="inl" onsubmit="return confirm('Delete file?')"><button class="btn small danger" title="Delete">🗑</button></form>
       </td>
@@ -65,8 +63,8 @@
     </tbody>
   </table>
   </div>
-  {% if groups[t]|length > limit and show != t and show != 'all' %}
-  <p class="showall"><a class="btn small" href="?show={{ t }}#{{ t }}">Show all {{ groups[t]|length }} {{ FRAME_LABELS[t] }} files</a>
+  {% if groups[t]|length > limit and show != gk and show != 'all' %}
+  <p class="showall"><a class="btn small" href="?show={{ gk }}#{{ gk }}">Show all {{ groups[t]|length }} {{ FRAME_LABELS[t] }} files</a>
     <span class="muted small">(first {{ limit }} shown – “select all” selects only visible rows)</span></p>
   {% endif %}
 </details>
@@ -96,6 +94,81 @@
   <button type="button" class="btn small" data-bulk="reprocess" title="Regenerate preview, metadata and statistics">↻ Reprocess</button>
   <button type="button" class="btn small danger" data-bulk="delete">🗑 Delete</button>
 </div>
+<dialog id="info-dlg" class="cat-dialog wide">
+  <form method="dialog" class="cat-head"><h2 id="fi-title">File</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <div class="dlg-body">
+    <div class="fi-grid">
+      <a id="fi-thumb-a" class="fi-thumb"><img id="fi-thumb" alt=""></a>
+      <dl class="meta-dl" id="fi-dl"></dl>
+    </div>
+    <h3>Organize</h3>
+    <div class="cols fi-org">
+      <label>Type<select data-fi="type">{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
+      {% if sessions is not none %}
+      <label>Session (night)<select data-fi="session"><option value="">(none)</option>
+        {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
+      {% endif %}
+      <label>Move to<select data-fi="move"><option value="">—</option>
+        {% if others %}<optgroup label="Projects">{% for o in others %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</optgroup>{% endif %}
+        {% if calib_sets %}<optgroup label="Calibration library">{% for c in calib_sets %}<option value="calib:{{ c.id }}">{{ c.name }}</option>{% endfor %}</optgroup>{% endif %}
+      </select></label>
+    </div>
+    <h3>Edit</h3>
+    <form method="post" id="fi-form">
+      <div class="cols">
+        <label>Exposure (s)<input name="exposure_s" inputmode="decimal"></label>
+        <label>Gain / ISO<input name="gain"></label>
+        <label>Temperature<input name="temperature"></label>
+        <label>Filter<input name="filter"></label>
+      </div>
+      <label>Description<textarea name="description" rows="3" class="resizable"></textarea></label>
+      <div class="row"><button class="btn primary">Save</button>
+        <a class="btn" id="fi-view">🔍 Open viewer</a><a class="btn" id="fi-dl-btn">⬇ Download</a>
+        <a class="btn" id="fi-hdr" target="_blank">FITS header</a></div>
+    </form>
+  </div>
+</dialog>
+<script>
+function fileInfo(btn){
+  var d=JSON.parse(btn.dataset.info), dlg=document.getElementById('info-dlg');
+  var esc=function(v){return String(v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
+  document.getElementById('fi-title').textContent=d.name;
+  var rows=[['Type',d.type],['Session',d.session],['Size',d.size],['Captured',d.captured],['Added',d.added],['Modified',d.modified],
+    ['Exposure',d.exposure_s?d.exposure_s+' s':''],['Gain / ISO',d.gain],['Temperature',d.temperature],['Filter',d.filter],
+    ['FWHM',d.fwhm?d.fwhm+' px'+(d.med_fwhm?' (median '+d.med_fwhm+')':''):''],
+    ['Stars',d.stars!==''?d.stars+(d.med_stars?' (median '+d.med_stars+')':''):''],['Background',d.bg],['Noise',d.noise],
+    ['Quality',d.rejected?'rejected':(d.suspect?'⚠ suspect – clearly worse than the median':'')],
+    ['Status',d.status!=='done'?d.status+(d.error?' – '+d.error:''):(d.error||'')],['Description',d.description],
+    ['SHA-256',d.sha256,'mono'],['Stored as',d.stored,'mono']];
+  // every value is escaped; the optional 3rd item is only a CSS class
+  document.getElementById('fi-dl').innerHTML=rows.filter(function(r){return r[1]!==''&&r[1]!==null&&r[1]!==undefined;})
+    .map(function(r){var v=esc(r[1]);return '<dt>'+r[0]+'</dt><dd>'+(r[2]?'<span class="mono small">'+v+'</span>':v)+'</dd>';}).join('');
+  var img=document.getElementById('fi-thumb'), a=document.getElementById('fi-thumb-a');
+  a.hidden=!d.thumb; if(d.thumb){img.src='/files/'+d.id+'/thumb';a.href='/files/'+d.id+'/view';}
+  var f=document.getElementById('fi-form'); f.action='/files/'+d.id+'/edit';
+  ['exposure_s','gain','temperature','filter','description'].forEach(function(k){f.elements[k].value=d[k]||'';});
+  document.getElementById('fi-view').href='/files/'+d.id+'/view';
+  document.getElementById('fi-dl-btn').href='/files/'+d.id+'/download';
+  var h=document.getElementById('fi-hdr'); h.hidden=!d.header; h.href='/files/'+d.id+'/header';
+  dlg.dataset.fid=d.id;
+  dlg.querySelectorAll('[data-fi]').forEach(function(sel){
+    sel.value={type:d.ftype,session:String(d.sid),move:''}[sel.dataset.fi];sel.dataset.orig=sel.value;});
+  dlg.showModal();
+}
+document.querySelectorAll('#info-dlg [data-fi]').forEach(function(sel){
+  sel.addEventListener('change',function(){
+    if(sel.value===sel.dataset.orig)return;
+    var a=sel.dataset.fi, label=sel.options[sel.selectedIndex].text;
+    if(a==='move'&&!confirm('Move this file to “'+label+'”?')){sel.value='';return;}
+    fetch('/api/files/bulk',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:[document.getElementById('info-dlg').dataset.fid],action:a,value:sel.value})})
+      .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+      .then(function(res){if(!res.ok){alert(res.j.error||'Failed');sel.value=sel.dataset.orig;return;}location.reload();})
+      .catch(function(){alert('Request failed');sel.value=sel.dataset.orig;});
+  });
+});
+document.getElementById('info-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
+</script>
 <dialog id="meta-dlg" class="cat-dialog">
   <form method="dialog" class="cat-head"><h2>Set metadata</h2><button class="btn small">✕</button></form>
   <form id="meta-form" class="dlg-body">
@@ -112,9 +185,9 @@
 </dialog>
 {% endmacro %}
 
-{% macro uploader(target_key, target_id, sessions=None, skip_dups=True, import_url=None, types=None) %}
-<details class="upload card" id="upload">
-  <summary><b>⬆ Add files</b> <span class="muted small">drag &amp; drop, resumable chunked upload, type auto-detection</span></summary>
+{% macro uploader(target_key, target_id, sessions=None, skip_dups=True, import_url=None, types=None, fixed_session=False) %}
+<details class="upload card" id="upload" {% if fixed_session %}hidden{% endif %}>
+  <summary><b>⬆ Add files</b>{% if fixed_session %} <span class="chip">🌙 <span class="up-sesslabel"></span></span>{% endif %} <span class="muted small">drag &amp; drop, resumable chunked upload, type auto-detection</span></summary>
   <div class="uploader" data-target-key="{{ target_key }}" data-target-id="{{ target_id }}">
     <div class="dropzone" tabindex="0">
       <b>Drop files or folders here</b>
@@ -122,14 +195,15 @@
       <span class="row">
         <label class="btn small">Choose files<input type="file" multiple hidden class="pick-files"></label>
         <label class="btn small">Choose folder<input type="file" multiple hidden webkitdirectory class="pick-dir"></label>
-        {% if import_url %}<a class="btn small" href="{{ import_url }}" title="Import a folder that is already on the server (no browser upload)">📁 Import from server</a>{% endif %}
+        {% if import_url and not fixed_session %}<a class="btn small" href="{{ import_url }}" title="Import a folder that is already on the server (no browser upload)">📁 Import from server</a>{% endif %}
       </span>
     </div>
     <div class="up-options" hidden>
       <div class="cols">
-        {% if sessions is not none %}
-        <label>Session (night)<select class="up-session"><option value="">— auto by date —</option>
-          {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}</option>{% endfor %}</select></label>
+        {% if fixed_session %}<input type="hidden" class="up-session" value="">
+        {% elif sessions is not none %}
+        <label>Session (night)<select class="up-session"><option value="">— auto by observation date —</option>
+          {% for r in sessions %}<option value="{{ r.s.id }}" {% if loop.last %}selected{% endif %}>{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
         {% endif %}
         <label>Set type of all
           <select class="up-alltype"><option value="">— keep detected —</option>{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>

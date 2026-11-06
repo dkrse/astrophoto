@@ -130,29 +130,42 @@ def debayer_superpixel(a: np.ndarray, pattern: str) -> np.ndarray:
     return np.stack([r, g, b], axis=-1)
 
 
-def _conv3(a, k):
+def _conv3(a, k, out=None):
+    """3×3 convolution with reflected border; reuses one temporary buffer (no per-tap allocations)."""
     p = np.pad(a, 1, mode="reflect")
     h, w = a.shape
-    out = np.zeros_like(a)
+    if out is None:
+        out = np.zeros_like(a)
+    else:
+        out[...] = 0
+    tmp = np.empty_like(a)
     for dy in range(3):
         for dx in range(3):
             if k[dy][dx]:
-                out += k[dy][dx] * p[dy:dy + h, dx:dx + w]
+                np.multiply(p[dy:dy + h, dx:dx + w], np.float32(k[dy][dx]), out=tmp)
+                out += tmp
     return out
 
 
 def debayer_bilinear(a: np.ndarray, pattern: str) -> np.ndarray:
     """Full-resolution bilinear demosaic."""
+    # memory-lean: no coordinate grids / masks; each channel plane only holds its own CFA sites,
+    # and the result is written straight into one preallocated float32 (h, w, 3) array
+    a = np.asarray(a, dtype=np.float32)
     h, w = a.shape
-    yy, xx = np.mgrid[0:h, 0:w]
-    idx = (yy % 2) * 2 + (xx % 2)
-    chans = []
-    for col, k in (("R", [[.25, .5, .25], [.5, 1, .5], [.25, .5, .25]]),
-                   ("G", [[0, .25, 0], [.25, 1, .25], [0, .25, 0]]),
-                   ("B", [[.25, .5, .25], [.5, 1, .5], [.25, .5, .25]])):
-        mask = np.isin(idx, [i for i, c in enumerate(pattern) if c == col]).astype(np.float32)
-        chans.append(_conv3(a * mask, k))
-    return np.stack(chans, axis=-1)
+    out = np.empty((h, w, 3), np.float32)
+    cells = [(0, 0), (0, 1), (1, 0), (1, 1)]           # positions of the 4 pattern letters in a 2×2 cell
+    for ci, (col, k) in enumerate((("R", [[.25, .5, .25], [.5, 1, .5], [.25, .5, .25]]),
+                                   ("G", [[0, .25, 0], [.25, 1, .25], [0, .25, 0]]),
+                                   ("B", [[.25, .5, .25], [.5, 1, .5], [.25, .5, .25]]))):
+        plane = np.zeros((h, w), np.float32)
+        for i, c in enumerate(pattern):
+            if c == col:
+                y, x = cells[i]
+                plane[y::2, x::2] = a[y::2, x::2]
+        _conv3(plane, k, out=out[..., ci])
+        del plane
+    return out
 
 
 # ---------------- loaders (linear data) ----------------
@@ -170,7 +183,12 @@ def fits_cfa_pattern(header, opts) -> str | None:
     if pat == "auto":
         pat = str(header.get("BAYERPAT", "") or header.get("COLORTYP", "")).strip().upper()
         if pat in BAYER_PATTERNS:
-            pat = shift_pattern(pat, int(header.get("XBAYROFF", 0) or 0), int(header.get("YBAYROFF", 0) or 0))
+            def off(k):
+                try:
+                    return int(float(header.get(k, 0) or 0))
+                except (TypeError, ValueError):
+                    return 0
+            pat = shift_pattern(pat, off("XBAYROFF"), off("YBAYROFF"))
     return pat if pat in BAYER_PATTERNS else None
 
 
@@ -180,7 +198,24 @@ def load_fits_raw(path: Path):
         hdu = next((h for h in hdul if h.data is not None and h.data.ndim >= 2), None)
         if hdu is None:
             return None, hdul[0].header.copy()
-        return hdu.data.astype(np.float32), hdu.header.copy()
+        return planes_first(hdu.data.astype(np.float32)), hdu.header.copy()
+
+
+def planes_first(d: np.ndarray) -> np.ndarray:
+    """FITS cubes are (planes, h, w); drop extra leading axes of 4-D+ data (e.g. (1, 3, h, w))."""
+    while d.ndim > 3:
+        d = d[0]
+    return d
+
+
+def to_image_planes(d: np.ndarray) -> np.ndarray:
+    """3-D FITS data -> (h, w) mono or (h, w, 3) colour. 1 or 2 planes -> first plane, ≥3 -> first three.
+    Arrays already in (h, w, 3|4) order (non-FITS sources) are kept."""
+    if d.ndim != 3:
+        return d
+    if d.shape[-1] in (3, 4) and d.shape[0] > 4:
+        return d[..., :3]
+    return np.moveaxis(d[:3], 0, -1) if d.shape[0] >= 3 else d[0]
 
 
 def load_fits(path: Path, opts: dict, max_side: int | None):
@@ -190,12 +225,10 @@ def load_fits(path: Path, opts: dict, max_side: int | None):
     if data.ndim == 3 and opts["bayer"] in BAYER_PATTERNS:
         data = data[0]          # manual pattern on color file -> treat first plane as CFA
     if data.ndim == 3:
-        data = np.moveaxis(data[:3], 0, -1) if data.shape[0] <= 3 else data[..., :3]
-        if data.shape[-1] == 1:
-            data = data[..., 0]
+        data = to_image_planes(data)
     elif data.ndim == 2:
         pat = fits_cfa_pattern(header, opts)
-        if pat:
+        if pat and min(data.shape) >= 2:          # a CFA needs at least one 2×2 cell
             data = debayer_bilinear(data, pat) if max_side is None else debayer_superpixel(data, pat)
     flip = opts["flip"]
     if flip == "auto":
@@ -222,7 +255,7 @@ def load_raw(path: Path, opts: dict, max_side: int | None):
 
 def load_image(path: Path, opts: dict, max_side: int | None):
     im = ImageOps.exif_transpose(Image.open(path))
-    if im.mode in ("P", "RGBA", "LA"):
+    if im.mode in ("P", "RGBA", "LA", "CMYK", "YCbCr"):     # CMYK JPEGs would otherwise get wrong colours
         im = im.convert("RGB")
     if max_side and max(im.size) > max_side * 2:
         im.thumbnail((max_side * 2, max_side * 2))
@@ -232,7 +265,7 @@ def load_image(path: Path, opts: dict, max_side: int | None):
 def is_8bit_image(path: Path) -> bool:
     try:
         with Image.open(path) as im:
-            return im.mode in ("RGB", "RGBA", "L", "P", "LA")
+            return im.mode in ("RGB", "RGBA", "L", "P", "LA", "CMYK", "YCbCr")
     except Exception:
         return False
 
@@ -317,17 +350,17 @@ def fits_is_mono(path: Path) -> bool:
 
 
 def make_preview(src: Path, dst: Path, opts: dict | None = None):
-    """Returns (ok, header) — header only for FITS."""
+    """Returns (ok, header, error) — header only for FITS, error text when the file could not be read."""
     try:
         im, header = render(src, opts, THUMB_SIDE)
         if im is None:
-            return False, header
+            return False, header, None
         dst.parent.mkdir(parents=True, exist_ok=True)
         im.save(dst, "JPEG", quality=85)
-        return True, header
+        return True, header, None
     except Exception as e:
         print(f"preview failed for {src}: {e}")
-        return False, None
+        return False, None, str(e) or e.__class__.__name__
 
 
 # ---------------- metadata ----------------

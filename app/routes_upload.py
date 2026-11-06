@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .preview import KNOWN_EXT, FITS_EXT, detect_frame_type, fits_header
 from . import worker
 
 UP_DIR = DATA_DIR / ".uploads"
+_FINISHING: set = set()   # upload ids whose finish is in progress
 _LOCKS: dict = {}  # upload id -> asyncio.Lock (serialises chunk writes of one upload)
 _HASH: dict = {}   # upload id -> running sha256 (in-memory; after a restart the hash is computed at finish)
 META_KEYS = ("description", "exposure_s", "gain", "temperature", "filter")
@@ -30,7 +32,12 @@ def err(msg, code=400, **extra):
 
 def resolve_owner(db, data) -> tuple:
     """Returns (project, calib_set) from request data; exactly one is set."""
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid request")
     pid, cid = data.get("project_id"), data.get("calib_set_id")
+    for v in (pid, cid):
+        if v not in (None, "") and not str(v).isdigit():
+            raise HTTPException(400, "Invalid target id")
     if pid:
         return get_project(db, int(pid)), None
     if cid:
@@ -51,6 +58,28 @@ def describe_owner(f: FrameFile) -> str:
     if f.calib_set_id:
         return f"calibration set “{f.calib_set.name}”"
     return "library"
+
+
+# ---------- duplicate pre-check (before anything is uploaded) ----------
+@app.post("/api/uploads/check")
+async def upload_check(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """[{name, size}] -> for each: where a file with the same name and size already exists in this target (or null).
+    The definitive content (SHA-256) check still runs when an upload finishes."""
+    data = await request.json()
+    project, calib = resolve_owner(db, data)
+    owner_files = project.files if project else calib.files
+    index = {}
+    for f in owner_files:
+        where = (f"session {f.session.date.strftime('%d-%m-%Y')}" if f.session and f.session.date
+                 else ("not assigned to a session" if project else "this set"))
+        index.setdefault((clean_filename(f.original_name), f.size), where)
+    out = []
+    for it in (data.get("files") or [])[:20000]:
+        try:
+            out.append(index.get((clean_filename(str(it.get("name", ""))), int(it.get("size", -1)))))
+        except (TypeError, ValueError):
+            out.append(None)
+    return {"existing": out}
 
 
 # ---------- chunked upload ----------
@@ -79,6 +108,15 @@ async def upload_init(request: Request, user: User = Depends(current_user), db: 
     for k in [k for k in _HASH if not (UP_DIR / f"{k}.json").exists()]:   # prune abandoned uploads
         _HASH.pop(k, None)
         _LOCKS.pop(k, None)
+    sid = session_for(db, project, data.get("session_id"))
+    if project and not sid:
+        return err("Choose the session (night) the files belong to")
+    try:
+        free = shutil.disk_usage(DATA_DIR).free
+    except OSError:
+        free = None
+    if free is not None and size > free - 512 * 1024 ** 2:      # keep 512 MB headroom
+        return err(f"Not enough free disk space ({free // 1024 ** 2} MB free)", 507)
     UP_DIR.mkdir(parents=True, exist_ok=True)
     uid = uuid.uuid4().hex
     part, meta = up_paths(uid)
@@ -87,7 +125,7 @@ async def upload_init(request: Request, user: User = Depends(current_user), db: 
     meta.write_text(json.dumps({
         "project_id": project.id if project else None, "calib_set_id": calib.id if calib else None,
         "filename": name, "size": size, "frame_type": ftype,
-        "session_id": session_for(db, project, data.get("session_id")),
+        "session_id": sid,
         "meta": {k: (data.get("meta") or {}).get(k) for k in META_KEYS},
         "skip_dups": bool(data.get("skip_dups", True)),
     }))
@@ -126,6 +164,7 @@ async def upload_chunk(request: Request, uid: str, offset: int, user: User = Dep
                 written += len(chunk)
                 if h is not None:
                     h.update(chunk)
+        os.utime(meta)                            # active upload -> not removed by the 48 h cleanup
         return {"offset": part.stat().st_size}
 
 
@@ -143,6 +182,16 @@ async def upload_finish(uid: str, user: User = Depends(current_user), db: Sessio
     part, meta_p = up_paths(uid)
     if not meta_p.exists():
         return err("Unknown upload", 404)
+    if uid in _FINISHING:                     # retried / parallel finish of the same upload
+        return err("Upload is already being finished", 409)
+    _FINISHING.add(uid)
+    try:
+        return await _finish(uid, part, meta_p, db)
+    finally:
+        _FINISHING.discard(uid)
+
+
+async def _finish(uid, part, meta_p, db):
     m = json.loads(meta_p.read_text())
     size = part.stat().st_size
     if size != m["size"]:
@@ -150,13 +199,37 @@ async def upload_finish(uid: str, user: User = Depends(current_user), db: Sessio
     h = _HASH.pop(uid, None)
     _LOCKS.pop(uid, None)
     sha = h.hexdigest() if h is not None else await run_in_threadpool(worker.sha256_file, part)
+    return await run_in_threadpool(_store_upload, uid, part, meta_p, m, size, sha, db)
+
+
+def _store_upload(uid, part, meta_p, m, size, sha, db):
+    """Duplicate check + insert under the shared lock (no two copies of the same content slip through)."""
+    with worker.DUP_LOCK:
+        return _store_locked(part, meta_p, m, size, sha, db)
+
+
+def _store_locked(part, meta_p, m, size, sha, db):
     dup = worker.find_duplicate(db, sha)
     if dup and m["skip_dups"]:
         part.unlink(missing_ok=True)
         meta_p.unlink(missing_ok=True)
         return {"duplicate": True, "existing": f"{dup.original_name} in {describe_owner(dup)}"}
+    # target may have been deleted meanwhile (project / set / session)
+    if (m["project_id"] and not db.get(Project, m["project_id"])) or \
+            (m["calib_set_id"] and not db.get(CalibrationSet, m["calib_set_id"])):
+        part.unlink(missing_ok=True)
+        meta_p.unlink(missing_ok=True)
+        return err("The project / calibration set was deleted during the upload", 410)
+    if m.get("session_id") and not db.get(ImagingSession, m["session_id"]):
+        part.unlink(missing_ok=True)
+        meta_p.unlink(missing_ok=True)
+        return err("The session was deleted during the upload", 410)
     dest = unique_dest(owner_dir(m["project_id"], m["calib_set_id"]) / m["frame_type"], m["filename"])
-    os.replace(part, dest)
+    try:
+        os.replace(part, dest)
+    except OSError:
+        dest.unlink(missing_ok=True)            # remove the reserved placeholder
+        raise
     meta_p.unlink(missing_ok=True)
     mm = m.get("meta") or {}
     ff = FrameFile(project_id=m["project_id"], calib_set_id=m["calib_set_id"], session_id=m["session_id"],
@@ -182,13 +255,14 @@ def safe_import_path(rel: str) -> Path:
 
 
 @app.get("/import")
-def import_page(request: Request, project: int | None = None, calib: int | None = None,
+def import_page(request: Request, project: int | None = None, calib: int | None = None, session: int | None = None,
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
     p = get_project(db, project) if project else None
     c = get_calib(db, calib) if calib else None
     if not p and not c:
         raise HTTPException(400, "Missing target")
-    return page(request, "import.html", user=user, p=p, c=c, root_ok=IMPORT_DIR.exists(),
+    sel = next((s for s in p.sessions if s.id == session), None) if p else None
+    return page(request, "import.html", user=user, p=p, c=c, sel_session=sel, root_ok=IMPORT_DIR.exists(),
                 import_root=str(IMPORT_DIR), skip_dups=load_settings(db)["skip_duplicates"])
 
 
@@ -261,6 +335,8 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
     if not items:
         return err("No files selected")
     sid = session_for(db, project, data.get("session_id"))
+    if project and not sid:
+        return err("Choose the session (night) the files belong to")
     mm = data.get("meta") or {}
     job = ImportJob(project_id=project.id if project else None, calib_set_id=calib.id if calib else None,
                     source_dir=str(root), skip_dups=bool(data.get("skip_dups", True)), total=0)

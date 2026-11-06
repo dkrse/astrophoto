@@ -15,17 +15,58 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import DataError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from .models import (SessionLocal, User, Project, FrameFile, CatalogItem, Setting, CalibrationSet,
-                     FRAME_TYPES, FRAME_LABELS, CATALOG_KINDS, CATALOG_SINGULAR, CALIB_TYPES)
+                     FRAME_TYPES, FRAME_LABELS, CATALOG_KINDS, CATALOG_SINGULAR, CALIB_TYPES, EQUIPMENT_SPECS)
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+# everything worth backing up lives here (projects + calibration library); .cache / .uploads stay outside
+ARCHIVE_DIR = DATA_DIR / "archive-data"
 IMPORT_DIR = Path(os.environ.get("IMPORT_DIR", "/import"))
-SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+SECRET_KEY = os.environ.get("SECRET_KEY") or ""
+if SECRET_KEY in ("", "change-me") or len(SECRET_KEY) < 16:
+    print("WARNING: SECRET_KEY is missing or weak – set a long random value in .env "
+          "(otherwise logins are lost on restart or session cookies can be forged)")
+    SECRET_KEY = SECRET_KEY if len(SECRET_KEY) >= 16 else secrets.token_hex(32)
 BASE = Path(__file__).parent
 
 app = FastAPI(title="Astrophoto")
+
+
+class CSRFMiddleware:
+    """Every state-changing request of a logged-in user must carry the per-session token
+    (header X-CSRF-Token from fetch(), or ?csrf=… added to form actions by base.html). A foreign site
+    cannot read the token, so it cannot submit forms or call the API on the user's behalf.
+    Pure ASGI (request bodies – e.g. upload chunks – are never read or buffered here)."""
+    UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+    EXEMPT = {"/login"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] in self.UNSAFE and scope["path"] not in self.EXEMPT:
+            sess = scope.get("session") or {}
+            if sess.get("uid"):                       # anonymous requests are rejected by the routes anyway
+                from urllib.parse import parse_qs
+                hdr = dict(scope.get("headers") or [])
+                sent = hdr.get(b"x-csrf-token", b"").decode() or \
+                    (parse_qs(scope.get("query_string", b"").decode()).get("csrf") or [""])[0]
+                want = sess.get("csrf") or ""
+                if not want or not hmac.compare_digest(sent, want):
+                    from starlette.responses import JSONResponse, HTMLResponse
+                    msg = "Security check failed (missing or expired form token) – reload the page and try again."
+                    resp = JSONResponse({"error": msg}, status_code=403) if scope["path"].startswith("/api/") \
+                        else HTMLResponse(f"<!doctype html><meta charset=utf-8><p>{msg}</p><p><a href='/'>Back</a></p>",
+                                          status_code=403)
+                    return await resp(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+app.add_middleware(CSRFMiddleware)          # added first = runs inside SessionMiddleware (session is decoded)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, max_age=60 * 60 * 24 * 14)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
@@ -86,7 +127,8 @@ def parse_dmy(v):
 
 templates.env.filters.update(size=fmt_size, dmy=fmt_dmy, dur=fmt_dur, num=fmt_num)
 templates.env.globals.update(CATALOG_KINDS=CATALOG_KINDS, CATALOG_SINGULAR=CATALOG_SINGULAR,
-                             FRAME_TYPES=FRAME_TYPES, FRAME_LABELS=FRAME_LABELS, CALIB_TYPES=CALIB_TYPES)
+                             FRAME_TYPES=FRAME_TYPES, FRAME_LABELS=FRAME_LABELS, CALIB_TYPES=CALIB_TYPES,
+                             EQUIPMENT_SPECS=EQUIPMENT_SPECS)
 
 
 # ---------- password hashing ----------
@@ -126,6 +168,29 @@ def _login_redirect(request: Request, exc):
     return RedirectResponse("/login", status_code=303)
 
 
+@app.exception_handler(StarletteHTTPException)
+def _http_error(request: Request, exc):
+    """Browsers get a readable HTML page instead of bare JSON (e.g. a resubmitted form for a deleted item)."""
+    from fastapi.responses import JSONResponse
+    if request.url.path.startswith("/api/") or "text/html" not in request.headers.get("accept", ""):
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+    r = page(request, "error.html", code=exc.status_code, detail=exc.detail, user=None)
+    r.status_code = exc.status_code
+    return r
+
+
+@app.exception_handler(DataError)
+def _data_error(request: Request, exc):
+    """Value longer than its column (or otherwise invalid for the DB) -> message instead of a 500."""
+    from fastapi.responses import JSONResponse
+    msg = "A value is too long or invalid – please shorten it and try again."
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"error": msg}, status_code=400)
+    flash(request, msg, "err")
+    back = request.headers.get("referer") or "/"
+    return RedirectResponse(back if back.startswith(str(request.base_url)) else "/", status_code=303)
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     uid = request.session.get("uid")
     user = db.get(User, uid) if uid else None
@@ -148,9 +213,19 @@ SETTINGS = {
     "show_stats": (True, bool, None, "Show statistics on overview"),
     "zip_compression": ("none", str, ["none", "fast", "best"], "ZIP compression"),
     "slideshow_seconds": (6, int, (2, 120), "Slideshow interval (s)"),
+    "gallery_page_size": (24, int, (4, 500), "Images per page (gallery)"),
+    "gallery_tile": ("medium", str, ["small", "medium", "large"], "Gallery tile size"),
+    "gallery_sort": ("photo_desc", str, ["photo_desc", "photo_asc", "project_asc", "added_desc"], "Gallery sort"),
     "skip_duplicates": (True, bool, None, "Skip duplicate files on upload / import"),
+    # default expanded / collapsed state of panels
+    "open_summary": (True, bool, None, "Overview: summary shown"),
+    "open_filters": (False, bool, None, "Overview: filters expanded"),
+    "open_sessions": (False, bool, None, "Project: Sessions panel expanded"),
+    "open_session_files": (True, bool, None, "Project: session blocks in Files expanded"),
+    "open_file_groups": (True, bool, None, "File lists: type groups (Light, Dark …) expanded"),
+    "open_stats_table": (False, bool, None, "Statistics: monthly table expanded"),
 }
-SORT_LABELS = {"date_desc": "Capture date (newest)", "date_asc": "Capture date (oldest)",
+SORT_LABELS = {"date_desc": "Last night (newest)", "date_asc": "First night (oldest)",
                "name_asc": "Name A–Z", "name_desc": "Name Z–A", "created_desc": "Recently added",
                "size_desc": "Size (largest)"}
 templates.env.globals["SORT_LABELS"] = SORT_LABELS
@@ -200,8 +275,16 @@ def page(request, name, **ctx):
     ctx["A"] = accent_vars(ctx["S"]["accent_color"])
     ctx["weak_pw"] = bool(request.session.get("weak_pw"))
     ctx["today"] = date.today()
+    ctx["csrf"] = csrf_token(request)
     ctx.setdefault("q", "")
     return templates.TemplateResponse(request, name, ctx)
+
+
+def csrf_token(request) -> str:
+    tok = request.session.get("csrf")
+    if not tok:
+        tok = request.session["csrf"] = secrets.token_urlsafe(32)
+    return tok
 
 
 def flash(request, msg, kind="ok"):
@@ -216,9 +299,19 @@ def none_if_empty(v):
 
 def to_float(v):
     try:
-        return float(str(v).replace(",", ".")) if v not in (None, "") else None
+        x = float(str(v).replace(",", ".")) if v not in (None, "") else None
     except ValueError:
         return None
+    return x if x is None or math.isfinite(x) else None      # no NaN / inf in the database
+
+
+def like_pattern(q: str) -> str:
+    """User text -> ILIKE pattern that matches it literally (% and _ are not wildcards)."""
+    q = " ".join((q or "").split())
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+NAME_MAX = 100        # catalog names are also stored in projects.object_type (VARCHAR 100)
 
 
 def safe_name(name: str) -> str:
@@ -247,6 +340,57 @@ def catalog(db) -> dict:
     return out
 
 
+# ---------- equipment specs ----------
+def parse_specs(kind, data) -> str | None:
+    """Form/JSON values (keys spec_<key> or <key>) -> validated JSON string for CatalogItem.specs."""
+    import json
+    out = {}
+    for key, _label, unit, choices in EQUIPMENT_SPECS.get(kind, []):
+        v = data.get("spec_" + key, data.get(key))
+        v = str(v).strip() if v is not None else ""
+        if not v:
+            continue
+        if choices:
+            if v in choices:
+                out[key] = v
+        else:
+            n = to_float(v)
+            if n is not None and 0 < n < 1e7:
+                out[key] = int(n) if n.is_integer() else n
+    return json.dumps(out) if out else None
+
+
+def spec_summary(kind, spec: dict) -> str:
+    """Short human text, e.g. '80 mm · 480 mm · f/6.0 · Refractor'."""
+    parts = []
+    for key, _label, unit, _ in EQUIPMENT_SPECS.get(kind, []):
+        if key in spec and not (kind == "camera" and key in ("width_px", "height_px")):
+            parts.append(f"{fmt_num(spec[key], 2)} {unit}" if unit else str(spec[key]))
+    if kind == "telescope" and spec.get("aperture_mm") and spec.get("focal_mm"):
+        parts.insert(2, f"f/{spec['focal_mm'] / spec['aperture_mm']:.1f}")
+    if kind == "camera" and spec.get("width_px") and spec.get("height_px"):
+        parts.insert(0, f"{spec['width_px']}×{spec['height_px']} px")
+        if spec.get("pixel_um"):
+            w, h = (spec[k] * spec["pixel_um"] / 1000 for k in ("width_px", "height_px"))
+            parts.insert(2, f"{w:.1f}×{h:.1f} mm")
+    return " · ".join(parts)
+
+
+def optics(tel: dict, cam: dict) -> dict | None:
+    """Image scale (″/px) and field of view (′) for a telescope + camera combination."""
+    f, px = tel.get("focal_mm"), cam.get("pixel_um")
+    if not f or not px:
+        return None
+    scale = 206.265 * px / f
+    res = {"scale": scale, "fov": None}
+    if cam.get("width_px") and cam.get("height_px"):
+        res["fov"] = (cam["width_px"] * scale / 60, cam["height_px"] * scale / 60)
+    return res
+
+
+templates.env.globals.update(spec_summary=spec_summary)
+
+
 def get_project(db, pid) -> Project:
     p = db.get(Project, pid)
     if not p:
@@ -270,11 +414,11 @@ def get_file(db, fid) -> FrameFile:
 
 # ---------- storage ----------
 def project_dir(pid: int) -> Path:
-    return DATA_DIR / "projects" / str(pid)
+    return ARCHIVE_DIR / "projects" / str(pid)
 
 
 def calib_dir(cid: int) -> Path:
-    return DATA_DIR / "calibration" / str(cid)
+    return ARCHIVE_DIR / "calibration" / str(cid)
 
 
 def owner_dir(project_id=None, calib_set_id=None) -> Path:

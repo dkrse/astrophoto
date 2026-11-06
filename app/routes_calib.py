@@ -7,7 +7,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from .core import (app, page, flash, get_db, current_user, catalog, none_if_empty, parse_dmy, to_float,
-                   get_calib, calib_dir, DATA_DIR, load_settings)
+                   get_calib, calib_dir, DATA_DIR, load_settings, like_pattern)
 from .models import User, CalibrationSet, FrameFile, Project, CALIB_TYPES, FRAME_LABELS
 from . import worker
 
@@ -17,13 +17,13 @@ CALIB_FIELDS = ["name", "camera", "telescope", "temperature", "gain", "offset", 
 @app.get("/calibration")
 def calib_list(request: Request, type: str = "", camera: str = "", q: str = "",
                user: User = Depends(current_user), db: Session = Depends(get_db)):
-    stmt = select(CalibrationSet).options(selectinload(CalibrationSet.files), selectinload(CalibrationSet.projects))
+    stmt = select(CalibrationSet).options(selectinload(CalibrationSet.files), selectinload(CalibrationSet.sessions))
     if type in CALIB_TYPES:
         stmt = stmt.where(CalibrationSet.frame_type == type)
     if camera:
         stmt = stmt.where(CalibrationSet.camera == camera)
     if q.strip():
-        like = f"%{q.strip()}%"
+        like = like_pattern(q)
         stmt = stmt.where(or_(CalibrationSet.name.ilike(like), CalibrationSet.notes.ilike(like),
                               CalibrationSet.filter.ilike(like)))
     sets = db.scalars(stmt.order_by(CalibrationSet.capture_date.desc().nulls_last(), CalibrationSet.id.desc())).all()
@@ -94,7 +94,10 @@ async def calib_update(request: Request, cid: int, user: User = Depends(current_
 
 @app.post("/calibration/{cid}/delete")
 def calib_delete(request: Request, cid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    c = get_calib(db, cid)
+    c = db.get(CalibrationSet, cid)
+    if not c:                                    # already deleted (double submit / resubmitted form)
+        flash(request, "Calibration set was already deleted")
+        return RedirectResponse("/calibration", status_code=303)
     if any(f.status == "importing" for f in c.files):
         flash(request, "An import into this set is still running – wait until it finishes", "err")
         return RedirectResponse(f"/calibration/{cid}", status_code=303)

@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 {% if S.show_stats %}
-<section class="stats">
+<div class="statsbar"><button type="button" class="btn small statstoggle" onclick="toggleStats()" title="Show / hide the summary"><span class="st-arrow">{{ '▾' if S.open_summary else '▸' }}</span> Summary</button></div>
+<section class="stats" id="ovstats" {% if not S.open_summary %}hidden{% endif %}>
   <div class="stat"><b>{{ stats.projects }}</b><span>projects</span></div>
   <div class="stat"><b>{{ stats.files }}</b><span>files</span></div>
   <div class="stat"><b>{{ stats.size|size }}</b><span>total</span></div>
@@ -12,13 +13,13 @@
 </section>
 {% endif %}
 
-<details class="filters card" {% if active %}open{% endif %}>
+<details class="filters card" {% if active or S.open_filters %}open{% endif %}>
   <summary><b>Filters</b>{% if active %} <span class="chip t-stack">{{ active }} active</span>{% endif %}</summary>
   <form method="get" action="/">
     <div class="fgrid">
       <label>Search<input name="q" value="{{ q }}" placeholder="name, notes, files…"></label>
-      <label>Date from<input class="datepicker" name="date_from" value="{{ flt.date_from }}" placeholder="dd-mm-yyyy"></label>
-      <label>Date to<input class="datepicker" name="date_to" value="{{ flt.date_to }}" placeholder="dd-mm-yyyy"></label>
+      <label>Night from<input class="datepicker" name="date_from" value="{{ flt.date_from }}" placeholder="dd-mm-yyyy"></label>
+      <label>Night to<input class="datepicker" name="date_to" value="{{ flt.date_to }}" placeholder="dd-mm-yyyy"></label>
       <label>Size from (GB)<input name="size_from" value="{{ flt.size_from }}" inputmode="decimal" placeholder="0"></label>
       <label>Size to (GB)<input name="size_to" value="{{ flt.size_to }}" inputmode="decimal" placeholder="∞"></label>
       {% for kind, label in CATALOG_SINGULAR.items() %}
@@ -54,8 +55,14 @@
     <div class="cover">{% if s.cover %}<img loading="lazy" src="/files/{{ s.cover.id }}/thumb" alt="">{% else %}<span>✦</span>{% endif %}</div>
     <div class="body">
       <h3>{{ p.name }}</h3>
-      <div class="muted">{{ p.target or '' }}{% if p.capture_date %} · {{ p.capture_date|dmy }}{% endif %}</div>
-      {% if p.description %}<p class="desc">{{ p.description[:160] }}</p>{% endif %}
+      <div class="muted">{{ [p.target, p.object_type]|select|join(' · ') }}</div>
+      <div class="muted small">{% if s.first %}🌙 {{ s.first|dmy }}{% if s.last != s.first %} – {{ s.last|dmy }}{% endif %} · {{ s.nights }} night{{ 's' if s.nights != 1 }}{% else %}created {{ p.created_at|dmy }}{% endif %}</div>
+      {% if s.hits %}
+      <div class="hits"><span class="muted small">Found in {{ s.hits|length }} place{{ 's' if s.hits|length != 1 }}:</span>
+        <ul>{% for h in s.hits[:3] %}<li><b>{{ h.where }}</b> – {{ h.snip }}</li>{% endfor %}</ul>
+        {% if s.hits|length > 3 %}<span class="muted small">+ {{ s.hits|length - 3 }} more: {{ s.hits[3:]|map(attribute='where')|join(', ')|truncate(120) }}</span>{% endif %}
+      </div>
+      {% elif p.description %}<p class="desc">{{ p.description[:160] }}</p>{% endif %}
       <div class="chips">{% for t in FRAME_TYPES %}{% if s.counts.get(t) %}<span class="chip t-{{t}}">{{ FRAME_LABELS[t] }} {{ s.counts[t] }}</span>{% endif %}{% endfor %}
         <span class="chip">{{ s.size|size }}</span>{% if s.integration %}<span class="chip" title="Integration time (lights)">⏱ {{ s.integration|dur }}</span>{% endif %}</div>
     </div>
@@ -78,6 +85,8 @@
 </nav>
 {% endif %}
 <script>
+function toggleStats(){var el=document.getElementById('ovstats');if(!el)return;
+  el.hidden=!el.hidden;document.querySelector('.statstoggle .st-arrow').textContent=el.hidden?'▸':'▾';}
 function setView(v,save){var el=document.getElementById('projects');el.classList.remove('grid','list');el.classList.add(v);
   document.querySelectorAll('.view-toggle button').forEach(function(b){b.classList.toggle('on',b.getAttribute('onclick').indexOf(v)>0);});
   if(save!==false){try{localStorage.setItem('view',v)}catch(e){}}}

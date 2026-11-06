@@ -3,7 +3,7 @@
 {% block content %}
 <div class="head">
   <div><h1>Calibration library</h1>
-    <div class="muted">Reusable darks, bias, flats and dark flats – link them to any number of projects.</div></div>
+    <div class="muted">Reusable darks, bias, flats and dark flats – link them to any number of imaging sessions.</div></div>
   <a class="btn primary" href="/calibration/new{{ '?type=' ~ ftype if ftype }}">+ New set</a>
 </div>
 
@@ -18,7 +18,7 @@
 
 {% if sets %}
 <div class="tablewrap card"><table class="kvt">
-  <thead><tr><th>Set</th><th>Type</th><th>Date</th><th>Camera</th><th>Telescope</th><th>Temp</th><th>Gain</th><th>Offset</th><th>Exp. (s)</th><th>Filter</th><th>Bin</th><th>Files</th><th>Size</th><th>Projects</th></tr></thead>
+  <thead><tr><th>Set</th><th>Type</th><th>Date</th><th>Camera</th><th>Telescope</th><th>Temp</th><th>Gain</th><th>Offset</th><th>Exp. (s)</th><th>Filter</th><th>Bin</th><th>Files</th><th>Size</th><th>Sessions</th></tr></thead>
   <tbody>
   {% for c in sets %}
   <tr>
@@ -29,7 +29,7 @@
     <td>{{ c.gain or '' }}</td><td>{{ c.offset or '' }}</td><td>{{ c.exposure_s|num if c.exposure_s else '' }}</td>
     <td>{{ c.filter or '' }}</td><td>{{ c.binning or '' }}</td>
     <td>{{ c.files|length }}</td><td class="nowrap">{{ c.files|sum(attribute='size')|size }}</td>
-    <td>{{ c.projects|length or '' }}</td>
+    <td>{{ c.sessions|length or "" }}</td>
   </tr>
   {% endfor %}
   </tbody>

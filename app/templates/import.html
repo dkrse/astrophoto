@@ -24,9 +24,9 @@
 <section class="card" id="scanres" hidden>
   <div class="head"><h2>Found files</h2><span class="muted" id="scansum"></span></div>
   <div class="cols">
-    {% if p and p.sessions %}
-    <label>Session (night)<select id="session"><option value="">— auto by date —</option>
-      {% for s in p.sessions %}<option value="{{ s.id }}">{{ s.date|dmy or ('#' ~ s.id) }}</option>{% endfor %}</select></label>
+    {% if p %}
+    <label>Session (night) *<select id="session" required><option value="">— choose —</option>
+      {% for s in p.sessions %}<option value="{{ s.id }}" {% if sel_session and sel_session.id == s.id %}selected{% endif %}>{{ s.date|dmy or ('#' ~ s.id) }}{% if s.location %} · {{ s.location }}{% endif %}</option>{% endfor %}</select></label>
     {% endif %}
     <label>Set type of selected<select id="settype"><option value="">—</option>{% for t in (FRAME_TYPES if p else CALIB_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
     <label>Filter (if not in header)<input id="filter"></label>
@@ -105,6 +105,7 @@
   document.getElementById('startbtn').onclick=function(){
     var sel=found.filter(function(f){return f.on;});
     if(!sel.length){alert('Nothing selected');return;}
+    var ss=document.getElementById('session');if(ss&&!ss.value){alert('Choose the session (night) first');ss.focus();return;}
     var b=this;b.disabled=true;document.getElementById('startinfo').textContent='Starting…';
     var s=document.getElementById('session');
     fetch('/api/import/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},TARGET,{

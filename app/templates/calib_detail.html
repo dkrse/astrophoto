@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_files.html" import file_groups, bulk_bar, uploader, status_box %}
+{% from "_files.html" import file_groups, bulk_bar, uploader, status_box with context %}
 {% block title %}{{ c.name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
 <div class="head">
@@ -10,7 +10,7 @@
     <a class="btn" href="/calibration">← Library</a>
     <a class="btn primary" href="/calibration/{{ c.id }}/zip">⬇ ZIP</a>
     <a class="btn" href="/calibration/{{ c.id }}/edit">Edit</a>
-    <form method="post" action="/calibration/{{ c.id }}/delete" onsubmit="return confirm('Delete this calibration set including all its files?{% if c.projects %} It is linked to {{ c.projects|length }} project(s).{% endif %}')"><button class="btn danger">Delete</button></form>
+    <form method="post" action="/calibration/{{ c.id }}/delete" onsubmit="return confirm('Delete this calibration set including all its files?{% if c.sessions %} It is linked to {{ c.sessions|length }} session(s).{% endif %}')"><button class="btn danger">Delete</button></form>
   </div>
 </div>
 
@@ -22,7 +22,7 @@
     {% if v %}<dt>{{ label }}</dt><dd>{{ v }}</dd>{% endif %}{% endfor %}
     <dt>Created</dt><dd>{{ c.created_at|dmy }}</dd>
     <dt>Modified</dt><dd>{{ c.updated_at|dmy }}</dd>
-    <dt>Used by</dt><dd>{% for p in c.projects %}<a href="/projects/{{ p.id }}">{{ p.name }}</a>{{ ', ' if not loop.last }}{% else %}<span class="muted">no project yet – link it from a project page</span>{% endfor %}</dd>
+    <dt>Used by</dt><dd>{% for s in c.sessions %}<a href="/projects/{{ s.project_id }}#files">{{ s.project.name }} · {{ s.date|dmy or 'session' }}</a>{{ ', ' if not loop.last }}{% else %}<span class="muted">no session yet – link it from a session on a project page</span>{% endfor %}</dd>
   </dl>
   {% if c.notes %}<h3>Notes</h3><p class="pre">{{ c.notes }}</p>{% endif %}
 </section>

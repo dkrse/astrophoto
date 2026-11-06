@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .preview import FITS_EXT, RAW_EXT, IMAGE_EXT, load_fits_raw, BAYER_PATTERNS, fits_cfa_pattern, clean_opts
+from .preview import FITS_EXT, RAW_EXT, IMAGE_EXT, load_fits_raw, BAYER_PATTERNS, fits_cfa_pattern, clean_opts, to_image_planes
 
 MAX_STARS = 400
 
@@ -16,8 +16,9 @@ def _luminance(src: Path):
         if data is None:
             return None, 1
         if data.ndim == 3:
-            return data[:3].mean(axis=0) if data.shape[0] <= 3 else data[..., :3].mean(axis=-1), 1
-        if fits_cfa_pattern(header, clean_opts(None)) in BAYER_PATTERNS:
+            img = to_image_planes(data)
+            return (img.mean(axis=-1) if img.ndim == 3 else img), 1
+        if fits_cfa_pattern(header, clean_opts(None)) in BAYER_PATTERNS and min(data.shape) >= 2:
             h, w = (data.shape[0] // 2) * 2, (data.shape[1] // 2) * 2
             d = data[:h, :w]
             return (d[0::2, 0::2] + d[0::2, 1::2] + d[1::2, 0::2] + d[1::2, 1::2]) / 4, 2
@@ -93,9 +94,9 @@ def frame_stats(src: Path) -> dict | None:
 
 def flag_suspects(files) -> int:
     """Mark light frames that are clearly worse than the median of their group. Returns count."""
-    lights = [f for f in files if f.frame_type == "light" and f.stat_stars is not None]
-    for f in lights:
+    for f in files:                               # also clears stale flags (stats failed, type changed)
         f.suspect = False
+    lights = [f for f in files if f.frame_type == "light" and f.stat_stars is not None]
     if len(lights) < 4:
         return 0
     med = lambda xs: float(np.median(xs)) if xs else None   # noqa: E731

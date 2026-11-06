@@ -9,14 +9,22 @@
   </span>
 </div>
 
-<section class="gallery">
+<div class="listbar">
+  <span class="muted">{% if pager.total %}{{ pager.from }}–{{ pager.to }} of {{ pager.total }}{% else %}0 images{% endif %}</span>
+  <form method="get" class="row sortform">
+    {% if gq %}<input type="hidden" name="q" value="{{ gq }}">{% endif %}
+    <select name="sort" onchange="this.form.submit()" title="Sort">{% for k, l in GALLERY_SORTS.items() %}<option value="{{ k }}" {% if gsort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+    <select name="per" onchange="this.form.submit()" title="Images per page">{% for n in [12, 24, 48, 96] + ([per] if per not in [12, 24, 48, 96] else []) %}<option value="{{ n }}" {% if per == n %}selected{% endif %}>{{ n }} / page</option>{% endfor %}</select>
+  </form>
+</div>
+<section class="gallery tiles-{{ S.gallery_tile }}">
 {% for f in items %}
   <figure class="gitem">
-    <a href="#" onclick="Slideshow.start(GALLERY_IDS, GALLERY_IDS.indexOf({{ f.id }}), {{ S.slideshow_seconds }}, true);return false;">
+    <a href="#" onclick="if(GALLERY_IDS.indexOf({{ f.id }})<0)GALLERY_IDS.unshift({{ f.id }});Slideshow.start(GALLERY_IDS, GALLERY_IDS.indexOf({{ f.id }}), {{ S.slideshow_seconds }}, true);return false;">
       <img loading="lazy" src="/files/{{ f.id }}/thumb" alt="{{ f.project.name }}"></a>
     <figcaption>
       <a href="/projects/{{ f.project_id }}"><b>{{ f.project.name }}</b></a>
-      <span class="muted small">{{ [f.project.target, f.project.capture_date|dmy]|select|join(' · ') }}</span>
+      <span class="muted small">{{ [f.project.target, photo_date(f)]|select|join(' · ') }}</span>
       <span class="gacts"><a href="/files/{{ f.id }}/view" title="Open in viewer">🔍</a> <a href="/files/{{ f.id }}/download" title="Download">⬇</a></span>
     </figcaption>
   </figure>
@@ -27,9 +35,14 @@
 
 {% if pager.pages > 1 %}
 <nav class="pager">
-  {% if pager.page > 1 %}<a class="btn small" href="{{ pager.url(pager.page - 1) }}">‹ Prev</a>{% endif %}
-  {% for n in pager.window %}{% if n == pager.page %}<span class="btn small primary">{{ n }}</span>{% else %}<a class="btn small" href="{{ pager.url(n) }}">{{ n }}</a>{% endif %}{% endfor %}
-  {% if pager.page < pager.pages %}<a class="btn small" href="{{ pager.url(pager.page + 1) }}">Next ›</a>{% endif %}
+  {% if pager.page > 1 %}<a class="btn small" href="{{ pager.url(1) }}" title="First">«</a><a class="btn small" href="{{ pager.url(pager.page - 1) }}">‹ Prev</a>{% else %}<span class="btn small disabled">«</span><span class="btn small disabled">‹ Prev</span>{% endif %}
+  {% set last = namespace(n=0) %}
+  {% for n in pager.window %}
+    {% if n - last.n > 1 %}<span class="muted">…</span>{% endif %}
+    {% if n == pager.page %}<span class="btn small primary">{{ n }}</span>{% else %}<a class="btn small" href="{{ pager.url(n) }}">{{ n }}</a>{% endif %}
+    {% set last.n = n %}
+  {% endfor %}
+  {% if pager.page < pager.pages %}<a class="btn small" href="{{ pager.url(pager.page + 1) }}">Next ›</a><a class="btn small" href="{{ pager.url(pager.pages) }}" title="Last">»</a>{% else %}<span class="btn small disabled">Next ›</span><span class="btn small disabled">»</span>{% endif %}
 </nav>
 {% endif %}
 {% endblock %}

@@ -39,7 +39,7 @@
     </div>
     {% endfor %}
   </div>
-  <details class="small"><summary class="muted">Table</summary>
+  <details class="small" {% if S.open_stats_table %}open{% endif %}><summary class="muted">Table</summary>
     <table class="kvt">{% for (y, m), v in months|reverse if v %}<tr><td>{{ '%02d'|format(m) }}/{{ y }}</td><td class="num">{{ v|dur }}</td></tr>{% endfor %}</table>
   </details>
   {% else %}<p class="muted">No light frames with dates yet (session date, DATE-OBS or project date).</p>{% endif %}

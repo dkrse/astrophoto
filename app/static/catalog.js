@@ -11,11 +11,12 @@
     dlg.className = 'cat-dialog';
     dlg.innerHTML =
       '<form method="dialog" class="cat-head"><h2 id="cat-title"></h2><button class="btn small" aria-label="Close">✕</button></form>' +
-      '<form class="cat-add" id="cat-add"><input name="name" placeholder="Name" required autocomplete="off">' +
+      '<form class="cat-add" id="cat-add"><input name="name" placeholder="Name" required maxlength="100" autocomplete="off">' +
       '<input name="notes" placeholder="Notes (optional)" autocomplete="off"><button class="btn primary">+ Add</button></form>' +
       '<div class="cat-err" id="cat-err" hidden></div>' +
       '<input class="cat-search" id="cat-search" placeholder="Search…" autocomplete="off">' +
-      '<div class="cat-list" id="cat-list"></div>';
+      '<div class="cat-list" id="cat-list"></div>' +
+      '<p class="muted small" id="cat-specs" hidden><a id="cat-specs-link" href="#">Edit technical parameters (focal length, pixel size…) →</a></p>';
     document.body.appendChild(dlg);
     dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); }); // click on backdrop
     dlg.querySelector('#cat-add').addEventListener('submit', function (e) {
@@ -55,11 +56,12 @@
     if (!items.length) { list.innerHTML = '<p class="muted">' + (data.items.length ? 'Nothing matches.' : 'No items yet – add the first one above.') + '</p>'; return; }
     list.innerHTML = items.map(function (it) {
       return '<div class="cat-row" data-id="' + it.id + '">' +
-        '<div class="cat-view"><div><b>' + esc(it.name) + '</b>' + (it.notes ? '<div class="muted small">' + esc(it.notes) + '</div>' : '') + '</div>' +
+        '<div class="cat-view"><div><b>' + esc(it.name) + '</b>' + (it.summary ? '<div class="small">' + esc(it.summary) + '</div>' : '') + (it.notes ? '<div class="muted small">' + esc(it.notes) + '</div>' : '') + '</div>' +
         '<span class="muted small">' + (it.used ? it.used + ' project' + (it.used > 1 ? 's' : '') : 'unused') + '</span>' +
         '<button type="button" class="btn small" data-act="edit" title="Edit">✎</button>' +
-        '<button type="button" class="btn small danger" data-act="del" title="Delete">✕</button></div>' +
-        '<form class="cat-edit" hidden><input name="name" value="' + esc(it.name) + '" required>' +
+        (it.in_use ? '<button type="button" class="btn small danger" disabled title="Used in ' + esc(it.in_use) + ' – cannot be deleted (rename is possible)">✕</button></div>'
+                   : '<button type="button" class="btn small danger" data-act="del" title="Delete">✕</button></div>') +
+        '<form class="cat-edit" hidden><input name="name" maxlength="100" value="' + esc(it.name) + '" required>' +
         '<input name="notes" value="' + esc(it.notes) + '" placeholder="Notes">' +
         '<button class="btn small primary">Save</button><button type="button" class="btn small" data-act="cancel">Cancel</button></form>' +
         '</div>';
@@ -69,10 +71,8 @@
       var view = row.querySelector('.cat-view'), form = row.querySelector('.cat-edit');
       row.querySelector('[data-act=edit]').onclick = function () { view.hidden = true; form.hidden = false; form.name.focus(); form.name.select(); };
       row.querySelector('[data-act=cancel]').onclick = function () { view.hidden = false; form.hidden = true; err(''); };
-      row.querySelector('[data-act=del]').onclick = function () {
-        var msg = 'Delete “' + it.name + '”?' + (it.used ? '\nIt will be cleared from ' + it.used + ' project(s).' : '');
-        if (confirm(msg)) call('DELETE', '/api/catalog/items/' + id);
-      };
+      var del = row.querySelector('[data-act=del]');
+      if (del) del.onclick = function () { if (confirm('Delete “' + it.name + '”?')) call('DELETE', '/api/catalog/items/' + id); };
       form.onsubmit = function (e) {
         e.preventDefault();
         var msg = form.name.value.trim() !== it.name && it.used ? 'Rename in ' + it.used + ' project(s) too?' : null;
@@ -106,6 +106,8 @@
     if (!dlg) build();
     kind = k; err('');
     dlg.querySelector('#cat-search').value = '';
+    dlg.querySelector('#cat-specs').hidden = ['telescope', 'camera', 'mount'].indexOf(k) < 0;
+    dlg.querySelector('#cat-specs-link').href = '/manage?kind=' + k;
     dlg.querySelector('#cat-list').innerHTML = '<p class="muted">Loading…</p>';
     dlg.showModal();
     fetch('/api/catalog/' + k).then(function (r) { return r.json(); }).then(function (j) {

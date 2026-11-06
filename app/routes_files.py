@@ -1,5 +1,6 @@
 """Single files: viewer, render, histogram, metadata edit, reject, bulk operations."""
 import json
+import os
 from datetime import datetime
 
 from fastapi import Request, Form, Depends, HTTPException, UploadFile, File
@@ -63,6 +64,8 @@ async def file_render(request: Request, fid: int, size: str = "full",
     src = DATA_DIR / f.stored_path
     if not src.is_file() or f.status == "importing":
         raise HTTPException(404, "File not available")
+    if size not in ("full", "preview"):          # goes into the cache file name -> strict whitelist
+        size = "preview"
     opts = clean_opts(dict(request.query_params))
     max_side = None if size == "full" else 1600
     key = "_".join(opts[k] for k in RENDER_KEYS) + f"_{size}"
@@ -99,7 +102,10 @@ async def file_histogram(request: Request, fid: int, user: User = Depends(curren
     opts = clean_opts(dict(request.query_params))
     cache = DATA_DIR / ".cache" / str(f.id) / f"hist_{opts['bayer']}_{opts['flip']}_{int(src.stat().st_mtime)}.json"
     if cache.exists():
-        return JSONResponse(json.loads(cache.read_text()))
+        try:
+            return JSONResponse(json.loads(cache.read_text()))
+        except ValueError:                        # damaged / concurrently written -> recompute
+            pass
     try:
         h = await run_in_threadpool(histogram, src, opts)
     except Exception as e:
@@ -107,7 +113,9 @@ async def file_histogram(request: Request, fid: int, user: User = Depends(curren
     if not h:
         raise HTTPException(404, "Histogram not available")
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(h))
+    tmp = cache.with_name(f"{cache.stem}.{threading.get_ident()}.{time.time_ns()}.tmp")
+    tmp.write_text(json.dumps(h))
+    os.replace(tmp, cache)                        # atomic: readers never see a half-written file
     return h
 
 
@@ -181,8 +189,12 @@ def file_delete(request: Request, fid: int, user: User = Depends(current_user), 
     if f.status == "importing":
         flash(request, "File is still being imported – try again in a moment", "err")
         return RedirectResponse(url, status_code=303)
+    pid = f.project_id
     delete_files(db, [f])
     db.commit()
+    if pid:
+        worker.reflag_project(db, pid)
+        db.commit()
     flash(request, "File deleted")
     return RedirectResponse(url, status_code=303)
 
@@ -222,6 +234,7 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
         return JSONResponse({"error": f"{len(busy)} selected file(s) are still being imported / processed – "
                                       "try again in a moment"}, status_code=409)
     n = len(files)
+    touched = {f.project_id for f in files if f.project_id}
     if action == "delete":
         delete_files(db, files)
         msg = f"Deleted {n} files"
@@ -239,7 +252,8 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                     db.commit()
         except OSError as e:
             db.commit()
-            return JSONResponse({"error": f"Stopped: {e}"}, status_code=500)
+            return JSONResponse({"error": f"Stopped after a file could not be moved ({e}). "
+                                          "Files before it were changed."}, status_code=409)
         msg = f"Changed type of {n} files"
     elif action == "move":
         target = str(value or "")
@@ -257,7 +271,8 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                     db.commit()
             except OSError as e:
                 db.commit()
-                return JSONResponse({"error": f"Stopped: {e}"}, status_code=500)
+                return JSONResponse({"error": f"Stopped after a file could not be moved ({e}). "
+                                          "Files before it were changed."}, status_code=409)
             msg = f"Moved {n} files to calibration set “{c.name}”"
         else:
             p = db.get(Project, int(target)) if target.isdigit() else None
@@ -268,22 +283,33 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                     if f.project_id and f.project_id != p.id and f.project.cover_file_id == f.id:
                         f.project.cover_file_id = None
                     move_file_storage(f, p.id, None)
-                    if f.project_id != p.id:
-                        f.session_id = None
+                    if f.project_id != p.id:          # files always live in a session -> latest one of the target
+                        f.session_id = p.sessions[-1].id if p.sessions else None
                     f.project_id, f.calib_set_id = p.id, None
                     f.updated_at = datetime.now()
                     db.commit()
             except OSError as e:
                 db.commit()
-                return JSONResponse({"error": f"Stopped: {e}"}, status_code=500)
+                return JSONResponse({"error": f"Stopped after a file could not be moved ({e}). "
+                                          "Files before it were changed."}, status_code=409)
             msg = f"Moved {n} files to project “{p.name}”"
     elif action == "session":
-        s = db.get(ImagingSession, int(value)) if str(value or "").isdigit() else None
+        if value in (None, ""):
+            s = None                              # explicit "(none)"
+        else:
+            s = db.get(ImagingSession, int(value)) if str(value).isdigit() else None
+            if not s:
+                return JSONResponse({"error": "Session not found"}, status_code=404)
+        done = 0
         for f in files:
-            if s and f.project_id != s.project_id:
-                continue
+            if not f.project_id or (s and f.project_id != s.project_id):
+                continue                          # library files / other projects are not touched
             f.session_id = s.id if s else None
-        msg = f"Session updated for {n} files"
+            done += 1
+        if not done:
+            return JSONResponse({"error": "None of the selected files belong to this session's project"}, status_code=400)
+        msg = f"Session updated for {done} file{'s' if done != 1 else ''}"
+        n = done
     elif action == "meta":
         vals = value or {}
         for f in files:
@@ -310,34 +336,10 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
         for f in files:
             f.updated_at = now
     db.commit()
+    if action in ("delete", "type", "move", "session"):   # light set changed -> recompute "suspect" flags
+        for pid in touched | {f.project_id for f in files if action != "delete" and f.project_id}:
+            worker.reflag_project(db, pid)
+        db.commit()
     flash(request, msg)
     return {"ok": True, "message": msg}
 
-
-# ---------- simple multipart upload (fallback, used by scripts) ----------
-@app.post("/projects/{pid}/upload")
-def upload(request: Request, pid: int, frame_type: str = Form(...), files: list[UploadFile] = File(...),
-           description: str = Form(""), exposure_s: str = Form(""), gain: str = Form(""),
-           temperature: str = Form(""), filter: str = Form(""),
-           user: User = Depends(current_user), db: Session = Depends(get_db)):
-    import shutil
-    p = get_project(db, pid)
-    if frame_type not in FRAME_TYPES:
-        raise HTTPException(400, "Invalid type")
-    n = 0
-    for up in files:
-        if not up.filename:
-            continue
-        dest = unique_dest(project_dir(pid) / frame_type, up.filename)
-        with open(dest, "wb") as out:
-            shutil.copyfileobj(up.file, out, length=4 * 1024 * 1024)
-        db.add(FrameFile(project_id=p.id, frame_type=frame_type, original_name=clean_filename(up.filename),
-                         stored_path=str(dest.relative_to(DATA_DIR)), size=dest.stat().st_size,
-                         status="pending", description=none_if_empty(description),
-                         exposure_s=to_float(exposure_s), gain=none_if_empty(gain),
-                         temperature=none_if_empty(temperature), filter=none_if_empty(filter)))
-        n += 1
-    db.commit()
-    worker.wake()
-    flash(request, f"Uploaded files: {n} (processing in background)")
-    return RedirectResponse(f"/projects/{pid}#{frame_type}", status_code=303)

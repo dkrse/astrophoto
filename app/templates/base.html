@@ -6,6 +6,22 @@
 <script>(function(){var t=null;try{t=localStorage.getItem('theme')}catch(e){}
 var d='{{ S.default_theme }}';if(!t)t=d!=='auto'?d:(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
 document.documentElement.dataset.theme=t;})();</script>
+<meta name="csrf-token" content="{{ csrf }}">
+<script>
+// CSRF: every same-origin fetch() with a body-changing method and every POST form carries the session token
+(function(){var T=document.querySelector('meta[name=csrf-token]').content, of=window.fetch;
+window.fetch=function(u,o){o=o||{};var m=(o.method||'GET').toUpperCase();
+  if(m!=='GET'&&m!=='HEAD'&&(typeof u!=='string'||u.charAt(0)==='/'||u.indexOf(location.origin)===0)){
+    o.headers=new Headers(o.headers||{});o.headers.set('X-CSRF-Token',T);}
+  return of.call(this,u,o);};
+function tag(f){if((f.method||'').toLowerCase()!=='post'||f.dataset.csrf)return;
+  var a=new URL(f.getAttribute('action')||location.href,location.href);
+  if(a.origin!==location.origin)return;
+  a.searchParams.set('csrf',T);f.action=a.toString();f.dataset.csrf='1';}
+document.addEventListener('submit',function(e){tag(e.target);},true);
+var os=HTMLFormElement.prototype.submit;      // form.submit() does not fire the submit event
+HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})();
+</script>
 <link rel="stylesheet" href="/static/vendor/flatpickr.min.css">
 <link rel="stylesheet" href="/static/vendor/dark.css" id="fp-dark">
 <link rel="stylesheet" href="/static/style.css">
@@ -17,15 +33,21 @@ document.documentElement.dataset.theme=t;})();</script>
   {% if user %}
   <form action="/" method="get" class="search"><input name="q" value="{{ q or '' }}" placeholder="Search (name, object, notes, files, FITS header…)"></form>
   <nav>
-    <a href="/" class="navl" title="Projects">Projects</a>
-    <a href="/gallery" class="navl" title="Gallery of final images">Gallery</a>
-    <a href="/calibration" class="navl" title="Calibration frame library">Calibration</a>
-    <a href="/stats" class="navl" title="Statistics">Stats</a>
+    <a href="/" class="navl{% if request.url.path == '/' or request.url.path.startswith('/projects/') and request.url.path != '/projects/new' %} active{% endif %}" title="Projects">Projects</a>
+    <a href="/gallery" class="navl{% if request.url.path.startswith('/gallery') %} active{% endif %}" title="Gallery of final images">Gallery</a>
+    <a href="/calibration" class="navl{% if request.url.path.startswith('/calibration') %} active{% endif %}" title="Calibration frame library">Calibration</a>
+    <a href="/stats" class="navl{% if request.url.path.startswith('/stats') %} active{% endif %}" title="Statistics">Stats</a>
     <a href="/projects/new" class="btn primary">+ New project</a>
-    <a href="/manage" title="Manage lists (telescopes, cameras, …)">☰</a>
-    <a href="/settings" title="Settings">⚙</a>
-    <a href="/password" title="Change password">🔑</a>
-    <a href="/logout" title="Log out">⎋</a>
+    <details class="usermenu">
+      <summary title="Account">👤 {{ user.username }} ▾</summary>
+      <div class="menu">
+        <a href="/manage">☰ Manage lists</a>
+        <a href="/settings">⚙ Settings</a>
+        <a href="/password">🔑 Change password</a>
+        <hr>
+        <form method="post" action="/logout" class="inl"><button class="menulink">⎋ Log out</button></form>
+      </div>
+    </details>
   </nav>
   {% endif %}
   <button class="theme" onclick="toggleTheme()" title="Light / dark mode">◐</button>
@@ -42,7 +64,12 @@ document.documentElement.dataset.theme=t;})();</script>
 function syncFpTheme(){document.getElementById('fp-dark').disabled=document.documentElement.dataset.theme!=='dark';}
 function toggleTheme(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('theme',h.dataset.theme)}catch(e){}syncFpTheme();}
 syncFpTheme();
-flatpickr('.datepicker',{dateFormat:'d-m-Y',allowInput:true,locale:{firstDayOfWeek:1}});
+document.addEventListener('click',function(e){document.querySelectorAll('details.usermenu[open]').forEach(function(d){if(!d.contains(e.target))d.removeAttribute('open');});});
+document.querySelectorAll('.datepicker').forEach(function(el){
+  var dlg=el.closest('dialog');   // modal dialogs live in the top layer -> the calendar must be inside them
+  if(dlg)dlg.classList.add('has-dp');
+  flatpickr(el,Object.assign({dateFormat:'d-m-Y',allowInput:true,locale:{firstDayOfWeek:1}},dlg?{static:true}:{}));
+});
 </script>
 </body>
 </html>

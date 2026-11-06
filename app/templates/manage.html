@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Manage lists – {{ S.app_title }}{% endblock %}
+{% macro spec_inputs(spec) %}{% for key, label, unit, choices in EQUIPMENT_SPECS.get(kind, []) %}
+  {% if choices %}<select name="spec_{{ key }}" class="w-spec" title="{{ label }}"><option value="">{{ label }}…</option>
+    {% for c in choices %}<option {% if spec.get(key) == c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  {% else %}<input name="spec_{{ key }}" value="{{ spec.get(key, '')|num(2) }}" class="w-spec" inputmode="decimal"
+    placeholder="{{ label }}{% if unit %} ({{ unit }}){% endif %}" title="{{ label }}{% if unit %} ({{ unit }}){% endif %}">{% endif %}
+{% endfor %}{% endmacro %}
 {% block content %}
 <h1>Manage lists</h1>
 <nav class="tabs">
@@ -10,27 +16,31 @@
 
 <section class="card">
   <form method="post" action="/manage/{{ kind }}/add" class="row additem">
-    <input name="name" placeholder="New {{ CATALOG_SINGULAR[kind]|lower }} name" required>
-    <input name="notes" placeholder="Notes (optional, e.g. focal length, pixel size…)">
+    <input name="name" maxlength="100" placeholder="New {{ CATALOG_SINGULAR[kind]|lower }} name" required class="w-name">
+    {{ spec_inputs({}) }}
+    <input name="notes" placeholder="Notes (optional)" class="grow">
     <button class="btn primary">+ Add</button>
   </form>
 
   <table class="mtable">
-    <thead><tr><th>Name</th><th>Notes</th><th>Used in</th><th></th></tr></thead>
+    <thead><tr><th>Name{% if EQUIPMENT_SPECS.get(kind) %} · parameters{% endif %}</th><th>Notes</th><th>Used in</th><th></th></tr></thead>
     <tbody>
     {% for it in items %}
       <tr>
         <td colspan="2">
           <form method="post" action="/manage/items/{{ it.id }}/edit" class="inline-edit">
-            <input name="name" value="{{ it.name }}" required class="w-name">
+            <input name="name" maxlength="100" value="{{ it.name }}" required class="w-name">
+            {{ spec_inputs(it.spec) }}
             <input name="notes" value="{{ it.notes or '' }}" class="grow" placeholder="notes">
             <button class="btn small" title="Save (renaming updates all projects)">✓</button>
           </form>
+          {% set sm = spec_summary(kind, it.spec) %}{% if sm %}<div class="muted small">{{ sm }}</div>{% endif %}
         </td>
         <td>{% if usage.get(it.name) %}<a href="/?{{ kind }}={{ it.name|urlencode }}">{{ usage[it.name] }} project{{ 's' if usage[it.name] != 1 }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
-        <td><form method="post" action="/manage/items/{{ it.id }}/delete"
-              onsubmit="return confirm('Delete “{{ it.name }}”?{% if usage.get(it.name) %} It will be cleared from {{ usage[it.name] }} project(s).{% endif %}')">
-            <button class="btn small danger">✕</button></form></td>
+        <td>{% if in_use[it.id] %}<button class="btn small danger" disabled title="Used in {{ in_use[it.id] }} – cannot be deleted (rename is possible)">✕</button>
+          {% else %}<form method="post" action="/manage/items/{{ it.id }}/delete"
+              onsubmit="return confirm({{ ('Delete “' ~ it.name ~ '”?')|tojson|forceescape }})">
+            <button class="btn small danger">✕</button></form>{% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="4" class="muted">No items yet.</td></tr>

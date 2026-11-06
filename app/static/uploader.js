@@ -60,18 +60,41 @@
   }
 
   function addFiles(list) {
-    var added = 0;
+    var added = [], inList = 0, supported = 0;
     list.forEach(function (it) {
       if (!EXT.test(it.file.name) || it.file.name.startsWith('.')) return;
-      if (items.some(function (x) { return x.path === it.path && x.file.size === it.file.size; })) return;
+      supported++;
+      if (items.some(function (x) { return x.path === it.path && x.file.size === it.file.size; })) { inList++; return; }
       it.state = 'queued'; it.sent = 0;
-      items.push(it); added++;
+      items.push(it); added.push(it);
       renderRow(it);
       detect(it).then(function (t) { it.type = TYPES.indexOf(t) >= 0 ? t : (window.UPLOAD_DEFAULT || TYPES[0]); it.sel.value = it.type; updateSummary(); });
     });
     opts.hidden = items.length === 0;
-    if (!added && list.length) alert('No supported files (FITS, RAW, JPEG, PNG, TIFF, XISF …) found.');
+    if (!supported && list.length) alert('No supported files (FITS, RAW, JPEG, PNG, TIFF, XISF …) found.');
+    else if (inList && !added.length) alert(inList === 1 ? 'This file is already in the upload list.' : 'All ' + inList + ' files are already in the upload list.');
+    if (added.length) checkExisting(added);
     updateSummary();
+  }
+
+  /* ask the server which files already exist in this project / set (same name + size) */
+  function checkExisting(list) {
+    var body = { files: list.map(function (it) { return { name: it.file.name, size: it.file.size }; }) };
+    body[root.dataset.targetKey] = root.dataset.targetId;
+    api('POST', '/api/uploads/check', body).then(function (j) {
+      if (!j.existing) return;
+      var skip = root.querySelector('.up-skipdups').checked, n = 0;
+      list.forEach(function (it, i) {
+        var where = j.existing[i];
+        if (!where || it.state !== 'queued') return;
+        n++; it.existsAt = where;
+        if (skip) { setState(it, 'duplicate', 'already exists (' + where + ') – skipped'); it.bar.style.width = '100%'; }
+        else it.st.textContent = '⚠ already exists (' + where + ') – will be uploaded again';
+      });
+      if (n && skip && n === list.length) alert(n === 1 ? 'This file already exists here (' + j.existing.find(Boolean) + ').'
+                                                     : 'All ' + n + ' files already exist here – nothing to upload.');
+      updateSummary();
+    }).catch(function () {});
   }
 
   function renderRow(it) {
@@ -103,6 +126,7 @@
       if (it.state === 'done') done++; if (it.state === 'duplicate') dup++; if (it.state === 'error') failed++;
     });
     totalBar.style.width = total ? (sent / total * 100).toFixed(1) + '%' : '0';
+    if (!running) startBtn.hidden = !items.some(function (x) { return x.state === 'queued' || x.state === 'error'; });
     var counts = {};
     items.forEach(function (it) { counts[it.type || '?'] = (counts[it.type || '?'] || 0) + 1; });
     var byType = Object.keys(counts).map(function (t) { return (LABELS[t] || t) + ': ' + counts[t]; }).join(', ');
@@ -186,6 +210,19 @@
     else if (ok && !left) location.reload();
   }
 
+  root.querySelector('.up-skipdups').addEventListener('change', function (e) {
+    items.forEach(function (it) {
+      if (!it.existsAt) return;
+      if (!e.target.checked && it.state === 'duplicate' && !it.uid) {
+        setState(it, 'queued', '⚠ already exists (' + it.existsAt + ') – will be uploaded again');
+        it.sel.disabled = false; it.bar.style.width = '0';
+      } else if (e.target.checked && it.state === 'queued') {
+        setState(it, 'duplicate', 'already exists (' + it.existsAt + ') – skipped'); it.bar.style.width = '100%';
+      }
+    });
+    updateSummary();
+  });
+
   // ---- inputs ----
   root.querySelector('.pick-files').addEventListener('change', function (e) {
     addFiles([...e.target.files].map(function (f) { return { file: f, path: f.name }; })); e.target.value = '';
@@ -215,12 +252,14 @@
     else addFiles([...e.dataTransfer.files].map(function (f) { return { file: f, path: f.name }; }));
     root.closest('details').open = true;
   });
-  // dropping anywhere on the page opens the uploader
+  // dropping anywhere on the page opens the uploader – unless it is not attached to a session yet
   function hasFiles(e) { return e.dataTransfer && [...e.dataTransfer.types].indexOf('Files') >= 0; }
-  document.addEventListener('dragover', function (e) { if (hasFiles(e)) { e.preventDefault(); root.closest('details').open = true; } });
+  function detached() { return root.closest('details').hidden; }
+  document.addEventListener('dragover', function (e) { if (hasFiles(e)) { e.preventDefault(); if (!detached()) root.closest('details').open = true; } });
   document.addEventListener('drop', function (e) {
     if (!hasFiles(e) || dz.contains(e.target)) return;
     e.preventDefault();                      // never let the browser open/download a dropped file
+    if (detached()) { alert('Click “⬆ Add files” on the session (night) the files belong to, then drop them there.'); return; }
     var out = [], entries = [...(e.dataTransfer.items || [])].map(function (i) { return i.webkitGetAsEntry && i.webkitGetAsEntry(); }).filter(Boolean);
     if (entries.length) Promise.all(entries.map(function (en) { return readEntry(en, '', out); })).then(function () { addFiles(out); });
     else addFiles([...e.dataTransfer.files].map(function (f) { return { file: f, path: f.name }; }));

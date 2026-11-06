@@ -26,6 +26,19 @@ CATALOG_SINGULAR = {
     "software": "Software", "object_type": "Object type", "location": "Location",
 }
 
+# technical parameters per equipment kind: (key, label, unit, choices or None) – stored as JSON in CatalogItem.specs
+EQUIPMENT_SPECS = {
+    "telescope": [("aperture_mm", "Aperture", "mm", None), ("focal_mm", "Focal length", "mm", None),
+                  ("telescope_type", "Type", None, ["Refractor", "Newtonian", "SCT", "RC", "Maksutov",
+                                                     "Camera lens", "Other"])],
+    "camera": [("width_px", "Width", "px", None), ("height_px", "Height", "px", None),
+               ("pixel_um", "Pixel size", "µm", None), ("sensor", "Sensor", None, ["Mono", "Color (OSC)", "DSLR"]),
+               ("cooled", "Cooling", None, ["Cooled", "Uncooled"])],
+    "mount": [("mount_type", "Type", None, ["Equatorial (GEM)", "Harmonic / strain wave", "Alt-Az",
+                                            "Star tracker", "Fork"]),
+              ("payload_kg", "Payload", "kg", None), ("goto", "GoTo", None, ["Yes", "No"])],
+}
+
 
 class Base(DeclarativeBase):
     pass
@@ -34,6 +47,13 @@ class Base(DeclarativeBase):
 project_calibration = Table(
     "project_calibration", Base.metadata,
     Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("calib_set_id", ForeignKey("calibration_sets.id", ondelete="CASCADE"), primary_key=True),
+)
+
+# calibration library sets linked to one imaging session (night)
+session_calibration = Table(
+    "session_calibration", Base.metadata,
+    Column("session_id", ForeignKey("imaging_sessions.id", ondelete="CASCADE"), primary_key=True),
     Column("calib_set_id", ForeignKey("calibration_sets.id", ondelete="CASCADE"), primary_key=True),
 )
 
@@ -46,7 +66,8 @@ class User(Base):
 
 
 class Project(Base):
-    """One target / imaging project (may span several nights = sessions)."""
+    """One object (target). Dates, location and equipment live in its sessions (nights).
+    Legacy columns capture_date/location/telescope/camera/mount/software/filters/total_exposure are unused."""
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), index=True)
@@ -86,6 +107,7 @@ class ImagingSession(Base):
     telescope: Mapped[str | None] = mapped_column(String(200))
     camera: Mapped[str | None] = mapped_column(String(200))
     mount: Mapped[str | None] = mapped_column(String(200))
+    software: Mapped[str | None] = mapped_column(String(200))
     seeing: Mapped[str | None] = mapped_column(String(50))
     sqm: Mapped[str | None] = mapped_column(String(20))
     temperature: Mapped[str | None] = mapped_column(String(20))
@@ -97,6 +119,8 @@ class ImagingSession(Base):
 
     project: Mapped[Project] = relationship(back_populates="sessions")
     files: Mapped[list["FrameFile"]] = relationship(back_populates="session")
+    calib_sets: Mapped[list["CalibrationSet"]] = relationship(secondary=session_calibration,
+                                                              back_populates="sessions")
 
 
 class CalibrationSet(Base):
@@ -121,6 +145,7 @@ class CalibrationSet(Base):
     files: Mapped[list["FrameFile"]] = relationship(
         back_populates="calib_set", cascade="all, delete-orphan", order_by="FrameFile.original_name")
     projects: Mapped[list[Project]] = relationship(secondary=project_calibration, back_populates="calib_sets")
+    sessions: Mapped[list[ImagingSession]] = relationship(secondary=session_calibration, back_populates="calib_sets")
 
 
 class FrameFile(Base):
@@ -186,6 +211,15 @@ class CatalogItem(Base):
     kind: Mapped[str] = mapped_column(String(30), index=True)
     name: Mapped[str] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(Text)
+    specs: Mapped[str | None] = mapped_column(Text)        # JSON, see EQUIPMENT_SPECS
+
+    @property
+    def spec(self) -> dict:
+        import json
+        try:
+            return json.loads(self.specs) if self.specs else {}
+        except ValueError:
+            return {}
 
 
 class Setting(Base):
@@ -225,6 +259,8 @@ MIGRATIONS = [
     "ALTER TABLE calibration_sets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT now()",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+    "ALTER TABLE catalog_items ADD COLUMN IF NOT EXISTS specs TEXT",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS software VARCHAR(200)",
     "UPDATE projects SET created_at = now() WHERE created_at IS NULL",
     "UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL",
 ]

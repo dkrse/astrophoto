@@ -48,12 +48,13 @@ window.Slideshow = (function () {
   function start(list, startAt, seconds, startPaused) {
     if (!list || !list.length) return;
     if (!el) build();
-    ids = list; i = startAt || 0; secs = seconds || 6; paused = !!startPaused;
+    ids = list; i = Math.min(Math.max(0, startAt || 0), list.length - 1); secs = seconds || 6; paused = !!startPaused;
     el.querySelector('[data-a=play]').textContent = paused ? '▶' : '⏸';
     el.hidden = false; document.body.style.overflow = 'hidden';
     if (!startPaused && el.requestFullscreen) el.requestFullscreen().catch(function () {});
     var need = ids.filter(function (x) { return !meta[x]; });
-    (need.length ? loadMeta(need) : Promise.resolve()).then(show);
+    // captions are optional: if loading them fails (network), still show the images
+    (need.length ? loadMeta(need) : Promise.resolve()).catch(function () {}).then(show);
   }
   return { start: start };
 })();
