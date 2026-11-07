@@ -11,27 +11,53 @@ Built with FastAPI, PostgreSQL and plain HTML/JS. Runs in Docker.
 
 ## Screenshots
 
-**Overview** – summary, filters on nights / equipment, project cards with nights and integration
+**Overview** – summary, filters on nights / equipment, project cards with nights and integration;
+**⬇ Metadata** exports the metadata of all projects
 
 ![Overview](screenshots/01.png)
 
-**Project** – one object with its sessions (nights); files grouped by session, details of each file and
-session in an **i** dialog
+**Project** – one object with its sessions (nights); the **Measured** column shows the plate-solved focal length
+(vs. the equipment), star FWHM and limiting magnitude per night; click a row to jump to its files
 
 ![Project detail](screenshots/02.png)
+
+**Session details** – conditions, equipment and measured values (focal length, scale, rotation, limiting
+magnitude, FWHM, tilt) with a button to store the measured focal length in the equipment list
+
+![Session dialog](screenshots/09.png)
 
 **Viewer – FITS with manual levels** – histogram with black / midtone / white markers and live preview,
 FITS header and frame quality in the side panel
 
 ![Viewer with histogram levels](screenshots/03.png)
 
-**Viewer** – fit / 1:1 / zoom, Bayer, flip, channels, stretch and brightness controls (info panel hidden)
+**Viewer** – fit / 1:1 / zoom, Bayer, flip, channels, stretch and brightness controls, ✨ Objects,
+🔬 Optics and 🎯 Solve (info panel hidden)
 
-![Viewer – M101 (light)](screenshots/04.png)
+![Viewer – M51 (light)](screenshots/04.png)
+
+**✨ Objects overlay** – objects in the field from the OpenNGC catalogue, RA / Dec grid and north / east,
+after plate solving
+
+![Objects overlay – M51](screenshots/06.png)
+
+**🎯 Plate solve** – focal length vs. equipment, scale, field of view, centre, rotation, limiting magnitude,
+pointing check, objects in the field, annotated JPEG export
+
+![Plate solve dialog](screenshots/07.png)
+
+**🔬 Optics inspector** – findings (tilt, curvature, coma / spacing, guiding) and a 3×3 mosaic of corners,
+edges and centre with FWHM and elongation
+
+![Optics inspector](screenshots/08.png)
 
 **Statistics** – integration per month / year, objects, filters, equipment, disk usage
 
 ![Statistics](screenshots/05.png)
+
+**Optics & sky over time** – per equipment and night: star FWHM, limiting magnitude, tilt, elongation
+
+![Optics and sky over time](screenshots/10.png)
 
 ## Features
 
@@ -47,6 +73,8 @@ FITS header and frame quality in the side panel
 - Integration time per session and filter (rejected frames excluded), total per project
 - Image scale (″/px) and field of view per session from the equipment parameters
 - Session and file details in compact **i** dialogs; created / modified timestamps everywhere
+- Clicking a session row jumps to that session's files
+- Duplicate warning when creating / renaming a project: `NGC 123`, `ngc123` and `NGC  123` are the same
 - Final stacks shown as a compact gallery on the project page; cover image picker
 
 **Equipment**
@@ -80,6 +108,41 @@ FITS header and frame quality in the side panel
 - Brightness; save settings per file or per frame type
 - FITS header and EXIF side panel
 
+**Plate solving** (ASTAP, fully local, on demand – only the file you click **🎯 Solve** on)
+- Measures the real image scale and from it the **focal length** (compared with the session's telescope),
+  field of view, centre (RA / Dec) and rotation; results are stored with the file and in the metadata export
+- Resized exports (e.g. JPEG at 50 %, drizzle) are recognised from the session camera's sensor size and the
+  focal length is corrected (only when the camera's resolution and pixel size are set; crops stay unchanged)
+- **Objects in the field** from the OpenNGC catalogue (NGC, IC, Messier + addendum) with type, magnitude
+  and size
+- **✨ Objects** overlay in the viewer (`O`): object ellipses with names, RA / Dec grid, north / east arrows;
+  follows zoom, pan, flip and RAW / JPEG orientation
+- **Pointing check**: where the project's object lies relative to the frame centre (in frame / off-centre /
+  not in the frame)
+- **Limiting magnitude** of every solved frame: detected stars are matched to the local ASTAP star database
+  (Gaia DR3, BP magnitudes) – zero point and the magnitude reached at SNR 5 (not for stretched 8-bit images)
+- **⬇ Annotated JPEG**: the image as shown in the viewer with objects, RA / Dec grid and N / E drawn in
+- **🎯 Solve in the bulk bar** for many frames; already solved frames are taken over unless “solve again”
+- **Measured per session**: median focal length (vs. the equipment), scale, rotation, limiting magnitude,
+  star FWHM (″) and tilt in the sessions table and the session dialog
+- **Use measured focal length**: one click stores the measured focal length in the telescope's parameters
+  (solve dialog, bulk solve summary, session dialog)
+
+**Optics inspector** (**🔬 Optics** in the viewer, on demand, nothing stored)
+- Star size (FWHM, in ″ when the frame is plate-solved) and shape (elongation, direction) in every part of the frame
+- 3×3 mosaic of corners, edges and centre with FWHM / elongation per region (colour = sharpest … worst)
+- Overlay of star size and elongation direction on the image
+- Plain-language findings: sensor tilt (which side is worse), field curvature / soft corners, radial or
+  tangential elongation at the edges (coma, corrector / flattener spacing), elongation in one direction
+  everywhere (guiding, wind, flexure, collimation), irregular star shapes
+- **🔬 Optics** in the bulk bar: analyses the selected frames one after another (max. 60) – table per frame
+  and a summary of what repeats (e.g. tilt consistently towards one side = optics, changing = conditions)
+- The summary of every analysis is stored with the file (the mosaic is not) and feeds the session values
+
+**Optics & sky over time** (Stats page)
+- Per equipment (telescope · camera) and night: star FWHM (″), limiting magnitude, tilt and elongation as
+  charts with tooltips (click a point to open the session) and as a table
+
 **Downloads & export**
 - Streamed ZIP downloads (start immediately, no temporary files); rejected frames excluded by default;
   `INFO.txt` / `metadata.json` describe exactly the downloaded scope (whole project or one session)
@@ -89,6 +152,8 @@ FITS header and frame quality in the side panel
 - `INFO.txt` summary and `metadata.json` in every project ZIP
 - Metadata export: everything about a project incl. all FITS headers and EXIF as JSON (headers stored per
   session folder, so equal file names from different nights are all kept)
+- **⬇ Metadata** in the header: the same for all projects at once plus the calibration library
+  (`all_projects.json` + one folder per project)
 
 **Overview**
 - Search across project fields, session notes and equipment, file names, descriptions and FITS headers;
@@ -155,7 +220,19 @@ FITS header and frame quality in the side panel
    docker compose up -d --build
    ```
 
-4. Open <http://localhost:8010>, sign in with `admin` / `admin` and **change the password** (account menu → Change password).
+4. Plate solving (optional): download an ASTAP star database into `DATA_DIR/astap` (host:
+   `/mnt/data/media/astrophoto/astap`). The ASTAP CLI and the OpenNGC catalogue are built into the image.
+
+   ```bash
+   mkdir -p /mnt/data/media/astrophoto/astap && cd /mnt/data/media/astrophoto/astap
+   curl -L -o d50.zip https://sourceforge.net/projects/astap-program/files/star_databases/d50_star_database.zip/download
+   unzip d50.zip && rm d50.zip
+   ```
+
+   D50 (~0.9 GB) covers fields of view from about 0.2°; for wider fields D20 / D05 are smaller, for very
+   small fields use D80. Paths can be changed with `ASTAP_DB` / `ASTAP_BIN` / `OPENNGC_DIR`.
+
+5. Open <http://localhost:8010>, sign in with `admin` / `admin` and **change the password** (account menu → Change password).
 
 ## Usage
 
@@ -171,7 +248,9 @@ FITS header and frame quality in the side panel
   *📄 Export metadata*.
 - **Details**: the **i** button on a session or a file opens all its information.
 - **Viewer** shortcuts: `F` fit, `1` 100 %, `+`/`-` zoom, `←`/`→` previous / next file, `I` info panel,
-  `Shift+F` fullscreen, `Esc` close levels.
+  `Shift+F` fullscreen, `Esc` close levels, `O` objects overlay (after plate solving).
+- **🎯 Solve** in the viewer plate-solves the file shown (seconds with RA / Dec in the FITS header, longer
+  blind); the dialog shows focal length, FOV, centre, rotation, the pointing check and objects in the field.
 
 ## Storage layout
 
@@ -183,6 +262,7 @@ DATA_DIR/
     calibration/<id>/<type>/<file>     calibration library
   .cache/<file id>/…                   rendered views (disposable; max 30 days / 5 GB)
   .uploads/                            unfinished chunked uploads (removed after 48 h)
+  astap/                               ASTAP star database (plate solving, downloaded once)
 ```
 
 ## Development
@@ -195,6 +275,11 @@ app/
   worker.py        background processing (imports, hashes, previews, metadata, statistics)
   preview.py       loading / stretching / histogram / metadata for FITS, RAW, images
   framestats.py    FWHM, star count, background, noise
+  platesolve.py    ASTAP plate solving, WCS, OpenNGC catalogue, overlays, pointing check
+  optics.py        optics inspector (star FWHM / elongation across the field, tilt, curvature, coma)
+  photometry.py    ASTAP star database reader, limiting magnitude / zero point
+  annotate.py      annotated JPEG export
+  measured.py      measured values per session (medians of solves and optics analyses)
   routes_*.py      HTTP routes
   templates/       Jinja2 templates
   static/          CSS, JS (uploader, bulk actions, catalog dialog, slideshow), flatpickr
@@ -202,6 +287,11 @@ tests/             pytest suite
 ```
 
 ### Tests
+
+`tests/test_sky.py` covers plate-solve helpers (catalogue, WCS overlays, pointing, resize detection),
+the star database reader and limiting magnitude, the optics inspector on synthetic star fields (tilt,
+curvature, round stars, flips), measured session values, annotated export, applying the focal length,
+duplicate projects and the export of all projects. It does not need ASTAP's star database.
 
 ```bash
 ./run-tests.sh            # all tests

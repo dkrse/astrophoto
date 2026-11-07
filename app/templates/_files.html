@@ -37,7 +37,7 @@
         "suspect": f.suspect, "rejected": f.rejected, "sha256": f.sha256 or "", "header": f.header is not none and f.header != "",
         "thumb": f.thumb_path is not none, "stored": f.stored_path, "ftype": f.frame_type,
         "sid": f.session_id or ""} %}
-    <tr class="{{ 'rejected' if f.rejected }} {{ 'suspect' if f.suspect and not f.rejected }}" data-id="{{ f.id }}">
+    <tr class="{{ 'rejected' if f.rejected }} {{ 'suspect' if f.suspect and not f.rejected }}" data-id="{{ f.id }}"{% if f.solve and '"ok": true' in f.solve %} data-solved="1"{% endif %}>
       <td><input type="checkbox" class="selfile" data-group="{{ gk }}" value="{{ f.id }}"></td>
       <td>{% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img class="mini" loading="lazy" src="/files/{{ f.id }}/thumb" alt=""></a>
           {% elif f.status in ('pending', 'importing') %}<span class="mini ph" title="Processing…">⏳</span>{% endif %}</td>
@@ -89,11 +89,38 @@
       {% if calib_sets %}<optgroup label="Calibration library">{% for c in calib_sets %}<option value="calib:{{ c.id }}">{{ c.name }}</option>{% endfor %}</optgroup>{% endif %}
     </select></label>
   <button type="button" class="btn small" data-bulk="meta">✎ Metadata…</button>
+  <button type="button" class="btn small" data-bulk="solve" title="Plate-solve the selected frames: focal length, scale, rotation, limiting magnitude, pointing">🎯 Solve</button>
+  <button type="button" class="btn small" data-bulk="optics" title="Optics inspector for the selected frames: FWHM, elongation, tilt, curvature – and what repeats across frames">🔬 Optics</button>
   <button type="button" class="btn small" data-bulk="reject" title="Exclude lights from ZIP and integration">✗ Reject</button>
   <button type="button" class="btn small" data-bulk="unreject">↺ Restore</button>
   <button type="button" class="btn small" data-bulk="reprocess" title="Regenerate preview, metadata and statistics">↻ Reprocess</button>
   <button type="button" class="btn small danger" data-bulk="delete">🗑 Delete</button>
 </div>
+<dialog id="bsolve-dlg" class="cat-dialog wide">
+  <form method="dialog" class="cat-head"><h2>🎯 Plate solve – <span id="bs-n"></span> frames</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <div class="dlg-body">
+    <div class="row"><span class="muted small" id="bs-msg"></span><button type="button" class="btn small" id="bs-stop">Stop</button></div>
+    <div id="bs-sum"></div>
+    <div class="tablewrap"><table class="kvt small"><thead><tr><th>File</th><th class="num">Focal</th><th class="num">Scale</th>
+      <th class="num">Rotation</th><th class="num" title="Limiting magnitude (Gaia BP, SNR 5)">Lim. mag</th><th>Pointing</th></tr></thead>
+      <tbody id="bs-rows"></tbody></table></div>
+    <p class="muted small">Results are stored with each file; the session table shows the medians. Frames solved before are
+      taken over unless “solve again” is checked.</p>
+    <label class="inline small"><input type="checkbox" id="bs-again"> solve again frames that are already solved</label>
+  </div>
+</dialog>
+<dialog id="bopt-dlg" class="cat-dialog wide">
+  <form method="dialog" class="cat-head"><h2>🔬 Optics – <span id="bo-n"></span> frames</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <div class="dlg-body">
+    <div class="row"><span class="muted small" id="bo-msg"></span><button type="button" class="btn small" id="bo-stop">Stop</button></div>
+    <div id="bo-sum"></div>
+    <div class="tablewrap"><table class="kvt small" id="bo-table"><thead><tr><th>File</th><th class="num">Stars</th><th class="num">FWHM</th>
+      <th class="num">Elong.</th><th class="num" title="Corner FWHM vs. centre">Corners</th><th title="FWHM change across the field and the worse side">Tilt</th><th>Findings</th></tr></thead>
+      <tbody id="bo-rows"></tbody></table></div>
+    <p class="muted small">One frame can mislead (seeing, clouds, focus drift) – what repeats across most frames is what the optics do.
+      Open a frame in the viewer and use 🔬 Optics there for the mosaic and the overlay.</p>
+  </div>
+</dialog>
 <dialog id="info-dlg" class="cat-dialog wide">
   <form method="dialog" class="cat-head"><h2 id="fi-title">File</h2><button class="btn small" aria-label="Close">✕</button></form>
   <div class="dlg-body">
@@ -168,6 +195,99 @@ document.querySelectorAll('#info-dlg [data-fi]').forEach(function(sel){
   });
 });
 document.getElementById('info-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
+// ---------- plate solve for several frames ----------
+window.bulkSolve=function(ids){
+  var dlg=document.getElementById('bsolve-dlg'),rows=document.getElementById('bs-rows'),msg=document.getElementById('bs-msg'),
+      sum=document.getElementById('bs-sum'),stop=document.getElementById('bs-stop'),res=[],cancel=false,MAX=200;
+  if(ids.length>MAX&&!confirm('Solve the first '+MAX+' of '+ids.length+' selected frames?'))return;
+  ids=ids.slice(0,MAX);rows.innerHTML='';sum.innerHTML='';document.getElementById('bs-n').textContent=ids.length;
+  stop.hidden=false;stop.onclick=function(){cancel=true;};dlg.onclose=function(){cancel=true;};dlg.showModal();
+  var tr0=function(id){return document.querySelector('tr[data-id="'+id+'"]');};
+  var name=function(id){var r=tr0(id);r=r&&r.querySelector('.fname a');return r?r.textContent:'#'+id;};
+  var med=function(a){a=a.filter(function(v){return v!=null;}).sort(function(x,y){return x-y;});return a.length?a[Math.floor(a.length/2)]:null;};
+  function row(id,d){var tr=rows.insertRow(),c=function(v,cls){var td=tr.insertCell();td.textContent=v==null?'':v;if(cls)td.className=cls;return td;};
+    var a=document.createElement('a');a.href='/files/'+id+'/view';a.textContent=name(id);tr.insertCell().append(a);
+    if(!d.ok){var td=c('✗ '+(d.error||'failed'),'muted');td.colSpan=5;return;}
+    c(d.focal_mm?Math.round(d.focal_mm)+' mm'+(d.focal_expected_mm?' ('+(d.focal_mm>=d.focal_expected_mm?'+':'')+(d.focal_mm/d.focal_expected_mm*100-100).toFixed(1)+' %)':''):'—','num');
+    c((d.sensor_scale_arcsec_px||d.scale_arcsec_px).toFixed(3)+'″','num');c(d.rotation_deg.toFixed(1)+'°','num');
+    c(d.photometry&&d.photometry.limit_mag?d.photometry.limit_mag.toFixed(1):'—','num');
+    var t=d.target_check;c(!t?'':(!t.found?'? '+t.target:(t.inside?(t.offset_pct<=15?'✓ ':'⚠ ')+t.sep_arcmin.toFixed(1)+'′ '+t.direction:'✗ not in frame')));}
+  function summary(){
+    var ok=res.filter(function(d){return d.ok;});sum.innerHTML='';if(!ok.length)return;
+    var by={};ok.forEach(function(d){if(d.telescope&&d.focal_mm)(by[d.telescope]=by[d.telescope]||[]).push(d);});
+    var e=document.createElement('div');e.className='target-check';
+    var lims=med(ok.map(function(d){return d.photometry&&d.photometry.limit_mag;}));
+    e.textContent=ok.length+' solved · median scale '+med(ok.map(function(d){return d.sensor_scale_arcsec_px||d.scale_arcsec_px;})).toFixed(3)+'″/px'+
+      (lims?' · median limiting magnitude '+lims.toFixed(1):'');sum.append(e);
+    Object.keys(by).forEach(function(tel){var L=by[tel],f=med(L.map(function(d){return d.focal_mm;})),ex=L[0].focal_expected_mm;
+      var x=document.createElement('div');x.className='target-check '+(ex&&Math.abs(f/ex-1)>=0.1?'bad':(ex&&Math.abs(f/ex-1)>=0.03?'warn':'good'));
+      var t=document.createElement('span');t.textContent=tel+': median focal length '+f.toFixed(1)+' mm from '+L.length+' frame(s)'+(ex?' – equipment '+ex+' mm ('+(f>=ex?'+':'')+(f/ex*100-100).toFixed(1)+' %) ':' ');x.append(t);
+      if(ex&&Math.abs(f/ex-1)>=0.01){var b=document.createElement('button');b.type='button';b.className='btn small';b.textContent='Use '+Math.round(f)+' mm';
+        b.onclick=function(){if(!confirm('Set the focal length of “'+tel+'” to '+Math.round(f)+' mm?'))return;
+          fetch('/api/equipment/focal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telescope:tel,focal_mm:f})})
+            .then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);return;}b.replaceWith(document.createTextNode('✓ set to '+j.focal_mm+' mm'));});};x.append(b);}
+      sum.append(x);});
+  }
+  var i=0;
+  (function next(){
+    if(cancel||i>=ids.length){msg.textContent=(cancel?'Stopped after ':'Done: ')+res.length+' of '+ids.length+' frames.';stop.hidden=true;return;}
+    var id=ids[i++],again=document.getElementById('bs-again').checked,t=tr0(id);
+    msg.textContent='⏳ '+i+' / '+ids.length+': '+name(id);
+    var req=(t&&t.dataset.solved&&!again)?fetch('/api/files/'+id+'/solved'):fetch('/api/files/'+id+'/solve',{method:'POST'});
+    req.then(function(r){return r.json();}).catch(function(){return {ok:false,error:'request failed'};})
+      .then(function(d){res.push(d);row(id,d);summary();if(d.ok&&t)t.dataset.solved='1';next();});
+  })();
+};
+document.getElementById('bsolve-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
+// ---------- optics for several frames (one after another) ----------
+window.bulkOptics=function(ids){
+  var dlg=document.getElementById('bopt-dlg'),rows=document.getElementById('bo-rows'),msg=document.getElementById('bo-msg'),
+      sum=document.getElementById('bo-sum'),stop=document.getElementById('bo-stop'),res=[],cancel=false,MAX=60;
+  if(ids.length>MAX&&!confirm('Analyse the first '+MAX+' of '+ids.length+' selected frames?'))return;
+  ids=ids.slice(0,MAX);rows.innerHTML='';sum.innerHTML='';document.getElementById('bo-n').textContent=ids.length;
+  stop.hidden=false;stop.onclick=function(){cancel=true;};dlg.onclose=function(){cancel=true;};dlg.showModal();
+  var name=function(id){var r=document.querySelector('tr[data-id="'+id+'"] .fname a');return r?r.textContent:'#'+id;};
+  var icon={ok:'✓',warn:'⚠',bad:'✗'};
+  function row(id,d){var tr=rows.insertRow(),c=function(v,cls){var td=tr.insertCell();td.textContent=v==null?'':v;if(cls)td.className=cls;return td;};
+    var a=document.createElement('a');a.href='/files/'+id+'/view';a.textContent=name(id);tr.insertCell().append(a);
+    if(!d.ok){var td=c('✗ '+d.error,'muted');td.colSpan=6;return;}
+    var m=d.metrics||{},tilt=d.diagnosis.find(function(x){return x.key==='tilt';});
+    c(d.stars,'num');c(d.fwhm_px.toFixed(2)+' px'+(d.fwhm_arcsec?' / '+d.fwhm_arcsec.toFixed(1)+'″':''),'num');c(d.elong.toFixed(2),'num');
+    c(m.corners_pct!=null?(m.corners_pct>0?'+':'')+m.corners_pct+' %':'','num');
+    c(m.tilt_pct!=null?m.tilt_pct+' %'+(tilt?' → '+tilt.dir:''):'');
+    c(d.diagnosis.filter(function(x){return x.level!=='ok';}).map(function(x){return icon[x.level]+' '+x.title;}).join(' · ')||'✓ ok');}
+  function summary(){
+    var ok=res.filter(function(d){return d.ok;}),n=ok.length;sum.innerHTML='';if(!n)return;
+    var med=function(a){a=a.slice().sort(function(x,y){return x-y;});return a[Math.floor(a.length/2)];};
+    var add=function(level,title,text){var e=document.createElement('div');e.className='target-check '+({ok:'good',warn:'warn',bad:'bad'}[level]||'');
+      var b=document.createElement('b');b.textContent=(icon[level]||'')+' '+title;var p=document.createElement('div');p.className='small';p.textContent=text;e.append(b,p);sum.append(e);};
+    var fw=ok.map(function(d){return d.fwhm_px;}),as=ok.filter(function(d){return d.fwhm_arcsec;}).map(function(d){return d.fwhm_arcsec;});
+    add('', 'Median of '+n+' frames','FWHM '+med(fw).toFixed(2)+' px'+(as.length?' / '+med(as).toFixed(2)+'″':'')+' (best '+Math.min.apply(null,fw).toFixed(2)+', worst '+Math.max.apply(null,fw).toFixed(2)+') · elongation '+med(ok.map(function(d){return d.elong;})).toFixed(2));
+    var count=function(k){return ok.filter(function(d){return d.diagnosis.some(function(x){return x.key===k;});}).length;};
+    // tilt direction: average of unit vectors (8 directions) -> consistent if they point the same way
+    var ANG={'right':0,'bottom right':45,'bottom':90,'bottom left':135,'left':180,'top left':225,'top':270,'top right':315},
+        DN=['right','bottom right','bottom','bottom left','left','top left','top','top right'],sx=0,sy=0,nt=0;
+    ok.forEach(function(d){d.diagnosis.forEach(function(x){if(x.key==='tilt'&&x.dir in ANG){nt++;var a=ANG[x.dir]*Math.PI/180;sx+=Math.cos(a);sy+=Math.sin(a);}});});
+    var R=nt?Math.hypot(sx,sy)/nt:0,mean=DN[Math.round(((Math.atan2(sy,sx)*180/Math.PI+360)%360)/45)%8];
+    if(nt>=Math.max(2,n*0.5))add(R>=0.7?'bad':'warn','Tilt in '+nt+' of '+n+' frames',
+      R>=0.7?'Consistently worse towards the '+mean+' side – the direction repeats, so it is the optics / camera (tilt), not seeing.'
+            :'The worse side changes between frames – more likely focus drift, seeing or clouds than a fixed tilt.');
+    else add('ok','No consistent tilt',nt+' of '+n+' frames show tilt.');
+    [['curvature','Soft corners'],['radial','Radial elongation at the edges (coma / spacing)'],['tangential','Tangential elongation at the edges (spacing)'],
+     ['uniform','Elongation in one direction everywhere (guiding / wind)'],['irregular','Irregular star shapes']].forEach(function(k){
+      var c=count(k[0]);if(c>=Math.max(2,n*0.5))add('warn',k[1]+' in '+c+' of '+n+' frames','Repeats in most frames, so it is systematic.');
+      else if(c)add('', k[1]+' in '+c+' of '+n+' frames','Only occasionally – probably conditions of those frames.');});
+  }
+  var i=0;
+  (function next(){
+    if(cancel||i>=ids.length){msg.textContent=(cancel?'Stopped after ':'Done: ')+res.length+' of '+ids.length+' frames.';stop.hidden=true;return;}
+    var id=ids[i++];msg.textContent='⏳ '+i+' / '+ids.length+': '+name(id);
+    fetch('/api/files/'+id+'/optics?flip=auto&tiles=0').then(function(r){return r.json();})
+      .catch(function(){return {ok:false,error:'request failed'};})
+      .then(function(d){res.push(d);row(id,d);summary();next();});
+  })();
+};
+document.getElementById('bopt-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
 </script>
 <dialog id="meta-dlg" class="cat-dialog">
   <form method="dialog" class="cat-head"><h2>Set metadata</h2><button class="btn small">✕</button></form>

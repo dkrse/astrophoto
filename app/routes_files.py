@@ -53,7 +53,23 @@ def file_view(request: Request, fid: int, user: User = Depends(current_user), db
                 can_render=ext in PREVIEW_EXT and src.exists(), info=info,
                 prev_f=siblings[i - 1] if i > 0 else None,
                 next_f=siblings[i + 1] if i + 1 < len(siblings) else None,
-                pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"])
+                pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"], solved=with_target(f, _solved(f)),
+                rowflip=ext in FITS_EXT and src.exists() and info_rowflip(src) == "BOTTOM-UP")
+
+
+def info_rowflip(src):
+    from .preview import fits_header
+    try:
+        return str(fits_header(src).get("ROWORDER", "")).strip().upper()
+    except Exception:
+        return ""
+
+
+def _solved(f: FrameFile):
+    try:
+        return json.loads(f.solve) if f.solve else None
+    except ValueError:
+        return None
 
 
 @app.get("/files/{fid}/render")
@@ -343,3 +359,150 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
     flash(request, msg)
     return {"ok": True, "message": msg}
 
+
+
+# ---------- plate solving (ASTAP, on demand) ----------
+@app.post("/api/files/{fid}/solve")
+async def file_solve(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from . import platesolve
+    from .core import catalog
+    f = get_file(db, fid)
+    src = DATA_DIR / f.stored_path
+    if not src.exists():
+        return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
+    pixel_um = focal = None
+    sensor = None
+    s = f.session
+    if s:
+        cat = catalog(db)
+        spec = lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}
+        cam = spec("camera", s.camera)
+        pixel_um = to_float(cam.get("pixel_um"))
+        focal = to_float(spec("telescope", s.telescope).get("focal_mm"))
+        w, h = to_float(cam.get("width_px")), to_float(cam.get("height_px"))
+        sensor = (w, h) if w and h else None
+    res = await run_in_threadpool(platesolve.solve, src, f.header, pixel_um, focal, sensor)
+    if s:
+        res["camera"], res["telescope"] = s.camera, s.telescope
+    if res.get("ok") and sensor and pixel_um:
+        platesolve.resize_check(res, sensor, focal)
+    if res.get("ok"):
+        res["ra"], res["dec"] = platesolve.fmt_ra(res["ra_deg"]), platesolve.fmt_dec(res["dec_deg"])
+    f.solve = platesolve.to_json(res)
+    db.commit()
+    return with_target(f, res)
+
+
+def file_target(f: FrameFile) -> str | None:
+    p = f.project
+    return (p.target or p.name) if p else None
+
+
+def with_target(f: FrameFile, res: dict | None):
+    """Adds the (always fresh) position of the project's object relative to the frame centre."""
+    from . import platesolve
+    if res and res.get("ok") and res.get("wcs"):
+        try:
+            res = {**res, "target_check": platesolve.target_check(res, file_target(f))}
+        except Exception as e:                     # never break the viewer because of the catalogue
+            res = {**res, "target_check": {"target": file_target(f), "found": False, "error": str(e)}}
+    return res
+
+
+@app.get("/api/files/{fid}/solved")
+def file_solved(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The stored plate solve (with a fresh pointing check)."""
+    f = get_file(db, fid)
+    res = _solved(f)
+    if not res:
+        return JSONResponse({"ok": False, "error": "Not solved yet"}, status_code=404)
+    res = with_target(f, res)
+    if f.session:
+        from .core import catalog
+        tel = next((it.spec for it in catalog(db)["telescope"] if it.name == f.session.telescope), {})
+        if res.get("ok") and to_float(tel.get("focal_mm")):     # compare with the current equipment value
+            res["focal_expected_mm"] = to_float(tel.get("focal_mm"))
+        res.setdefault("telescope", f.session.telescope)
+        res.setdefault("camera", f.session.camera)
+    return res
+
+
+@app.get("/api/files/{fid}/annotations")
+def file_annotations(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from . import platesolve
+    res = _solved(get_file(db, fid))
+    if not res or not res.get("ok"):
+        return JSONResponse({"error": "File is not plate-solved yet"}, status_code=404)
+    if not res.get("wcs"):
+        return JSONResponse({"error": "Solved with an older version – click Solve again"}, status_code=409)
+    out = platesolve.annotations(res)
+    out["orient"] = res.get("orient", 0)
+    return out
+
+
+# ---------- optics inspector (on demand, not stored) ----------
+@app.get("/api/files/{fid}/optics")
+async def file_optics(fid: int, flip: str = "none", tiles: int = 1, user: User = Depends(current_user),
+                      db: Session = Depends(get_db)):
+    from . import optics, platesolve
+    f = get_file(db, fid)
+    src = DATA_DIR / f.stored_path
+    if not src.exists():
+        return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
+    if flip == "auto":                       # as the viewer shows it by default (FITS ROWORDER)
+        flip = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
+    flip = flip if flip in ("none", "v", "h", "vh") else "none"
+    solved = _solved(f) or {}
+    scale = solved.get("scale_arcsec_px") if solved.get("ok") else None
+    orient = solved.get("orient") if "orient" in solved else await run_in_threadpool(platesolve._orientation, src)
+    with _RENDER_SLOTS:
+        res = await run_in_threadpool(optics.analyse, src, orient, flip, scale, bool(tiles))
+    if res.get("ok"):                        # keep the summary for the session / trend views
+        from .measured import optics_summary
+        f.optics = json.dumps(optics_summary(res))
+        db.commit()
+    return res
+
+
+@app.post("/api/equipment/focal")
+async def equipment_focal(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Store a measured focal length in the telescope's parameters (from a plate solve)."""
+    from .models import CatalogItem
+    data = await request.json()
+    name, focal = data.get("telescope"), to_float(data.get("focal_mm"))
+    if not name or not focal or not 10 <= focal <= 20000:
+        return JSONResponse({"error": "Telescope and a focal length (10–20000 mm) are required"}, status_code=400)
+    it = db.scalars(select(CatalogItem).where(CatalogItem.kind == "telescope", CatalogItem.name == name)).first()
+    if not it:
+        return JSONResponse({"error": "Telescope not found in the equipment list"}, status_code=404)
+    spec = it.spec
+    old = spec.get("focal_mm")
+    spec["focal_mm"] = round(focal) if focal >= 100 else round(focal, 1)
+    it.specs = json.dumps(spec)
+    db.commit()
+    return {"ok": True, "telescope": name, "old": old, "focal_mm": spec["focal_mm"]}
+
+
+@app.get("/files/{fid}/annotated.jpg")
+async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, user: User = Depends(current_user),
+                         db: Session = Depends(get_db)):
+    """The image as shown in the viewer (saved view settings) with objects, RA/Dec grid and N/E drawn in."""
+    from fastapi.responses import Response
+    from . import annotate
+    f = get_file(db, fid)
+    res = _solved(f)
+    if not res or not res.get("ok") or not res.get("wcs"):
+        raise HTTPException(409, "Plate-solve the file first")
+    src = DATA_DIR / f.stored_path
+    opts = dict(worker.get_opts(f))
+    if flip != "auto":
+        opts["flip"] = flip if flip in ("none", "v", "h", "vh") else "none"
+    eff = opts["flip"]
+    if eff == "auto":
+        eff = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
+    with _RENDER_SLOTS:
+        data = await run_in_threadpool(annotate.annotated_jpeg, src, opts, res, eff, bool(grid))
+    if data is None:
+        raise HTTPException(422, "Cannot render this file")
+    name = os.path.splitext(clean_filename(f.original_name))[0] + "_annotated.jpg"
+    return Response(data, media_type="image/jpeg", headers={"Content-Disposition": f'attachment; filename="{name}"'})

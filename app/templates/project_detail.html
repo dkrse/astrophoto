@@ -55,14 +55,19 @@
   </div>
   {% if sessions %}
   <div class="tablewrap"><table class="kvt">
-    <thead><tr><th>Night</th><th>Equipment</th><th title="Image scale · field of view (from equipment parameters)">Scale / FOV</th><th title="Moon illumination">Moon</th><th>Files</th><th></th></tr></thead>
+    <thead><tr><th>Night</th><th>Equipment</th><th title="Image scale · field of view (from equipment parameters)">Scale / FOV</th><th title="Moon illumination">Moon</th><th title="From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude">Measured</th><th>Files</th><th></th></tr></thead>
     <tbody>
     {% for r in sessions %}{% set s = r.s %}
-    <tr>
+    <tr class="sessrow" data-target="s{{ s.id }}_" title="Show files of this session">
       <td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>
       <td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>
       <td class="small nowrap">{% if r.optic %}{{ '%.2f″/px'|format(r.optic.scale) }}{% if r.optic.fov %} <span class="muted">· {{ '%.0f′×%.0f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</span>{% endif %}{% endif %}</td>
       <td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>
+      <td class="small nowrap">{% set m = r.measured %}{% if m %}
+        {% if m.focal_mm %}<span title="Median focal length of {{ m.solved }} solved frame(s)">{{ m.focal_mm|round|int }} mm{% if m.get('focal_diff_pct') is not none and m.focal_diff_pct|abs >= 3 %} <b class="{{ 'bad-text' if m.focal_diff_pct|abs >= 10 else 'warn-text' }}">{{ '%+.0f'|format(m.focal_diff_pct) }} %</b>{% endif %}</span>{% endif %}
+        {% if m.fwhm_arcsec %} · <span title="Median star FWHM ({{ m.analysed }} analysed frame(s))">{{ '%.1f'|format(m.fwhm_arcsec) }}″</span>{% endif %}
+        {% if m.limit_mag %} · <span title="Limiting magnitude (Gaia BP, SNR 5)">{{ '%.1f'|format(m.limit_mag) }} mag</span>{% endif %}
+      {% endif %}</td>
       <td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>
       <td class="nowrap acts">
         <button type="button" class="btn small ibtn" title="Session details" onclick="document.getElementById('sinfo-{{ s.id }}').showModal()">i</button>
@@ -107,6 +112,18 @@
           </dl>
         </div>
       </div>
+      {% set m = r.measured %}{% if m %}
+      <h3>Measured <span class="muted small" style="font-weight:400">– {{ m.solved }} plate-solved, {{ m.analysed }} analysed frame(s)</span></h3>
+      <dl class="meta-dl">
+        {% if m.focal_mm %}<dt>Focal length</dt><dd>{{ m.focal_mm|round(1) }} mm{% if m.get('focal_diff_pct') is not none %} <span class="muted">(equipment: {{ (m.focal_mm / (1 + m.focal_diff_pct / 100))|round|int }} mm, {{ '%+.1f'|format(m.focal_diff_pct) }} %)</span>{% endif %}
+          {% if s.telescope and m.get('focal_diff_pct') is not none and m.focal_diff_pct|abs >= 1 %}
+          <button type="button" class="btn small" data-tel="{{ s.telescope }}" data-focal="{{ m.focal_mm|round(1) }}" onclick="applyFocal(this)">Use {{ m.focal_mm|round|int }} mm for {{ s.telescope }}</button>{% endif %}</dd>{% endif %}
+        {% if m.scale %}<dt>Image scale</dt><dd>{{ '%.3f'|format(m.scale) }} ″/px</dd>{% endif %}
+        {% if m.rotation is not none %}<dt>Rotation</dt><dd>{{ '%.1f'|format(m.rotation) }}°</dd>{% endif %}
+        {% if m.limit_mag %}<dt>Limiting magnitude</dt><dd>{{ '%.1f'|format(m.limit_mag) }} mag <span class="muted">(Gaia BP, SNR 5, {{ m.limit_n }} frame(s))</span></dd>{% endif %}
+        {% if m.fwhm_px %}<dt>Star FWHM</dt><dd>{{ '%.2f'|format(m.fwhm_px) }} px{% if m.fwhm_arcsec %} · {{ '%.2f'|format(m.fwhm_arcsec) }}″{% endif %} · elongation {{ '%.2f'|format(m.elong) }}</dd>
+          <dt>Tilt</dt><dd>{{ m.tilt_pct|round|int }} %{% if m.tilt_dir %} · worse towards the {{ m.tilt_dir }} in {{ m.tilt_frames }} of {{ m.analysed }} frame(s){% endif %}</dd>{% endif %}
+      </dl>{% endif %}
       <h3>Files</h3>
       <div class="chips big">{% for t in FRAME_TYPES %}{% set n = r.files|selectattr('frame_type', 'equalto', t)|list|length %}{% if n %}<span class="chip t-{{ t }}">{{ FRAME_LABELS[t] }} {{ n }}</span>{% endif %}{% endfor %}
         <span class="chip">{{ r.count }} files · {{ r.files|sum(attribute='size')|size }}</span></div>
@@ -297,11 +314,20 @@ function openSession(d){
   if(f.date._flatpickr)f.date._flatpickr.setDate(d.date||null,false,'d-m-Y');
   dlg.showModal();
 }
+function applyFocal(b){
+  if(!confirm('Set the focal length of “'+b.dataset.tel+'” to '+b.dataset.focal+' mm in the equipment list?'))return;
+  fetch('/api/equipment/focal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telescope:b.dataset.tel,focal_mm:b.dataset.focal})})
+    .then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);return;}location.reload();});
+}
 // open a folded panel when linked to (e.g. after saving a session)
 function openHash(){var el=location.hash&&document.getElementById(location.hash.slice(1));
   for(var d=el&&el.closest('details');d;d=d.parentElement&&d.parentElement.closest('details'))d.open=true;  // incl. parents
   if(el)el.scrollIntoView({block:'start'});}
 openHash();window.addEventListener('hashchange',openHash);
+// click on a session row (outside its buttons) jumps to that session's files
+document.querySelectorAll('tr.sessrow').forEach(function(tr){tr.addEventListener('click',function(e){
+  if(e.target.closest('button,a,form,input,select'))return;
+  var id=tr.dataset.target;if(location.hash==='#'+id)openHash();else location.hash=id;});});
 document.querySelectorAll('dialog').forEach(function(d){d.addEventListener('click',function(e){if(e.target===d)d.close();});});
 (function(){var d=document.getElementById('cover-dlg');
 d.querySelectorAll('.cover-opt input').forEach(function(r){r.addEventListener('change',function(){

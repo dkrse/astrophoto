@@ -3,6 +3,51 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.1] – 2026-11-07
+
+### Added
+- **Plate solving** with ASTAP (local, on demand): **🎯 Solve** in the viewer measures image scale, focal
+  length (vs. the session's telescope), field of view, centre and rotation; stored per file and exported in
+  the metadata. ASTAP CLI is built into the image, the star database lives in `DATA_DIR/astap`.
+- Plate solve detects **resized images** (e.g. JPEG exports at 50 %, drizzle) by comparing the image with
+  the session camera's sensor size and corrects the focal length; crops are recognised and left unchanged.
+  Only when the camera's resolution and pixel size are set.
+- **Objects in the field** (OpenNGC catalogue, NGC / IC / Messier + addendum) listed in the solve dialog.
+- **✨ Objects** overlay in the viewer (`O`): object ellipses and names, RA / Dec grid, N / E arrows.
+- **Pointing check**: position of the project's object relative to the frame centre.
+- **🔬 Optics inspector** in the viewer: star FWHM and elongation across the field, 3×3 mosaic of corners /
+  edges / centre, overlay on the image and findings for sensor tilt, field curvature, radial / tangential
+  edge elongation (coma, spacing), uniform elongation (guiding, wind, collimation).
+- **🔬 Optics** in the bulk bar for several frames: per-frame table and a summary of findings that repeat.
+- **🎯 Solve** in the bulk bar for many frames with a summary per telescope (median focal length).
+- **Measured values per session** (sessions table + session dialog): focal length vs. equipment, scale,
+  rotation, limiting magnitude, star FWHM (″), elongation, tilt.
+- **Use measured focal length** button (solve dialog, bulk solve, session dialog) writes it to the equipment.
+- **Limiting magnitude** per solved frame from the ASTAP star list matched to the local Gaia star database.
+- **⬇ Annotated JPEG** export with objects, RA / Dec grid and N / E.
+- **Optics & sky over time** charts on the Stats page (FWHM, limiting magnitude, tilt, elongation per night
+  and equipment).
+- Optics analyses are stored per file (summary only).
+- Tests for all of the above (`tests/test_sky.py`).
+- **⬇ Metadata** in the header: full metadata export of all projects + calibration library (ZIP); asks where
+  to save where the browser allows it (HTTPS / localhost).
+- Duplicate project warning (name / object compared ignoring case, spaces and punctuation); saving a
+  duplicate needs an explicit confirmation.
+- Clicking a session row jumps to that session's files.
+
+### Changed
+- Viewer toolbar: **✨ Objects**, **🔬 Optics** and **🎯 Solve** next to the info button; solve and optics
+  results open in wide dialogs.
+- Sessions table: new **Measured** column; the session dialog shows the measured values.
+- Statistics page: new **Optics & sky over time** section.
+- Docker image: ASTAP CLI, OpenNGC catalogue (v20260501) and DejaVu fonts (annotated export) are included.
+- README screenshots updated; new screenshots of the session dialog, objects overlay, plate solve, optics
+  inspector and the optics trend.
+
+### Fixed
+- Optics inspector: the smooth background was 0 along the image edges (interpolation), which distorted
+  stars near the edges – re-run 🔬 Optics on frames analysed before.
+
 ## [1.2.0] – 2026-11-06
 
 ### Changed – projects are objects, sessions carry everything else

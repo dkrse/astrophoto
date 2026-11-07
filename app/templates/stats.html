@@ -63,4 +63,65 @@
     {% if disk %}<div class="progress big" title="{{ (disk.used / disk.total * 100)|round(1) }}% used"><div class="bar" style="width:{{ (disk.used / disk.total * 100)|round(1) }}%"></div></div>{% endif %}
   </section>
 </div>
+<section class="card" id="trend">
+  <div class="head"><h3 class="mt0">Optics &amp; sky over time</h3>
+    <label class="inline small">Equipment <select id="tr-eq"></select></label></div>
+  <p class="muted small" id="tr-hint">Per night, medians of the plate-solved (🎯 Solve) and analysed (🔬 Optics) frames. Select frames in a project and use 🎯 Solve / 🔬 Optics in the bulk bar to fill it.</p>
+  <div class="tr-grid" id="tr-charts"></div>
+  <details class="small"><summary>Table</summary><div class="tablewrap"><table class="kvt small" id="tr-table"></table></div></details>
+  <div class="tr-tip" id="tr-tip" hidden></div>
+</section>
+<script>
+(function(){
+  var METRICS=[['fwhm_arcsec','Star FWHM','″','lower is sharper',2],['limit_mag','Limiting magnitude','mag','higher is deeper (Gaia BP, SNR 5)',1],
+               ['tilt_pct','Tilt','%','FWHM change across the field',0],['elong','Elongation','','1.00 = round stars',2]];
+  var DATA=[],sel=document.getElementById('tr-eq'),box=document.getElementById('tr-charts'),tip=document.getElementById('tr-tip');
+  var NS='http://www.w3.org/2000/svg';
+  function el(n,a,t){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);if(t!=null)e.textContent=t;return e;}
+  function nice(lo,hi){if(lo===hi){lo-=1;hi+=1;}var span=hi-lo,st=Math.pow(10,Math.floor(Math.log10(span/4)));
+    [1,2,2.5,5,10].some(function(m){if(span/(st*m)<=5){st*=m;return true;}});return {lo:Math.floor(lo/st)*st,hi:Math.ceil(hi/st)*st,st:st};}
+  function chart(rows,m){
+    var pts=rows.filter(function(r){return r[m[0]]!=null&&r.date;}).map(function(r){return {t:Date.parse(r.date),v:r[m[0]],r:r};});
+    var card=document.createElement('div');card.className='tr-card';
+    var h=document.createElement('div');h.className='tr-title';h.innerHTML='';var b=document.createElement('b');b.textContent=m[1]+(m[2]?' ('+m[2]+')':'');
+    var sm=document.createElement('span');sm.className='muted small';sm.textContent=' – '+m[3];h.append(b,sm);card.append(h);
+    if(!pts.length){var p=document.createElement('p');p.className='muted small';p.textContent='No data yet.';card.append(p);box.append(card);return;}
+    var W=460,H=180,L=44,R=12,T=10,B=26,ys=nice(Math.min.apply(null,pts.map(function(p){return p.v;})),Math.max.apply(null,pts.map(function(p){return p.v;})));
+    var t0=Math.min.apply(null,pts.map(function(p){return p.t;})),t1=Math.max.apply(null,pts.map(function(p){return p.t;}));if(t0===t1){t0-=864e5*15;t1+=864e5*15;}
+    var X=function(t){return L+(t-t0)/(t1-t0)*(W-L-R);},Y=function(v){return T+(1-(v-ys.lo)/(ys.hi-ys.lo))*(H-T-B);};
+    var svg=el('svg',{viewBox:'0 0 '+W+' '+H,'class':'tr-svg',role:'img','aria-label':m[1]});
+    var dec=Math.max(0,-Math.floor(Math.log10(ys.st)+1e-9));if(Math.abs(ys.st*Math.pow(10,dec)-Math.round(ys.st*Math.pow(10,dec)))>1e-6)dec++;
+    for(var v=ys.lo;v<=ys.hi+ys.st/2;v+=ys.st){svg.append(el('line',{x1:L,x2:W-R,y1:Y(v),y2:Y(v),'class':'tr-grid-l'}));
+      svg.append(el('text',{x:L-6,y:Y(v)+4,'text-anchor':'end','class':'tr-ax'},v.toFixed(dec)));}
+    var n=Math.min(5,pts.length);for(var i=0;i<n;i++){var t=t0+(t1-t0)*(n===1?0.5:i/(n-1)),d=new Date(t);
+      svg.append(el('text',{x:X(t),y:H-8,'text-anchor':n===1?'middle':(i===0?'start':(i===n-1?'end':'middle')),'class':'tr-ax'},('0'+d.getDate()).slice(-2)+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+d.getFullYear()));}
+    pts.sort(function(a,b){return a.t-b.t;});
+    if(pts.length>1)svg.append(el('polyline',{points:pts.map(function(p){return X(p.t)+','+Y(p.v);}).join(' '),'class':'tr-line'}));
+    pts.forEach(function(p){var c=el('circle',{cx:X(p.t),cy:Y(p.v),r:4,'class':'tr-dot'});svg.append(c);
+      var hit=el('circle',{cx:X(p.t),cy:Y(p.v),r:12,'class':'tr-hit'});
+      hit.addEventListener('mouseenter',function(e){c.setAttribute('r',6);tip.hidden=false;
+        tip.textContent=p.r.date_dmy+' · '+p.r.project+' — '+m[1]+': '+p.v.toFixed(m[4])+(m[2]?' '+m[2]:'');
+        var rc=svg.getBoundingClientRect(),sc=rc.width/W,sec=document.getElementById('trend').getBoundingClientRect();
+        tip.style.left=(rc.left-sec.left+X(p.t)*sc+10)+'px';tip.style.top=(rc.top-sec.top+Y(p.v)*sc-34)+'px';});
+      hit.addEventListener('mouseleave',function(){c.setAttribute('r',4);tip.hidden=true;});
+      hit.addEventListener('click',function(){location='/projects/'+p.r.project_id+'#s'+p.r.session_id+'_';});
+      svg.append(hit);});
+    card.append(svg);box.append(card);
+  }
+  function draw(){box.innerHTML='';var eq=sel.value,rows=DATA.filter(function(r){return r.equipment===eq;});
+    METRICS.forEach(function(m){chart(rows,m);});
+    var tb=document.getElementById('tr-table');tb.innerHTML='';var hd=tb.createTHead().insertRow();
+    ['Night','Project','FWHM ″','FWHM px','Elong.','Tilt %','Lim. mag','Focal mm','Solved','Analysed'].forEach(function(x){var th=document.createElement('th');th.textContent=x;hd.append(th);});
+    var bd=tb.createTBody();rows.forEach(function(r){var tr=bd.insertRow();
+      [r.date_dmy,r.project,r.fwhm_arcsec,r.fwhm_px,r.elong,r.tilt_pct,r.limit_mag,r.focal_mm,r.solved,r.analysed].forEach(function(v,i){var td=tr.insertCell();
+        td.textContent=v==null?'':(typeof v==='number'&&i>1?(+v.toFixed(2)):v);});});}
+  fetch('/api/stats/optics').then(function(r){return r.json();}).then(function(d){DATA=d;
+    var eqs=[];d.forEach(function(r){if(eqs.indexOf(r.equipment)<0)eqs.push(r.equipment);});
+    if(!eqs.length){sel.parentElement.hidden=true;return;}
+    eqs.sort(function(a,b){return d.filter(function(r){return r.equipment===b;}).length-d.filter(function(r){return r.equipment===a;}).length;});
+    eqs.forEach(function(e){var o=document.createElement('option');o.textContent=e;sel.append(o);});
+    try{var k=localStorage.getItem('trend-eq');if(k&&eqs.indexOf(k)>=0)sel.value=k;}catch(e){}
+    sel.onchange=function(){try{localStorage.setItem('trend-eq',sel.value);}catch(e){}draw();};draw();});
+})();
+</script>
 {% endblock %}

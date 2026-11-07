@@ -32,6 +32,25 @@ async def apply_form(request: Request, p: Project):
         p.name = p.target or "Untitled"
 
 
+def name_key(v) -> str:
+    """Comparison key for duplicate detection: case/whitespace/punctuation-insensitive ('NGC  123' == 'ngc123')."""
+    return re.sub(r"[\W_]+", "", (v or "").casefold())
+
+
+def similar_projects(db, name, target=None, exclude_id=None) -> list:
+    keys = {k for k in (name_key(name), name_key(target)) if k}
+    if not keys:
+        return []
+    return [(pid, n) for pid, n, t in db.execute(select(Project.id, Project.name, Project.target)).all()
+            if pid != exclude_id and (name_key(n) in keys or name_key(t) in keys)]
+
+
+@app.get("/api/projects/similar")
+def project_similar(name: str = "", target: str = "", exclude: int = 0, user: User = Depends(current_user),
+                    db: Session = Depends(get_db)):
+    return [{"id": i, "name": n} for i, n in similar_projects(db, name, target, exclude)]
+
+
 @app.get("/projects/new")
 def project_new(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return page(request, "project_form.html", user=user, p=None, cat=catalog(db))
@@ -41,6 +60,10 @@ def project_new(request: Request, user: User = Depends(current_user), db: Sessio
 async def project_create(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     p = Project()
     await apply_form(request, p)
+    dups = similar_projects(db, p.name, p.target)
+    if dups and (await request.form()).get("confirm_dup") != "1":
+        return page(request, "project_form.html", user=user, p=None, dups=dups, cat=catalog(db),
+                    draft={f: getattr(p, f) for f in PROJECT_FIELDS})
     db.add(p)
     db.commit()
     flash(request, "Project created")
@@ -50,10 +73,15 @@ async def project_create(request: Request, user: User = Depends(current_user), d
 def session_rows(p: Project, cat=None):
     spec_of = (lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}) \
         if cat else (lambda kind, name: {})
+    from .measured import session_measured
     out = []
     for s in p.sessions:
         files = [f for f in p.files if f.session_id == s.id]
+        opt = optics(spec_of("telescope", s.telescope), spec_of("camera", s.camera))
         out.append({"s": s, "files": files, "count": len(files),
+                    "measured": session_measured([f for f in files if f.frame_type in ("light", "stack")],
+                                                 spec_of("telescope", s.telescope).get("focal_mm"),
+                                                 opt["scale"] if opt else None),
                     "lights": sum(1 for f in files if f.frame_type == "light"),
                     "exposure": exposure_summary(files)["total"], "expo": exposure_summary(files),
                     "optic": optics(spec_of("telescope", s.telescope), spec_of("camera", s.camera))})
@@ -114,6 +142,33 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                 settings=load_settings(db), show=show)
 
 
+@app.get("/api/stats/optics")
+def optics_trend(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Per session (with solved / analysed frames): measured FWHM, elongation, tilt, limiting magnitude, focal."""
+    from .measured import session_measured
+    cat = catalog(db)
+    spec = lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}
+    files = db.scalars(select(FrameFile).where(FrameFile.session_id.is_not(None),
+                                               FrameFile.frame_type.in_(("light", "stack")),
+                                               (FrameFile.solve.is_not(None)) | (FrameFile.optics.is_not(None)))).all()
+    by_s = defaultdict(list)
+    for f in files:
+        by_s[f.session_id].append(f)
+    out = []
+    for sid, fs in by_s.items():
+        s = fs[0].session
+        opt = optics(spec("telescope", s.telescope), spec("camera", s.camera))
+        m = session_measured(fs, spec("telescope", s.telescope).get("focal_mm"), opt["scale"] if opt else None)
+        if not m:
+            continue
+        out.append({"session_id": sid, "project_id": s.project_id, "project": s.project.name,
+                    "date": s.date.isoformat() if s.date else None, "date_dmy": fmt_dmy(s.date),
+                    "equipment": " · ".join(x for x in (s.telescope, s.camera) if x) or "(equipment not set)",
+                    **m})
+    out.sort(key=lambda r: (r["equipment"], r["date"] or ""))
+    return out
+
+
 @app.get("/api/projects/{pid}/status")
 def project_status(pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return worker.queue_status(db, project_id=pid)
@@ -133,7 +188,15 @@ def project_edit(request: Request, pid: int, user: User = Depends(current_user),
 async def project_update(request: Request, pid: int, user: User = Depends(current_user),
                          db: Session = Depends(get_db)):
     p = get_project(db, pid)
+    before = (name_key(p.name), name_key(p.target))
     await apply_form(request, p)
+    changed = before != (name_key(p.name), name_key(p.target))
+    dups = similar_projects(db, p.name, p.target, p.id) if changed else []
+    if dups and (await request.form()).get("confirm_dup") != "1":
+        draft = {f: getattr(p, f) for f in PROJECT_FIELDS}
+        db.rollback()
+        return page(request, "project_form.html", user=user, p=get_project(db, pid), draft=draft, dups=dups,
+                    cat=catalog(db))
     db.commit()
     flash(request, "Saved")
     return RedirectResponse(f"/projects/{pid}", status_code=303)
@@ -409,6 +472,14 @@ def file_record(f: FrameFile) -> dict:
         d["view_settings"] = json.loads(f.view_opts) if f.view_opts else None
     except ValueError:
         d["view_settings"] = None
+    try:
+        d["plate_solve"] = json.loads(f.solve) if f.solve else None
+    except ValueError:
+        d["plate_solve"] = None
+    try:
+        d["optics"] = json.loads(f.optics) if f.optics else None
+    except ValueError:
+        d["optics"] = None
     d["fits_header"] = parse_header_text(f.header)
     exif = file_exif(f)
     if exif:
@@ -461,6 +532,36 @@ def project_export(pid: int, user: User = Depends(current_user), db: Session = D
                 extra.append((f"headers/library-{c.id}/{f.frame_type}/{clean_filename(f.original_name)}.txt",
                               f.header.encode()))
     return zip_response(f"{p.name}_metadata.zip", [], project_info_text(p), "best", extra)
+
+
+@app.get("/export/projects")
+def projects_export_all(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """ZIP of every project's full metadata: all_projects.json + per-project folders (metadata.json, raw headers)."""
+    from datetime import datetime as _dt
+    projects = db.scalars(select(Project).order_by(func.lower(Project.name))).all()
+    extra, allp = [], []
+    for p in projects:
+        md = project_metadata(p)
+        allp.append(md)
+        folder = f"{p.id:04d}_{safe_name(p.name) or 'project'}"
+        extra.append((f"projects/{folder}/metadata.json",
+                      json.dumps(md, ensure_ascii=False, indent=2, default=str).encode()))
+        extra.append((f"projects/{folder}/INFO.txt", project_info_text(p).encode()))
+        for f in p.files:
+            if f.header:
+                pre = session_label(f.session) if f.session else "unassigned"
+                extra.append((f"projects/{folder}/headers/{pre}/{f.frame_type}/{clean_filename(f.original_name)}.txt",
+                              f.header.encode()))
+    lib = db.scalars(select(CalibrationSet)).all()
+    summary = {"format": "astrophoto-metadata-all", "version": 1,
+               "exported_at": _dt.now().isoformat(timespec="seconds"), "project_count": len(projects),
+               "projects": allp,
+               "calibration_library": [{**{k: _iso(getattr(c, k)) for k in [
+                   "id", "name", "frame_type", "capture_date", "camera", "telescope", "temperature", "gain", "offset",
+                   "exposure_s", "filter", "binning", "notes", "created_at", "updated_at"]},
+                   "files": [file_record(f) for f in c.files]} for c in lib]}
+    extra.insert(0, ("all_projects.json", json.dumps(summary, ensure_ascii=False, indent=2, default=str).encode()))
+    return zip_response(f"astrophoto_metadata_{_dt.now():%Y-%m-%d}.zip", [], None, "best", extra)
 
 
 def linked_sets(p: Project) -> list:

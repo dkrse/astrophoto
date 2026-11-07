@@ -38,6 +38,22 @@ HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})(
     <a href="/calibration" class="navl{% if request.url.path.startswith('/calibration') %} active{% endif %}" title="Calibration frame library">Calibration</a>
     <a href="/stats" class="navl{% if request.url.path.startswith('/stats') %} active{% endif %}" title="Statistics">Stats</a>
     <a href="/projects/new" class="btn primary">+ New project</a>
+    <a href="/export/projects" class="btn" id="meta-export" title="Export all metadata – every project's sessions, files, FITS headers, EXIF, statistics and the calibration library (JSON in a ZIP)">⬇ Metadata</a>
+    <script>
+    // ask where to save (File System Access API); browsers without it fall back to a normal download
+    document.getElementById('meta-export').addEventListener('click',async function(e){
+      if(!window.showSaveFilePicker)return;
+      e.preventDefault();var a=this,t=a.textContent;
+      try{
+        var h=await showSaveFilePicker({suggestedName:'astrophoto_metadata_'+new Date().toISOString().slice(0,10)+'.zip',
+          types:[{description:'ZIP archive',accept:{'application/zip':['.zip']}}]});
+        a.textContent='⏳ Exporting…';
+        var r=await fetch(a.href);if(!r.ok)throw new Error('HTTP '+r.status);
+        var w=await h.createWritable();await r.body.pipeTo(w);
+      }catch(err){if(err.name!=='AbortError')alert('Export failed: '+err.message);}
+      finally{a.textContent=t;}
+    });
+    </script>
     <details class="usermenu">
       <summary title="Account">👤 {{ user.username }} ▾</summary>
       <div class="menu">

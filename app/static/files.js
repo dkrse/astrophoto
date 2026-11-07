@@ -50,6 +50,8 @@
       if (a === 'clear') { document.querySelectorAll('.selfile').forEach(function (c) { c.checked = false; }); refresh(); }
       else if (a === 'delete') run('delete', null, 'Delete {n} file(s)? This cannot be undone.');
       else if (a === 'meta') document.getElementById('meta-dlg').showModal();
+      else if (a === 'optics') { if (window.bulkOptics) window.bulkOptics(selected()); }
+      else if (a === 'solve') { if (window.bulkSolve) window.bulkSolve(selected()); }
       else run(a, null);
     });
     bar.querySelectorAll('[data-bulk-sel]').forEach(function (s) {

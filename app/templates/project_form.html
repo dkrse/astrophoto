@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% macro pick(kind, label) %}
-  {% set cur = p[kind] if p else None %}
+  {% set src = draft or p %}{% set cur = src[kind] if src else None %}
   <label><span class="lbl">{{ label }}<button type="button" class="mng" data-manage="{{ kind }}" title="Manage {{ CATALOG_KINDS[kind]|lower }}">⚙</button></span>
     <select name="{{ kind }}" data-kind="{{ kind }}" class="catsel">
       <option value="">—</option>
@@ -11,23 +11,36 @@
     </select></label>
 {% endmacro %}
 {% block content %}
-<form method="post" class="card">
+{% set v = draft or p %}
+<form method="post" class="card" id="proj-form">
   <div class="head"><h1>{{ 'Edit project' if p else 'New project' }}</h1>
     <a class="muted small" href="/manage" target="_blank">⚙ manage lists</a></div>
   <div class="cols">
-    <label>Name *<input name="name" value="{{ p.name if p else '' }}" required></label>
-    <label>Object (e.g. M31)<input name="target" value="{{ p.target or '' if p else '' }}"></label>
+    <label>Name *<input name="name" value="{{ v.name or '' if v else '' }}" required autocomplete="off"></label>
+    <label>Object (e.g. M31)<input name="target" value="{{ v.target or '' if v else '' }}"></label>
     {{ pick('object_type', 'Object type') }}
-    <label>Tags<input name="tags" value="{{ p.tags or '' if p else '' }}" placeholder="comma separated"></label>
+    <label>Tags<input name="tags" value="{{ v.tags or '' if v else '' }}" placeholder="comma separated"></label>
   </div>
+  <div class="flash err" id="dup-warn" {% if not dups %}hidden{% endif %}>⚠ A project with the same name / object already exists:
+    <span id="dup-list">{% for i, n in dups or [] %}<a href="/projects/{{ i }}" target="_blank">{{ n }}</a>{{ ', ' if not loop.last }}{% endfor %}</span>
+    {% if dups %}<div style="margin-top:8px;display:flex;align-items:center;gap:6px"><input type="checkbox" name="confirm_dup" value="1" id="confirm_dup" style="width:auto;margin:0"><label for="confirm_dup" style="margin:0;display:inline">Create / save anyway</label></div>{% endif %}</div>
   <p class="muted small">A project is one object. Dates, location and equipment are entered per session (night) on the project page.</p>
-  <label>Description<textarea name="description" rows="4">{{ p.description or '' if p else '' }}</textarea></label>
-  <label>Notes<textarea name="notes" rows="6">{{ p.notes or '' if p else '' }}</textarea></label>
+  <label>Description<textarea name="description" rows="4">{{ v.description or '' if v else '' }}</textarea></label>
+  <label>Notes<textarea name="notes" rows="6">{{ v.notes or '' if v else '' }}</textarea></label>
   {% if p %}<p class="muted small">Created {{ p.created_at|dmy }} · last modified {{ p.updated_at|dmy }}</p>{% endif %}
   <div class="row"><button class="btn primary">Save</button>
   <a class="btn" href="{{ '/projects/%d'|format(p.id) if p else '/' }}">Cancel</a></div>
 </form>
 <script>
+// live duplicate warning ('NGC 123' == 'ngc123' == 'ngc  123')
+(function(){var f=document.getElementById('proj-form'),w=document.getElementById('dup-warn'),l=document.getElementById('dup-list'),t;
+  if(w.querySelector('input[name=confirm_dup]'))return;   // server already asked for confirmation
+  function chk(){var q=new URLSearchParams({name:f.name.value,target:f.target.value,exclude:'{{ p.id if p else 0 }}'});
+    fetch('/api/projects/similar?'+q).then(function(r){return r.json();}).then(function(d){
+      l.innerHTML='';d.forEach(function(x,i){var a=document.createElement('a');a.href='/projects/'+x.id;a.target='_blank';a.textContent=x.name;
+        if(i)l.append(', ');l.append(a);});w.hidden=!d.length;});}
+  ['name','target'].forEach(function(n){f[n].addEventListener('input',function(){clearTimeout(t);t=setTimeout(chk,300);});});
+  if(f.name.value)chk();})();
 // "+ Add / manage…" opens the modal; the newly added item is selected after closing
 document.querySelectorAll('.catsel').forEach(function(sel){
   var prev=sel.value;

@@ -44,6 +44,9 @@
       {% if f.frame_type == 'light' %}<button class="btn small {{ 'danger' if f.rejected }}" id="rejbtn" title="Rejected frames are excluded from ZIP and integration time">{{ '↺ Restore' if f.rejected else '✗ Reject' }}</button>{% endif %}
       <button class="btn small" id="fsbtn" title="Fullscreen (Shift+F)">⛶</button>
       <a class="btn small" href="/files/{{ f.id }}/download" title="Download original">⬇</a>
+      <button class="btn small" id="skybtn" title="Show objects in the field, RA/Dec grid and north / east (from the plate solve) (O)" {% if not (solved and solved.ok and solved.wcs) %}hidden{% endif %}>✨ Objects</button>
+      {% if can_render %}<button class="btn small" id="opticsbtn" title="Optics inspector: star size / shape across the field – tilt, curvature, coma, spacing, guiding">🔬 Optics</button>{% endif %}
+      <button class="btn small" id="solvebtn" title="Plate solve: measure image scale → focal length, field of view, centre (ASTAP, local)">🎯 Solve</button>
       <button class="btn small" id="infobtn" title="Info panel (I)">ⓘ Info</button>
     </span>
   </div>
@@ -52,6 +55,8 @@
     <div class="stage" id="stage">
       {% if can_render %}
       <img id="img" alt="" draggable="false">
+      <svg id="sky-ovl" class="sky-ovl" style="display:none"></svg>
+      <svg id="opt-ovl" class="sky-ovl opt-ovl" style="display:none"></svg>
       <div class="loading" id="loading">Loading…</div>
       <div class="levels" id="levels" hidden>
         <div class="lv-head"><b>Levels</b>
@@ -123,6 +128,43 @@
   </div>
 </div>
 
+<dialog id="solve-dlg" class="cat-dialog wide">
+  <form method="dialog" class="cat-head"><h2>🎯 Plate solve</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <div class="dlg-body">
+    <p class="muted small">Finds the stars in the catalogue (ASTAP, local star database) and measures the real image scale – from it the focal length, field of view, centre and rotation.</p>
+    <div class="row"><button type="button" class="btn primary" id="fi-solve" onclick="solveFile()">🎯 Solve</button>
+      <a class="btn" id="fi-annot" href="/files/{{ f.id }}/annotated.jpg" hidden title="Download the image as shown with objects, RA/Dec grid and north / east drawn in">⬇ Annotated JPEG</a>
+      <button type="button" class="btn" id="fi-usefocal" hidden onclick="useFocal()"></button>
+      <span class="muted small" id="fi-solve-msg"></span></div>
+    <dl class="meta-dl" id="fi-solve-dl" style="margin-top:12px"></dl>
+    <div id="fi-target" class="target-check" hidden></div>
+    <div id="fi-objs" hidden>
+      <h3>Objects in the field <span class="muted small" id="fi-objs-n"></span>
+        <label class="inline small" style="font-weight:400;margin-left:12px"><input type="checkbox" id="fi-ovl-toggle"> show on image</label></h3>
+      <div class="tablewrap"><table class="kvt small"><thead><tr><th>Object</th><th>Name</th><th>Type</th><th class="num">Mag</th><th class="num">Size</th></tr></thead>
+        <tbody id="fi-objs-rows"></tbody></table></div>
+      <p class="muted small">Catalogue: OpenNGC (NGC, IC, Messier + addendum). Objects only partly in the frame are marked with ◐.</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="optics-dlg" class="cat-dialog wide">
+  <form method="dialog" class="cat-head"><h2>🔬 Optics inspector</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <div class="dlg-body">
+    <p class="muted small">Measures size (FWHM) and shape (elongation, direction) of the stars in every part of the frame.
+      Best on a single sharp light frame with many stars. Only a summary is stored (for session values and trends).</p>
+    <div class="row"><span class="muted small" id="op-msg"></span>
+      <label class="inline small" id="op-ovl-l" hidden><input type="checkbox" id="op-ovl"> show star shapes on image</label></div>
+    <div id="op-diag"></div>
+    <div id="op-body" hidden>
+      <h3>Corners, edges and centre <span class="muted small" id="op-tile-info" style="font-weight:400"></span></h3>
+      <div class="op-mosaic" id="op-mosaic"></div>
+      <p class="muted small">Each tile: median FWHM · elongation (1.00 = round). Colour: green = sharpest, red = worst part of
+        this frame. The line shows the direction stars are stretched (only drawn when they are stretched consistently).</p>
+    </div>
+  </div>
+</dialog>
+
 <form method="post" action="/files/{{ f.id }}/opts" id="saveform" hidden>
   <input name="bayer"><input name="stretch"><input name="flip"><input name="channels"><input name="brightness"><input name="bp"><input name="mp"><input name="wp"><input name="view"><input name="all">
 </form>
@@ -160,7 +202,8 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
     return o;}
   function url(size){var o=opts();o.size=size;return '/files/{{ f.id }}/render?'+new URLSearchParams(o);}
 
-  function apply(){img.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';
+  window._view=function(){return {s:s,tx:tx,ty:ty,nw:nw,nh:nh};};
+  function apply(){img.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';if(window._ovl)window._ovl();
     zl.textContent=Math.round(s/fullScale*100)+'%';
     document.querySelectorAll('[data-mode]').forEach(function(b){b.classList.toggle('primary',b.dataset.mode===mode);});}
   function fit(){mode='fit';var W=stage.clientWidth,H=stage.clientHeight;if(!nw)return;
@@ -351,6 +394,176 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
   };});
 })();
 {% endif %}
+var SOLVED={{ solved|tojson }};
+function showSolve(r){
+  var dl=document.getElementById('fi-solve-dl'), m=document.getElementById('fi-solve-msg'), b=document.getElementById('fi-solve');
+  b.textContent=r?'🎯 Solve again':'🎯 Solve';dl.innerHTML='';m.textContent='';
+  if(!r)return;
+  var when=r.solved_at?r.solved_at.replace('T',' '):'';
+  if(!r.ok){m.textContent='✗ '+r.error+(when?' ('+when+')':'');return;}
+  m.textContent='✓ solved '+when+(r.seconds?' in '+r.seconds+' s':'');
+  var f=function(v,d){return Number(v).toFixed(d);};
+  var focal=r.focal_mm?f(r.focal_mm,0)+' mm'+(r.focal_expected_mm?' (equipment: '+r.focal_expected_mm+' mm, '+
+      (r.focal_mm/r.focal_expected_mm*100-100>=0?'+':'')+f(r.focal_mm/r.focal_expected_mm*100-100,1)+' %)':'')
+      :'— (pixel size unknown: set it for the session camera)';
+  var rows=[['Focal length',focal+(r.resize_factor?' – corrected for the '+Math.round(r.resize_factor*100)+' % image':'')],
+    ['Image scale',f(r.scale_arcsec_px,3)+' ″/px'+(r.sensor_scale_arcsec_px?' (sensor: '+f(r.sensor_scale_arcsec_px,3)+' ″/px)':'')+(r.pixel_um?' · pixel '+r.pixel_um+' µm':'')],
+    ['Field of view',f(r.fov_w_arcmin,1)+'′ × '+f(r.fov_h_arcmin,1)+'′ ('+f(r.fov_w_arcmin/60,2)+'° × '+f(r.fov_h_arcmin/60,2)+'°)'],
+    ['Centre','RA '+r.ra+' · Dec '+r.dec],['Rotation',f(r.rotation_deg,1)+'°<span id="fi-mirror"></span>'],
+    ['Limiting magnitude',r.photometry?(r.photometry.limit_mag?f(r.photometry.limit_mag,1)+' mag (Gaia BP, SNR '+r.photometry.snr_limit+') · '+r.photometry.matched+' stars matched, faintest '+f(r.photometry.faintest_detected,1)+' mag':'— '+(r.photometry.error||'')):''],
+    ['Equipment',[r.telescope,r.camera].filter(Boolean).join(' · ')],['Image size',r.note||'']];
+  rows.forEach(function(x){if(!x[1])return;var dt=document.createElement('dt'),dd=document.createElement('dd');
+    dt.textContent=x[0];dd.textContent=x[1].replace('<span id="fi-mirror"></span>','');if(x[0]==='Rotation'){var sp=document.createElement('span');sp.id='fi-mirror';dd.append(sp);}dl.append(dt,dd);});
+  showTarget(r.target_check);
+  var a=document.getElementById('fi-annot');a.hidden=!r.wcs;a.href='/files/{{ f.id }}/annotated.jpg?flip='+skyFlip();
+  var uf=document.getElementById('fi-usefocal');
+  uf.hidden=!(r.telescope&&r.focal_mm&&r.focal_expected_mm&&Math.abs(r.focal_mm/r.focal_expected_mm-1)>=0.01);
+  if(!uf.hidden){uf.textContent='Use '+Math.round(r.focal_mm)+' mm for '+r.telescope;uf.dataset.tel=r.telescope;uf.dataset.focal=r.focal_mm;}
+  document.getElementById('skybtn').hidden=!r.wcs;
+  if(r.wcs)loadSky(true).then(function(a){listObjects(a);var mi=document.getElementById('fi-mirror');if(a&&mi)mi.textContent=skyMirrored()?' · image is mirrored (as displayed)':'';});
+  else{var t=document.getElementById('fi-objs');t.hidden=true;m.textContent+=' · solved with an older version – Solve again for objects in the field';}
+}
+function showTarget(t){
+  var el=document.getElementById('fi-target');el.hidden=!t;el.className='target-check';if(!t)return;
+  var nm=function(x){return [x.messier,x.name].filter(Boolean).filter(function(v,i,a){return a.indexOf(v)===i;}).join(' / ')+(x.common?' – '+x.common:'');};
+  if(!t.found){el.classList.add('warn');el.textContent='Project object “'+t.target+'” was not found in the catalogue – pointing cannot be checked.';return;}
+  var d=t.sep_arcmin<1?Math.round(t.sep_arcmin*60)+'″':(t.sep_arcmin<120?t.sep_arcmin.toFixed(1)+'′':(t.sep_arcmin/60).toFixed(1)+'°');
+  if(!t.inside){el.classList.add('bad');el.textContent='✗ Pointing: '+nm(t)+' is NOT in the frame – it is '+d+' '+t.direction+' of the centre.';return;}
+  el.classList.add(t.offset_pct<=15?'good':'warn');
+  el.textContent=(t.offset_pct<=15?'✓':'⚠')+' Pointing: '+nm(t)+' is in the frame, '+d+' '+t.direction+' of the centre ('+t.offset_pct+' % of the way to the corner).';
+}
+function listObjects(a){
+  var box=document.getElementById('fi-objs'), tb=document.getElementById('fi-objs-rows');tb.innerHTML='';
+  if(!a){box.hidden=true;return;}
+  box.hidden=false;document.getElementById('fi-objs-n').textContent='('+a.objects.length+')';
+  document.getElementById('fi-ovl-toggle').checked=SKY.on;
+  if(!a.objects.length){var tr=tb.insertRow();var td=tr.insertCell();td.colSpan=5;td.className='muted';td.textContent='No catalogued deep-sky objects in this field.';}
+  a.objects.forEach(function(o){var tr=tb.insertRow();
+    [(o.inside?'':'◐ ')+[o.messier,o.name].filter(Boolean).join(' / '),o.common||'',o.type,o.mag!=null?o.mag.toFixed(1):'',
+     o.maj?(o.maj<1?Math.round(o.maj*60)+'″':o.maj.toFixed(1)+'′')+(o.min&&o.min!==o.maj?' × '+(o.min<1?Math.round(o.min*60)+'″':o.min.toFixed(1)+'′'):''):'']
+    .forEach(function(v,i){var td=tr.insertCell();td.textContent=v;if(i>2)td.className='num';});});
+}
+// ---------- sky overlay (objects, RA/Dec grid, N/E) ----------
+var SKY={on:false,data:null,err:null};
+try{SKY.on=localStorage.getItem('skyovl')==='1';}catch(e){}
+function loadSky(force){
+  if(SKY.data&&!force)return Promise.resolve(SKY.data);
+  return fetch('/api/files/{{ f.id }}/annotations').then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||'failed');return j;});})
+    .then(function(j){SKY.data=j;drawSky();return j;}).catch(function(e){SKY.err=e.message;return null;});
+}
+function setSky(on){SKY.on=on;try{localStorage.setItem('skyovl',on?'1':'0');}catch(e){}
+  document.getElementById('skybtn').classList.toggle('primary',on);var t=document.getElementById('fi-ovl-toggle');if(t)t.checked=on;
+  if(on)loadSky().then(drawSky);else drawSky();}
+function skyFlip(){var el=document.getElementById('o-flip');var v=el?el.value:'none';
+  if(v==='auto')v={{ 'true' if rowflip else 'false' }}?'v':'none';return v;}
+function skyMap(u,v,o){      // fractions of the solved array -> fractions of the displayed image
+  var r=SKY.data.orient||0,t;
+  if(r===180){u=1-u;v=1-v;}else if(r===90){t=u;u=1-v;v=t;}else if(r===270){t=u;u=v;v=1-t;}
+  var f=skyFlip();if(f.indexOf('h')>=0)u=1-u;if(f.indexOf('v')>=0)v=1-v;
+  return [o.tx+u*o.nw*o.s,o.ty+v*o.nh*o.s];
+}
+function drawSky(){
+  var svg=document.getElementById('sky-ovl');if(!svg)return;
+  if(!SKY.on||!SKY.data||!window._view){svg.style.display='none';return;}
+  var o=window._view();if(!o.nw){svg.style.display='none';return;}
+  svg.style.display='';var NS='http://www.w3.org/2000/svg',out=[];
+  function el(n,a,txt){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;out.push(e);return e;}
+  SKY.data.grid.forEach(function(g){var p=g.pts.map(function(q){return skyMap(q[0],q[1],o);});
+    el('polyline',{points:p.map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '),'class':'g'});
+    var mid=p[Math.floor(p.length/2)];el('text',{x:mid[0]+3,y:mid[1]-3,'class':'gl'},g.label);});
+  SKY.data.objects.forEach(function(ob){var c=skyMap(ob.u,ob.v,o),rx=9,ry=9,ang=0;
+    if(ob.axis){var a=skyMap(ob.axis[0],ob.axis[1],o);rx=Math.max(Math.hypot(a[0]-c[0],a[1]-c[1]),6);
+      ry=Math.max(rx*((ob.min||ob.maj)/ob.maj),4);ang=Math.atan2(a[1]-c[1],a[0]-c[0])*180/Math.PI;}
+    el('ellipse',{cx:c[0],cy:c[1],rx:rx,ry:ry,transform:'rotate('+ang+' '+c[0]+' '+c[1]+')','class':'o'});
+    var lbl=[ob.messier,ob.name].filter(Boolean).join(' / ')+(ob.common?' – '+ob.common:'');
+    el('text',{x:c[0]+Math.max(rx,ry)*0.75+4,y:c[1]-Math.max(rx,ry)*0.75-4,'class':'ol'},lbl);});
+  // compass in the top-left corner
+  var cc=skyMap(SKY.data.compass.c[0],SKY.data.compass.c[1],o),base=[Math.max(o.tx,0)+56,Math.max(o.ty,0)+56];
+  ['n','e'].forEach(function(k){var p=skyMap(SKY.data.compass[k][0],SKY.data.compass[k][1],o),dx=p[0]-cc[0],dy=p[1]-cc[1],L=Math.hypot(dx,dy)||1;
+    var x2=base[0]+dx/L*36,y2=base[1]+dy/L*36;
+    el('line',{x1:base[0],y1:base[1],x2:x2,y2:y2,'class':'c'});
+    el('text',{x:base[0]+dx/L*48-4,y:base[1]+dy/L*48+4,'class':'cl'},k.toUpperCase());});
+  svg.replaceChildren.apply(svg,out);
+}
+function skyMirrored(){var c=SKY.data.compass,o={tx:0,ty:0,nw:1000,nh:1000,s:1},a=skyMap(c.c[0],c.c[1],o),n=skyMap(c.n[0],c.n[1],o),e=skyMap(c.e[0],c.e[1],o);
+  return ((n[0]-a[0])*(e[1]-a[1])-(n[1]-a[1])*(e[0]-a[0]))>0;}
+// ---------- optics inspector ----------
+var OPT={data:null,on:false,flip:null};
+function optFlip(){return typeof skyFlip==='function'?skyFlip():'none';}
+function loadOptics(){
+  var fl=optFlip();
+  if(OPT.data&&OPT.flip===fl)return Promise.resolve(OPT.data);
+  var m=document.getElementById('op-msg');m.textContent='⏳ Measuring stars…';
+  return fetch('/api/files/{{ f.id }}/optics?flip='+fl).then(function(r){return r.json();})
+    .then(function(d){OPT.flip=fl;OPT.data=d;showOptics(d);drawOpt();return d;})
+    .catch(function(){m.textContent='✗ Request failed';});
+}
+function heat(x){x=Math.max(0,Math.min(1,x));return 'hsl('+Math.round(120-120*x)+',70%,45%)';}
+function showOptics(d){
+  var m=document.getElementById('op-msg'),dg=document.getElementById('op-diag'),body=document.getElementById('op-body');
+  dg.innerHTML='';body.hidden=true;document.getElementById('op-ovl-l').hidden=!d.ok;
+  if(!d.ok){m.textContent='✗ '+d.error;return;}
+  m.textContent=d.stars+' stars · FWHM '+d.fwhm_px.toFixed(2)+' px'+(d.fwhm_arcsec?' ('+d.fwhm_arcsec.toFixed(2)+'″)':'')+
+    ' · elongation '+d.elong.toFixed(2)+(d.fwhm_arcsec?'':' · plate-solve the frame to get FWHM in arcseconds');
+  d.diagnosis.forEach(function(x){var e=document.createElement('div');e.className='target-check '+({ok:'good',warn:'warn',bad:'bad'}[x.level]||'');
+    var b=document.createElement('b');b.textContent=({ok:'✓ ',warn:'⚠ ',bad:'✗ '}[x.level]||'')+x.title;
+    var p=document.createElement('div');p.className='small';p.textContent=x.text;e.append(b,p);dg.append(e);});
+  var fw=d.regions.filter(function(r){return r.fwhm_px;}).map(function(r){return r.fwhm_px;}),lo=Math.min.apply(null,fw),hi=Math.max.apply(null,fw);
+  var mo=document.getElementById('op-mosaic');mo.innerHTML='';
+  d.regions.forEach(function(r,i){var t=document.createElement('div');t.className='op-tile';
+    var im=document.createElement('img');im.src=d.tiles[i];im.alt='';t.append(im);
+    var cap=document.createElement('div');cap.className='op-cap';
+    cap.textContent=r.fwhm_px?r.fwhm_px.toFixed(2)+' px'+(r.fwhm_arcsec?' / '+r.fwhm_arcsec.toFixed(1)+'″':'')+' · '+r.elong.toFixed(2)+' ('+r.n+'★)':'no stars';
+    if(r.fwhm_px)cap.style.background=heat(hi>lo?(r.fwhm_px-lo)/(hi-lo):0);
+    t.append(cap);
+    if(r.fwhm_px&&r.elong>1.1&&r.coherence>0.5){var ln=document.createElement('div');ln.className='op-dir';
+      ln.style.width=Math.min(30+(r.elong-1)*200,140)+'px';ln.style.transform='translate(-50%,-50%) rotate('+r.angle_deg+'deg)';t.append(ln);}
+    mo.append(t);});
+  document.getElementById('op-tile-info').textContent='(tiles of '+d.tile_px+' px'+(d.tile_arcmin?' ≈ '+d.tile_arcmin+'′':'')+')';
+  body.hidden=false;
+}
+function drawOpt(){
+  var svg=document.getElementById('opt-ovl');if(!svg)return;
+  if(!OPT.on||!OPT.data||!OPT.data.ok||OPT.flip!==optFlip()||!window._view){svg.style.display='none';return;}
+  var o=window._view();if(!o.nw){svg.style.display='none';return;}
+  svg.style.display='';var NS='http://www.w3.org/2000/svg',out=[],d=OPT.data;
+  var fw=d.vectors.map(function(v){return v.fwhm_px;}),lo=Math.min.apply(null,fw),hi=Math.max.apply(null,fw);
+  var cell=Math.min(o.nw*o.s/8,o.nh*o.s/6);
+  d.vectors.forEach(function(v){var x=o.tx+v.u*o.nw*o.s,y=o.ty+v.v*o.nh*o.s,col=heat(hi>lo?(v.fwhm_px-lo)/(hi-lo):0);
+    var L=(v.coherence>0.5&&v.elong>1.1)?Math.min(cell*0.45,6+(v.elong-1)*cell*1.5):0,a=v.angle_deg*Math.PI/180,dx=Math.cos(a)*L/2,dy=Math.sin(a)*L/2;
+    var c=document.createElementNS(NS,'circle');c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',4);c.setAttribute('fill',col);out.push(c);
+    if(L>0){var l=document.createElementNS(NS,'line');l.setAttribute('x1',x-dx);l.setAttribute('y1',y-dy);l.setAttribute('x2',x+dx);l.setAttribute('y2',y+dy);
+      l.setAttribute('stroke',col);l.setAttribute('class','ol-line');out.push(l);}
+    var t=document.createElementNS(NS,'text');t.setAttribute('x',x+6);t.setAttribute('y',y-6);t.setAttribute('class','ot');t.textContent=v.fwhm_px.toFixed(1);out.push(t);});
+  svg.replaceChildren.apply(svg,out);
+}
+(function(){var b=document.getElementById('opticsbtn');if(!b)return;var dlg=document.getElementById('optics-dlg');
+  b.onclick=function(){dlg.showModal();loadOptics();};
+  dlg.addEventListener('click',function(e){if(e.target===dlg)dlg.close();});
+  document.getElementById('op-ovl').onchange=function(){OPT.on=this.checked;b.classList.toggle('primary',OPT.on);drawOpt();};
+  var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){if(OPT.on)loadOptics();else drawOpt();});})();
+window._ovl=function(){drawSky();drawOpt();};
+(function(){var b=document.getElementById('skybtn');if(!b)return;
+  b.onclick=function(){setSky(!SKY.on);};b.classList.toggle('primary',SKY.on);
+  document.getElementById('fi-ovl-toggle').onchange=function(){setSky(this.checked);};
+  var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){setTimeout(drawSky,0);});
+  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&(e.key==='o'||e.key==='O')&&!b.hidden)b.click();});
+  if(SKY.on&&!b.hidden)loadSky().then(drawSky);})();
+function useFocal(){var b=document.getElementById('fi-usefocal');
+  if(!confirm('Set the focal length of “'+b.dataset.tel+'” to '+Math.round(b.dataset.focal)+' mm in the equipment list?'))return;
+  fetch('/api/equipment/focal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telescope:b.dataset.tel,focal_mm:b.dataset.focal})})
+    .then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);return;}
+      b.hidden=true;document.getElementById('fi-solve-msg').textContent='✓ '+j.telescope+': focal length set to '+j.focal_mm+' mm (was '+(j.old||'—')+')';});}
+function solveFile(){
+  var b=document.getElementById('fi-solve'), m=document.getElementById('fi-solve-msg');
+  b.disabled=true;m.textContent='⏳ Solving… (blind solves can take up to a few minutes)';document.getElementById('fi-solve-dl').innerHTML='';
+  fetch('/api/files/{{ f.id }}/solve',{method:'POST'})
+    .then(function(r){return r.json();}).then(function(r){showSolve(r);SOLVED=r;})
+    .catch(function(){m.textContent='✗ Request failed';}).finally(function(){b.disabled=false;});
+}
+(function(){var d=document.getElementById('solve-dlg');
+  document.getElementById('solvebtn').onclick=function(){showSolve(SOLVED);d.showModal();if(!SOLVED)solveFile();};
+  d.addEventListener('click',function(e){if(e.target===d)d.close();});})();
 (function(){var b=document.getElementById('rejbtn');if(!b)return;
   b.onclick=function(){fetch('/files/{{ f.id }}/reject',{method:'POST',headers:{'Accept':'application/json'}}).then(function(r){return r.json();})
     .then(function(j){b.textContent=j.rejected?'↺ Restore':'✗ Reject';b.classList.toggle('danger',j.rejected);});};})();

@@ -174,6 +174,8 @@ class FrameFile(Base):
     description: Mapped[str | None] = mapped_column(Text)
     header: Mapped[str | None] = mapped_column(Text)
     view_opts: Mapped[str | None] = mapped_column(Text)
+    solve: Mapped[str | None] = mapped_column(Text)         # JSON result of the last ASTAP plate solve
+    optics: Mapped[str | None] = mapped_column(Text)        # JSON summary of the last optics analysis
     # frame quality statistics (lights)
     stat_bg: Mapped[float | None] = mapped_column(Float)
     stat_noise: Mapped[float | None] = mapped_column(Float)
@@ -261,6 +263,8 @@ MIGRATIONS = [
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
     "ALTER TABLE catalog_items ADD COLUMN IF NOT EXISTS specs TEXT",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS software VARCHAR(200)",
+    "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS solve TEXT",
+    "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS optics TEXT",
     "UPDATE projects SET created_at = now() WHERE created_at IS NULL",
     "UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL",
 ]
