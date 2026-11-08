@@ -123,14 +123,16 @@ def zp_reference(db, max_age_s: float = 60.0) -> dict:
     from .models import FrameFile, ImagingSession
     if _REF["data"] is not None and time.time() - _REF["at"] < max_age_s:
         return _REF["data"]
-    rows = db.execute(select(FrameFile.session_id, FrameFile.solve, ImagingSession.telescope, ImagingSession.camera)
+    from sqlalchemy import cast, JSON
+    sky = cast(FrameFile.solve, JSON)["sky"]        # only the two values – not the whole solve JSON (WCS …)
+    rows = db.execute(select(FrameFile.session_id, ImagingSession.telescope, ImagingSession.camera,
+                             sky["zp_s"].as_float(), sky["gain"].as_string())
                       .join(ImagingSession, ImagingSession.id == FrameFile.session_id)
                       .where(FrameFile.solve.is_not(None), FrameFile.frame_type == "light")).all()
     per = {}
-    for sid, sol, tel, cam in rows:
-        sky = (load(sol) or {}).get("sky") or {}
-        if sky.get("zp_s") is not None:
-            per.setdefault((sid, equipment_key(tel, cam, sky.get("gain"))), []).append(sky["zp_s"])
+    for sid, tel, cam, zp, gain in rows:
+        if zp is not None:
+            per.setdefault((sid, equipment_key(tel, cam, gain)), []).append(zp)
     best = {}
     for (sid, key), vals in per.items():
         m = median(vals)

@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse, PlainTextResponse, JSONResponse
 from sqlalchemy import select, or_, func, update
 from sqlalchemy.orm import Session, selectinload
 
-from .core import (templates, app, page, flash, get_db, current_user, check_pw, hash_pw, load_settings, coerce_setting,
+from .core import (invalidate_settings, templates, app, page, flash, get_db, current_user, check_pw, hash_pw, load_settings, coerce_setting,
                    SETTINGS, SORT_LABELS, catalog, none_if_empty, parse_dmy, DATA_DIR, exposure_summary,
                    night_of, parse_specs, spec_summary, like_pattern, NAME_MAX)
 from .models import (User, Project, FrameFile, CatalogItem, Setting, ImagingSession,
@@ -420,6 +420,7 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
     if form.get("reset"):
         db.execute(Setting.__table__.delete().where(Setting.key.in_(list(SETTINGS))))   # keep e.g. integrity_report
         db.commit()
+        invalidate_settings()
         flash(request, "Settings reset to defaults")
         return RedirectResponse("/settings", status_code=303)
     for k, (default, typ, lim, _) in SETTINGS.items():
@@ -433,6 +434,7 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
         else:
             db.add(Setting(key=k, value=str(v)))
     db.commit()
+    invalidate_settings()
     flash(request, "Settings saved")
     return RedirectResponse("/settings", status_code=303)
 

@@ -154,7 +154,8 @@ FWHM, limiting magnitude, tilt and elongation
 - **Duplicate warning** (project page, Stats) – files with the same content stored more than once
 - **Archive health**: quick check (existence, size, unknown files, processing errors) or full check (SHA-256 of
   every file), with a stored report
-- Page speed guarded by a test with a 3000-frame project
+- Page speed guarded by tests (3000-frame project, query counts); lists use small cached thumbnails, FITS headers
+  are loaded only when needed, memory caches are bounded
 
 ### Downloads and export
 - Streamed ZIP downloads (start immediately, no temporary files): all sessions as `01_<date>/<type>/…` (the layout
@@ -287,7 +288,7 @@ tests/               pytest suite
 ## Tests
 
 ```bash
-./run-tests.sh            # all tests (≈ 210)
+./run-tests.sh            # all tests (218, ≈ 50 s, no warnings)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
@@ -305,6 +306,7 @@ needed – plate solving is simulated where required.
 | `test_coverage.py` | full plate-solve flow with a simulated ASTAP, star database search across RA 0/360, upload edge cases, import / worker error paths |
 | `test_review.py` | regression tests for the bugs found in the code reviews |
 | `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
+| `test_perf.py` | small cached thumbnails, render slots never blocking the server, star-tile cache budget, settings cache, deferred FITS headers (query counts), large uploads |
 
 Coverage report (optional, ≈ 88 %):
 

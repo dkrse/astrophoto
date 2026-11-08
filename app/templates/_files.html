@@ -84,12 +84,12 @@
         "bg": f.stat_bg|num(0) if f.stat_bg is not none else "", "noise": f.stat_noise|num(2) if f.stat_noise is not none else "",
         "med_fwhm": (med.stat_fwhm|num(2)) if med and med.stat_fwhm and f.frame_type == 'light' else "",
         "med_stars": (med.stat_stars) if med and med.stat_stars and f.frame_type == 'light' else "",
-        "suspect": f.suspect, "rejected": f.rejected, "sha256": f.sha256 or "", "header": f.header is not none and f.header != "",
+        "suspect": f.suspect, "rejected": f.rejected, "sha256": f.sha256 or "", "header": f.has_header,
         "thumb": f.thumb_path is not none, "stored": f.stored_path, "ftype": f.frame_type,
         "sid": f.session_id or ""} %}
     <tr class="{{ 'rejected' if f.rejected }} {{ 'suspect' if f.suspect and not f.rejected }}" data-id="{{ f.id }}"{% if f.solve and '"ok": true' in f.solve %} data-solved="1"{% endif %}>
       <td><input type="checkbox" class="selfile" data-group="{{ gk }}" value="{{ f.id }}"></td>
-      <td>{% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img class="mini" loading="lazy" src="/files/{{ f.id }}/thumb" alt=""></a>
+      <td>{% if f.thumb_path %}<a href="/files/{{ f.id }}/view"><img class="mini" loading="lazy" src="/files/{{ f.id }}/thumb?size=s" alt=""></a>
           {% elif f.status in ('pending', 'importing') %}<span class="mini ph" title="Processing…">⏳</span>{% endif %}</td>
       <td class="fname">
         <a href="/files/{{ f.id }}/view">{{ f.original_name }}</a>
@@ -224,7 +224,7 @@ function fileInfo(btn){
   document.getElementById('fi-dl').innerHTML=rows.filter(function(r){return r[1]!==''&&r[1]!==null&&r[1]!==undefined;})
     .map(function(r){var v=esc(r[1]);return '<dt>'+r[0]+'</dt><dd>'+(r[2]?'<span class="mono small">'+v+'</span>':v)+'</dd>';}).join('');
   var img=document.getElementById('fi-thumb'), a=document.getElementById('fi-thumb-a');
-  a.hidden=!d.thumb; if(d.thumb){img.src='/files/'+d.id+'/thumb';a.href='/files/'+d.id+'/view';}
+  a.hidden=!d.thumb; if(d.thumb){img.src='/files/'+d.id+'/thumb?size=m';a.href='/files/'+d.id+'/view';}
   var f=document.getElementById('fi-form'); f.action='/files/'+d.id+'/edit';
   ['exposure_s','gain','temperature','filter','description'].forEach(function(k){f.elements[k].value=d[k]||'';});
   document.getElementById('fi-view').href='/files/'+d.id+'/view';

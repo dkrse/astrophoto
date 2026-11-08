@@ -18,6 +18,7 @@ from .framestats import _luminance
 ASTAP_BIN = os.environ.get("ASTAP_BIN", "/opt/astap/astap_cli")
 ASTAP_DB = os.environ.get("ASTAP_DB", "/data/astap")
 TIMEOUT_S = 180
+LOCK_WAIT_S = 600                 # a request waits at most this long for a running solve
 _LOCK = threading.Lock()          # one solve at a time (CPU + RAM)
 
 
@@ -100,7 +101,7 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
     lum, binf = _luminance(src)
     if lum is None:
         return {"ok": False, "error": "Unsupported or unreadable file"}
-    lum = np.nan_to_num(np.asarray(lum, dtype=np.float32))
+    lum = np.nan_to_num(np.asarray(lum, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     h_px, w_px = lum.shape[:2]
     from .conditions import sky_level
     sky_adu = sky_level(lum)                     # for the sky brightness (conditions.py)
@@ -122,8 +123,20 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
                 (h_px * binf / short_img if short_img else 1)
         else:
             fov_hint = h_px * binf * pixel_um / focal_hint_mm * 206.265 / 3600
+    if not _LOCK.acquire(timeout=LOCK_WAIT_S):          # one solve at a time; do not park threads for ever
+        return {"ok": False, "error": "The plate solver is busy with another frame – try again in a moment"}
+    try:
+        return _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra_h, dec, fov_hint,
+                             focal_hint_mm, sky_adu)
+    finally:
+        _LOCK.release()
+
+
+def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra_h, dec, fov_hint, focal_hint_mm,
+                  sky_adu) -> dict:
+    from astropy.io import fits
     started = datetime.now()
-    with _LOCK, tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td:
         tmp = Path(td) / "frame.fits"
         fits.PrimaryHDU(lum).writeto(tmp)
         ini, attempts = {}, ([fov_hint, None] if fov_hint else [None])

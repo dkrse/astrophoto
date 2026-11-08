@@ -83,6 +83,9 @@ def test_odd_fits_files_process_and_render(client, project, tmp_path, name):
         assert client.get(url).status_code in (200, 404, 415), url  # no 500
 
 
+@pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")   # corrupt FITS on purpose
+@pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyDeprecationWarning")
+@pytest.mark.filterwarnings("ignore::astropy.io.fits.verify.VerifyWarning")
 def test_images_8_and_16_bit_and_corrupt(client, project, tmp_path):
     from PIL import Image
     p8 = tmp_path / "rgb.png"

@@ -538,6 +538,19 @@ def project_metadata(p: Project, only=None) -> dict:
     }
 
 
+def preload_headers(db, project_ids=None, calib_ids=None):
+    """Load the deferred FITS headers of many files in one query (instead of one query per file)."""
+    from sqlalchemy.orm import undefer
+    from sqlalchemy import or_
+    conds = []
+    if project_ids:
+        conds.append(FrameFile.project_id.in_(list(project_ids)))
+    if calib_ids:
+        conds.append(FrameFile.calib_set_id.in_(list(calib_ids)))
+    if conds:
+        db.scalars(select(FrameFile).where(or_(*conds)).options(undefer(FrameFile.header))).all()
+
+
 def metadata_json_bytes(p: Project, only=None) -> bytes:
     return json.dumps(project_metadata(p, only), ensure_ascii=False, indent=2, default=str).encode()
 
@@ -546,6 +559,7 @@ def metadata_json_bytes(p: Project, only=None) -> bytes:
 def project_export(pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """ZIP with metadata.json (everything incl. FITS headers / EXIF) + raw header text files."""
     p = get_project(db, pid)
+    preload_headers(db, [p.id], [c.id for c in linked_sets(p)])
     extra = [("metadata.json", metadata_json_bytes(p))]
     for f in p.files:                        # one folder per session, like the ZIP (names repeat between nights)
         if f.header:
@@ -564,6 +578,7 @@ def projects_export_all(user: User = Depends(current_user), db: Session = Depend
     """ZIP of every project's full metadata: all_projects.json + per-project folders (metadata.json, raw headers)."""
     from datetime import datetime as _dt
     projects = db.scalars(select(Project).order_by(func.lower(Project.name))).all()
+    preload_headers(db, [p.id for p in projects], [c.id for c in db.scalars(select(CalibrationSet))])
     extra, allp = [], []
     for p in projects:
         md = project_metadata(p)
@@ -625,6 +640,7 @@ def project_zip(pid: int, types: str = "light,dark,bias,flat,darkflat", rejected
     if session:
         suffix = f"{session_label(sel[0])}_{suffix}"
     only = sel[0] if session else None
+    preload_headers(db, [p.id], {c.id for s in sel for c in s.calib_sets})
     return zip_response(f"{p.name}_{suffix}.zip", entries, project_info_text(p, only),
                         load_settings(db)["zip_compression"], [("metadata.json", metadata_json_bytes(p, only))])
 

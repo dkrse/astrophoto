@@ -238,7 +238,9 @@ def test_background_switches(client, project, tmp_path):
         drain()
         f = [x for x in files_of(project) if x.original_name == "off.fits"][0]
         assert f.status == "done" and f.thumb_path is None            # no thumbnail …
-        assert f.header and f.exposure_s == 30.0 and f.sha256          # … but metadata and hash
+        with SessionLocal() as db:
+            assert db.get(FrameFile, f.id).header                       # … but metadata (header loaded on use)
+        assert f.exposure_s == 30.0 and f.sha256 and f.has_header       # … and hash
         assert f.stat_fwhm is None and f.stat_stars is None            # no frame statistics
         assert client.post("/api/analysis/queue", json={"scope": "files", "ids": [f.id], "kind": "optics"}).json()["queued"] == 1
         drain()                                                         # analysis switched off -> waits

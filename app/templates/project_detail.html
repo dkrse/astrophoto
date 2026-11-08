@@ -3,7 +3,7 @@
 {% block title %}{{ p.name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
 <div class="head">
-  <div class="titlewrap">{% if cover %}<img class="cover-mini" src="/files/{{ cover.id }}/thumb" alt="" title="Project cover{{ '' if p.cover_file_id else ' (automatic)' }}" onclick="document.getElementById('cover-dlg').showModal()">{% endif %}<div><h1>{{ p.name }}</h1>
+  <div class="titlewrap">{% if cover %}<img class="cover-mini" src="/files/{{ cover.id }}/thumb?size=s" alt="" title="Project cover{{ '' if p.cover_file_id else ' (automatic)' }}" onclick="document.getElementById('cover-dlg').showModal()">{% endif %}<div><h1>{{ p.name }}</h1>
     <div class="muted">{{ [p.target, p.object_type]|select|join(' · ') }}
       {% if date_range %} · 🌙 {{ date_range[0]|dmy }}{% if date_range[1] != date_range[0] %} – {{ date_range[1]|dmy }}{% endif %}{% endif %}
       · {{ sessions|length }} session{{ 's' if sessions|length != 1 }}
@@ -29,7 +29,7 @@
 <section class="pgallery">
   {% for f in stacks %}
   <figure class="gitem">
-    <a href="/files/{{ f.id }}/view">{% if f.thumb_path %}<img loading="lazy" src="/files/{{ f.id }}/thumb" alt="">{% else %}<span class="gph">⏳</span>{% endif %}</a>
+    <a href="/files/{{ f.id }}/view">{% if f.thumb_path %}<img loading="lazy" src="/files/{{ f.id }}/thumb?size=m" alt="">{% else %}<span class="gph">⏳</span>{% endif %}</a>
     <figcaption><b class="ell" title="{{ f.original_name }}">{{ f.original_name }}</b>
       <span class="muted small">{{ f.size|size }}{% if f.session %} · 🌙 {{ f.session.date|dmy }}{% endif %}</span>
       {% if f.description %}<span class="small ell">{{ f.description }}</span>{% endif %}
@@ -280,7 +280,7 @@ var SESS_CALIB = {{ {}|tojson }};
       {% for t in FRAME_TYPES %}{% for f in thumbs if f.frame_type == t %}
       <label class="cover-opt {% if p.cover_file_id == f.id %}sel{% endif %}" title="{{ f.original_name }}">
         <input type="radio" name="file_id" value="{{ f.id }}" {% if p.cover_file_id == f.id %}checked{% endif %}>
-        <img class="cover-img" loading="lazy" src="/files/{{ f.id }}/thumb" alt="">
+        <img class="cover-img" loading="lazy" src="/files/{{ f.id }}/thumb?size=m" alt="">
         <span class="small ell"><span class="chip t-{{ f.frame_type }}">{{ FRAME_LABELS[f.frame_type] }}</span> {{ f.original_name }}</span>
       </label>
       {% endfor %}{% endfor %}

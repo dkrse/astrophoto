@@ -52,7 +52,7 @@
 <section id="projects" class="{{ S.default_view }} cards-{{ S.card_size }}">
 {% for p in projects %}{% set s = summary[p.id] %}
   <a class="pcard" href="/projects/{{ p.id }}">
-    <div class="cover">{% if s.cover %}<img loading="lazy" src="/files/{{ s.cover.id }}/thumb" alt="">{% else %}<span>✦</span>{% endif %}</div>
+    <div class="cover">{% if s.cover %}<img loading="lazy" src="/files/{{ s.cover.id }}/thumb?size=m" alt="">{% else %}<span>✦</span>{% endif %}</div>
     <div class="body">
       <h3>{{ p.name }}</h3>
       <div class="muted">{{ [p.target, p.object_type]|select|join(' · ') }}</div>

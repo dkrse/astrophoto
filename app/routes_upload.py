@@ -154,16 +154,26 @@ async def upload_chunk(request: Request, uid: str, offset: int, user: User = Dep
         limit = json.loads(meta.read_text())["size"]
         h = _HASH.get(uid)
         written = 0
+        buf = bytearray()
+
+        def flush(fh, data):                       # disk write + hashing off the event loop
+            fh.write(data)
+            if h is not None:
+                h.update(data)
         with open(part, "ab") as fh:
             async for chunk in request.stream():
-                if cur + written + len(chunk) > limit:
+                if cur + written + len(buf) + len(chunk) > limit:
                     fh.truncate(cur)
                     _HASH.pop(uid, None)          # hash state is no longer valid -> recompute at finish
                     return err("More data than the declared file size", 400, offset=cur)
-                fh.write(chunk)
-                written += len(chunk)
-                if h is not None:
-                    h.update(chunk)
+                buf += chunk
+                if len(buf) >= 4 * 1024 * 1024:
+                    await run_in_threadpool(flush, fh, bytes(buf))
+                    written += len(buf)
+                    buf.clear()
+            if buf:
+                await run_in_threadpool(flush, fh, bytes(buf))
+                written += len(buf)
         os.utime(meta)                            # active upload -> not removed by the 48 h cleanup
         return {"offset": part.stat().st_size}
 

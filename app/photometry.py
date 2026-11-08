@@ -10,7 +10,8 @@ from pathlib import Path
 import numpy as np
 
 RING_H = 180 / 35                 # rings 2..35; ring 1 and 36 are half rings (caps)
-_TILE_CACHE: dict = {}
+_TILE_CACHE: "OrderedDict" = None
+TILE_CACHE_BYTES = 150 * 1024 ** 2               # decoded tiles kept in memory (least recently used dropped)
 
 
 def _ring_of(dec: float) -> int:
@@ -21,11 +22,19 @@ def _ring_tiles(db: Path, ring: int) -> list:
     return sorted(db.glob(f"*_{ring:02d}??.1476"))
 
 
+import threading
+from collections import OrderedDict
+_TILE_CACHE = OrderedDict()
+_TILE_LOCK = threading.Lock()
+
+
 def read_tile(path: Path):
-    """(ra_deg, dec_deg, mag) arrays of one database file."""
+    """(ra_deg, dec_deg, mag) arrays of one database file (float32, LRU-cached within TILE_CACHE_BYTES)."""
     key = str(path)
-    if key in _TILE_CACHE:
-        return _TILE_CACHE[key]
+    with _TILE_LOCK:
+        if key in _TILE_CACHE:
+            _TILE_CACHE.move_to_end(key)
+            return _TILE_CACHE[key]
     b = np.fromfile(path, dtype=np.uint8)[110:]
     b = b[: len(b) // 5 * 5].reshape(-1, 5)
     hdr = (b[:, 0] == 255) & (b[:, 1] == 255) & (b[:, 2] == 255)
@@ -36,10 +45,11 @@ def read_tile(path: Path):
     s, g = b[st].astype(np.int64), block[st]
     ra = (s[:, 0] | s[:, 1] << 8 | s[:, 2] << 16) / (2 ** 24 - 1) * 360.0
     dec = (s[:, 3] | s[:, 4] << 8 | (dec_hi[g] << 16)) / (128 * 65536 - 1) * 90.0
-    out = (ra, dec, mag[g])
-    if len(_TILE_CACHE) > 64:
-        _TILE_CACHE.clear()
-    _TILE_CACHE[key] = out
+    out = (ra.astype(np.float32), dec.astype(np.float32), mag[g].astype(np.float32))   # float32: ~0.1″ precision, half the memory
+    with _TILE_LOCK:
+        _TILE_CACHE[key] = out
+        while len(_TILE_CACHE) > 1 and sum(sum(a.nbytes for a in v) for v in _TILE_CACHE.values()) > TILE_CACHE_BYTES:
+            _TILE_CACHE.popitem(last=False)
     return out
 
 

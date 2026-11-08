@@ -128,7 +128,7 @@ def analyse(src: Path, orient: int = 0, flip: str = "none", scale_arcsec: float 
     lum, binf = _luminance(src)
     if lum is None:
         return {"ok": False, "error": "Unsupported or unreadable file"}
-    lum = _orient(np.nan_to_num(np.asarray(lum, dtype=np.float32)), orient, flip)
+    lum = _orient(np.nan_to_num(np.asarray(lum, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0), orient, flip)
     H, W = lum.shape
     bg, noise = _background(lum)
     img = lum - bg

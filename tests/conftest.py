@@ -20,7 +20,7 @@ if urlparse(TEST_DB_URL).path.strip("/") == urlparse(_prod_url).path.strip("/"):
 
 _tmp = Path(tempfile.mkdtemp(prefix="astro-test-"))
 os.environ.update(DATABASE_URL=TEST_DB_URL, DATA_DIR=str(_tmp / "data"), IMPORT_DIR=str(_tmp / "import"),
-                  ASTRO_NO_WORKER="1", SECRET_KEY="test-secret")
+                  ASTRO_NO_WORKER="1", SECRET_KEY="test-secret", SETTINGS_CACHE_S="0")
 (_tmp / "import").mkdir(parents=True)
 
 

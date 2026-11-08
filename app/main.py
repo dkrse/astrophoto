@@ -117,3 +117,6 @@ def startup():
         db.commit()
     if os.environ.get("ASTRO_NO_WORKER") != "1":     # tests drive the worker manually
         worker.start()
+        import threading
+        from .platesolve import catalogue                # OpenNGC (~14 000 objects): load once, in the background
+        threading.Thread(target=catalogue, name="astro-catalogue", daemon=True).start()

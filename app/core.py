@@ -260,7 +260,25 @@ def coerce_setting(k, v):
         return default
 
 
+_SETTINGS_CACHE = {"at": 0.0, "value": None}
+SETTINGS_CACHE_S = float(os.environ.get("SETTINGS_CACHE_S", "1.0"))   # the worker and every page read settings
+
+
+def invalidate_settings():
+    _SETTINGS_CACHE.update(at=0.0, value=None)
+
+
 def load_settings(db=None) -> dict:
+    import time as _t
+    c = _SETTINGS_CACHE
+    if c["value"] is not None and _t.monotonic() - c["at"] < SETTINGS_CACHE_S:
+        return dict(c["value"])
+    value = _load_settings(db)
+    c.update(at=_t.monotonic(), value=value)
+    return dict(value)
+
+
+def _load_settings(db=None) -> dict:
     own = db is None
     db = db or SessionLocal()
     try:

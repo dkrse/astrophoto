@@ -23,6 +23,15 @@ import time
 _RENDER_SLOTS = threading.BoundedSemaphore(2)    # full-size FITS renders need a lot of RAM
 
 
+def slotted(fn, *args):
+    """Run fn in a worker thread while holding a render slot – the slot is taken *in that thread*, never on the
+    event loop (a blocking acquire there would freeze every request of the server)."""
+    def run():
+        with _RENDER_SLOTS:
+            return fn(*args)
+    return run_in_threadpool(run)
+
+
 def back_url(f: FrameFile) -> str:
     o = f"/projects/{f.project_id}" if f.project_id else f"/calibration/{f.calib_set_id}"
     return f"{o}#{f.frame_type}"
@@ -161,11 +170,40 @@ async def file_save_opts(request: Request, fid: int, user: User = Depends(curren
 
 
 @app.get("/files/{fid}/thumb")
-def file_thumb(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def file_thumb(fid: int, size: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Preview image. size=s (240 px, file lists) / m (640 px, cards, gallery) are made from the 1600 px thumbnail
+    once and cached – a list of 100 files then loads ~2 MB instead of ~70 MB."""
     f = get_file(db, fid)
-    if not f.thumb_path or not (DATA_DIR / f.thumb_path).exists():
+    src = DATA_DIR / f.thumb_path if f.thumb_path else None
+    if src is None or not src.exists():
         raise HTTPException(404)
-    return FileResponse(DATA_DIR / f.thumb_path, headers={"Cache-Control": "no-cache"})
+    side = THUMB_SIZES.get(size)
+    if side:
+        src = small_thumb(f.id, src, size, side)
+    return FileResponse(src, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+THUMB_SIZES = {"s": 240, "m": 640}
+
+
+def small_thumb(fid: int, src, size: str, side: int):
+    """Downscaled copy of a thumbnail in the render cache, rebuilt when the thumbnail changes."""
+    from PIL import Image
+    dst = DATA_DIR / ".cache" / "thumbs" / f"{fid}_{size}.jpg"
+    try:
+        if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+            return dst
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im.draft("RGB", (side * 2, side * 2))           # fast JPEG decoding at reduced size
+            im = im.convert("RGB")
+            im.thumbnail((side, side))
+            tmp = dst.with_suffix(f".{os.getpid()}.tmp")
+            im.save(tmp, "JPEG", quality=82, optimize=True)
+        os.replace(tmp, dst)                                # atomic: parallel requests never see half files
+        return dst
+    except OSError:
+        return src
 
 
 @app.get("/files/{fid}/header", response_class=PlainTextResponse)
@@ -442,8 +480,7 @@ async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User =
     if not (DATA_DIR / f.stored_path).exists():
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
     inp = analysis.optics_inputs(f, flip)
-    with _RENDER_SLOTS:
-        res = await run_in_threadpool(analysis.optics_compute, inp, bool(tiles))
+    res = await slotted(analysis.optics_compute, inp, bool(tiles))
     analysis.optics_store(f, res)              # summary for the session / trend views
     db.commit()
     if res.get("ok") and res.get("fwhm_arcsec") and len(res.get("regions") or []) == 9:
@@ -495,9 +532,7 @@ async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str
     eff = opts["flip"]
     if eff == "auto":
         eff = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
-    with _RENDER_SLOTS:
-        data = await run_in_threadpool(annotate.annotated_jpeg, src, opts, res, eff, bool(grid),
-                                       (north or opts.get("north")) == "1")
+    data = await slotted(annotate.annotated_jpeg, src, opts, res, eff, bool(grid), (north or opts.get("north")) == "1")
     if data is None:
         raise HTTPException(422, "Cannot render this file")
     name = os.path.splitext(clean_filename(f.original_name))[0] + "_annotated.jpg"

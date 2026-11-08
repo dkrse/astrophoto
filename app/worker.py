@@ -223,6 +223,14 @@ def cleanup_uploads(max_age_h=48):
                 p.unlink()
         except OSError:
             pass
+    try:                                          # in-memory state of uploads whose files are gone
+        from .routes_upload import _HASH, _LOCKS
+        alive = {p.name.split(".")[0] for p in up.iterdir()}
+        for d in (_HASH, _LOCKS):
+            for k in [k for k in d if k not in alive]:
+                d.pop(k, None)
+    except Exception:
+        pass
 
 
 CACHE_MAX_BYTES = 5 * 1024 ** 3

@@ -161,7 +161,7 @@ class FrameFile(Base):
     original_name: Mapped[str] = mapped_column(String(300))
     stored_path: Mapped[str] = mapped_column(String(600))   # relative to DATA_DIR
     thumb_path: Mapped[str | None] = mapped_column(String(600))
-    source_path: Mapped[str | None] = mapped_column(Text)   # server import source (while importing)
+    source_path: Mapped[str | None] = mapped_column(Text, deferred=True)   # server import source (while importing)
     size: Mapped[int] = mapped_column(BigInteger, default=0)
     sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # importing/pending/done/error
@@ -172,7 +172,7 @@ class FrameFile(Base):
     filter: Mapped[str | None] = mapped_column(String(50))
     date_obs: Mapped[datetime | None] = mapped_column(DateTime)
     description: Mapped[str | None] = mapped_column(Text)
-    header: Mapped[str | None] = mapped_column(Text)
+    header: Mapped[str | None] = mapped_column(Text, deferred=True)   # FITS header text – loaded only when used
     view_opts: Mapped[str | None] = mapped_column(Text)
     solve: Mapped[str | None] = mapped_column(Text)         # JSON result of the last ASTAP plate solve
     optics: Mapped[str | None] = mapped_column(Text)        # JSON summary of the last optics analysis
@@ -189,6 +189,10 @@ class FrameFile(Base):
     project: Mapped[Project | None] = relationship(back_populates="files")
     calib_set: Mapped[CalibrationSet | None] = relationship(back_populates="files")
     session: Mapped[ImagingSession | None] = relationship(back_populates="files")
+
+
+from sqlalchemy.orm import column_property  # noqa: E402
+FrameFile.has_header = column_property(func.coalesce(func.length(FrameFile.__table__.c.header), 0) > 0)
 
 
 class ImportJob(Base):
@@ -277,6 +281,10 @@ MIGRATIONS = [
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS software VARCHAR(200)",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS solve TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS optics TEXT",
+    "CREATE INDEX IF NOT EXISTS ix_ff_project_type_status ON frame_files (project_id, frame_type, status)",
+    "CREATE INDEX IF NOT EXISTS ix_ff_session_type ON frame_files (session_id, frame_type)",
+    "CREATE INDEX IF NOT EXISTS ix_ff_solved ON frame_files (session_id) WHERE solve IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS ix_tasks_status_id ON analysis_tasks (status, id)",
     "UPDATE projects SET created_at = now() WHERE created_at IS NULL",
     "UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL",
 ]

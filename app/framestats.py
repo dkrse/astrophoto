@@ -45,7 +45,7 @@ def frame_stats(src: Path) -> dict | None:
     lum, scale = _luminance(src)
     if lum is None:
         return None
-    lum = np.nan_to_num(lum.astype(np.float32))
+    lum = np.nan_to_num(lum.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)   # NaN / ±inf pixels count as empty
     sample = lum[::4, ::4]
     bg = float(np.median(sample))
     noise = float(np.median(np.abs(sample - bg)) * 1.4826)

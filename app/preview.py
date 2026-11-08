@@ -82,7 +82,7 @@ def stf_params(c):
 
 def normalize(a: np.ndarray):
     """Robust 0..1 normalization (same in render and histogram, so levels match)."""
-    a = np.nan_to_num(a.astype(np.float32))
+    a = np.nan_to_num(a.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     sample = a[::4, ::4] if a.shape[0] > 400 else a
     lo, hi = np.percentile(sample, 0.01), np.percentile(sample, 99.995)
     return np.clip((a - lo) / (hi - lo + 1e-12), 0, 1)
@@ -91,7 +91,7 @@ def normalize(a: np.ndarray):
 def stretch(a: np.ndarray, opts: dict) -> np.ndarray:
     """a: HxW or HxWx3 float (linear) -> uint8."""
     mode = opts["stretch"]
-    a = np.nan_to_num(a.astype(np.float32))
+    a = np.nan_to_num(a.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     if mode == "none":
         mx = float(a.max())
         mx = 1.0 if mx <= 1.0 else (255.0 if mx <= 255 else 65535.0)

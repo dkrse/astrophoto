@@ -3,149 +3,139 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.4.0] – 2026-11-08
+## [1.4.1] – 2026-11-08
 
-### Added
-- **Pagination** of the sessions (project page: table + file blocks; links to a session on another page find it),
-  of every file group (replaces “first 100 + show all”; *Show all* still available) and of the calibration library;
-  page sizes in Settings → General (*Sessions / Files / Calibration sets per page*, 0 = all). Tests:
-  `tests/test_paging.py`.
-- **Observing conditions** from the frames: **seeing** (centre FWHM without diffraction), **transparency**
-  (zero point vs. the best night of the same setup) and **sky brightness** (mag/arcsec² like SQM, camera offset from
-  RAW black level / FITS keyword / linked bias or dark). Session dialog *Conditions* with 🌡 *Measure conditions*
-  and *Use for Seeing / SQM*; values in the sessions table, the Solve / Optics dialogs and new trend charts.
+From an archive to an analysis platform: local plate solving, optics inspection, observing conditions, trends,
+tools for large archives – plus three code reviews, a performance pass and a much larger test suite.
+
+### Added – plate solving and sky (ASTAP, local)
+- **🎯 Solve** in the viewer: real image scale and **focal length** (vs. the session's telescope), field of view,
+  centre, rotation; stored per file and in the metadata export. ASTAP CLI is built into the image, the star
+  database lives in `DATA_DIR/astap`.
+- **Resized exports** (JPEG at 50 %, drizzle) and **binning** recognised from the camera's sensor size; crops left
+  unchanged.
+- **Objects in the field** (OpenNGC: NGC, IC, Messier + addendum); click one to show only it on the image.
+- **✨ Objects** overlay (`O`): object ellipses and names, RA / Dec grid, N / E arrows.
+- **⬆ North up** (`N`): the displayed image turned (and un-mirrored) to north up / east left, overlays included;
+  toggle, remembered between frames, cleared by ↺ Reset, savable as a view setting.
+- **Pointing check**: where the project's object lies in the frame.
+- **Limiting magnitude** and photometric **zero point** from the stars matched to the local Gaia star database.
+- **⬇ Annotated JPEG** export (objects, grid, N / E; also north up).
+- **Use measured focal length** writes it to the telescope (solve dialog, bulk solve, session dialog); warning when
+  a stored solve is outdated by a camera change.
+
+### Added – optics inspector
+- **🔬 Optics** in the viewer: star FWHM and elongation across the field, 3×3 mosaic of corners / edges / centre,
+  overlay, findings for **sensor tilt**, **field curvature**, radial / tangential edge elongation (**coma,
+  corrector spacing**) and elongation everywhere (**guiding, wind, collimation**); summary stored per file.
+- **🔬 Optics** in the bulk bar: per-frame table and what repeats across frames (optics) vs. what changes
+  (conditions).
+
+### Added – observing conditions and trends
+- **Seeing** (centre FWHM without diffraction; warnings when undersampled or defocused), **transparency** (zero
+  point vs. the best night of the same telescope · camera · gain) and **sky brightness** (mag/arcsec² like SQM;
+  camera offset from RAW black level, FITS keyword or a linked bias / dark).
+- Session dialog **Conditions** with *🌡 Measure conditions* and *Use for Seeing / SQM*; **Measured** column in the
+  sessions table (focal length, seeing, sky brightness, transparency, limiting magnitude).
 - Settings: **measure new nights automatically** and **fill in Seeing / SQM** (values typed by the user are kept).
-- **Tabs** on the Stats page (Overview · Optics & conditions · Archive health) and the Settings page.
-- Tests: `tests/test_conditions.py`, `tests/test_coverage.py` (simulated ASTAP solve with photometry, star
-  database search across RA 0/360, upload edge cases, import duplicates / failed copies, worker error paths and
-  the second-review fixes). Test coverage of the code: 86 % → 88 %.
-- **Plate solving** with ASTAP (local, on demand): **🎯 Solve** in the viewer measures image scale, focal
-  length (vs. the session's telescope), field of view, centre and rotation; stored per file and exported in
-  the metadata. ASTAP CLI is built into the image, the star database lives in `DATA_DIR/astap`.
-- Plate solve detects **resized images** (e.g. JPEG exports at 50 %, drizzle) by comparing the image with
-  the session camera's sensor size and corrects the focal length; crops are recognised and left unchanged.
-  Only when the camera's resolution and pixel size are set.
-- **Objects in the field** (OpenNGC catalogue, NGC / IC / Messier + addendum) listed in the solve dialog.
-- **✨ Objects** overlay in the viewer (`O`): object ellipses and names, RA / Dec grid, N / E arrows.
-- **Pointing check**: position of the project's object relative to the frame centre.
-- **🔬 Optics inspector** in the viewer: star FWHM and elongation across the field, 3×3 mosaic of corners /
-  edges / centre, overlay on the image and findings for sensor tilt, field curvature, radial / tangential
-  edge elongation (coma, spacing), uniform elongation (guiding, wind, collimation).
-- **🔬 Optics** in the bulk bar for several frames: per-frame table and a summary of findings that repeat.
-- **🎯 Solve** in the bulk bar for many frames with a summary per telescope (median focal length).
-- **Measured values per session** (sessions table + session dialog): focal length vs. equipment, scale,
-  rotation, limiting magnitude, star FWHM (″), elongation, tilt.
-- **Use measured focal length** button (solve dialog, bulk solve, session dialog) writes it to the equipment.
-- **Limiting magnitude** per solved frame from the ASTAP star list matched to the local Gaia star database.
-- **⬇ Annotated JPEG** export with objects, RA / Dec grid and N / E.
-- **Optics & sky over time** charts on the Stats page (FWHM, limiting magnitude, tilt, elongation per night
-  and equipment).
-- Optics analyses are stored per file (summary only).
-- Tests for all of the above (`tests/test_sky.py`).
-- **⬇ Metadata** in the header: full metadata export of all projects + calibration library (ZIP); asks where
-  to save where the browser allows it (HTTPS / localhost).
-- Duplicate project warning (name / object compared ignoring case, spaces and punctuation); saving a
-  duplicate needs an explicit confirmation.
-- Clicking a session row jumps to that session's files.
-- **Background analysis queue**: plate solve / optics for a project (**🎯🔬 Analyse**) or the whole archive
-  (Stats page) run by the worker – all frames or 1 / 3 / 10 per night, optionally only missing results; progress
-  and **Stop analysis** in the processing bar; the bulk bar offers it for more than 20 frames. Interrupted tasks
-  are re-queued after a restart.
-- **📦 Import archive**: a whole folder tree into many projects and sessions at once (project from `OBJECT` or
-  folders, night from `DATE-OBS` / EXIF / path, type detection), reviewed per project × night group before
-  copying; existing projects matched by name or object; telescope / camera prefilled from the header.
-- **Duplicate warning** (project page and Stats page) for files stored more than once – warning only.
-- **Archive health** on the Stats page: quick or full (SHA-256) integrity check in the background with a stored
-  report (missing files, wrong size, changed content, files unknown to the database, processing errors).
-- Test with a 3000-frame project guarding page speed (`tests/test_archive.py`).
-- **⬆ North up** in the viewer (`N`): rotates (and un-mirrors) the displayed image to north up / east left from
-  the plate solve, with the overlays; toggle, reset with ↺ Reset, savable as a view setting, also for the
-  annotated JPEG export.
-- Solve dialog: clicking an object in the list shows only that object on the image (centred); a click on the
-  image shows all again.
-- Viewer: **🌙 session** button back to the frame's session; ← goes to the same frame type in that session.
+- **Stats → Optics & conditions**: seeing, transparency, sky brightness, FWHM, limiting magnitude, tilt and
+  elongation per night and telescope · camera (charts with tooltips, click opens the night, table).
 
-- **Activity indicator** next to the app name in the header: an animation while the server works in the
-  background (imports, previews / statistics, plate solve / optics queue, integrity check) or this browser
-  uploads; hovering shows what is running; grey and still when the analysis queue is paused in Settings.
-- **Settings → Background processing**: switches for thumbnails, frame statistics, suspect marks, the background
-  analysis queue (paused while off) and integrity checks.
+### Added – large archives
+- **📦 Import archive**: a whole folder tree into many projects and sessions at once (project from `OBJECT` or the
+  folders, night from `DATE-OBS` / EXIF / path), reviewed per project × night; existing projects and nights
+  recognised by name or object; telescope / camera prefilled from the header.
+- **Background analysis queue**: **🎯🔬 Analyse** a project or the whole archive (all frames or 1 / 3 / 10 per
+  night, only missing results), progress and *Stop analysis*; **🎯 Solve** in the bulk bar with a per-telescope
+  summary; for more than 20 frames the bulk bar offers the background mode; interrupted tasks are re-queued.
+- **Activity indicator** next to the app name while anything runs in the background (hover for details).
+- **Duplicate warning** (project page, Stats) for files stored more than once.
+- **Archive health** (Stats): quick or full (SHA-256) integrity check in the background with a stored report.
+- **Pagination** of sessions (table + file blocks; links to a session on another page find it), of every file group
+  and of the calibration library; page sizes in Settings (0 = all).
+
+### Added – other
+- **⬇ Metadata** in the header: metadata export of all projects + calibration library.
+- **Duplicate project warning** when creating / renaming (`NGC 123` = `ngc123` = `NGC  123`).
+- Clicking a session row jumps to its files; **🌙 session** button in the viewer back to the frame's night.
+- **Settings → Background processing**: switches for thumbnails, frame statistics, suspect marks, the analysis
+  queue (paused while off), integrity checks and the automatic conditions measuring / filling.
+- **Tabs** on the Stats page (Overview · Optics & conditions · Archive health) and the Settings page.
 
 ### Changed
-- README rewritten for the current scope of the application (introduction, contents, features grouped by area,
-  workflow, module overview, test table) with 14 new screenshots (session conditions, objects + north up, plate
-  solve, optics, archive import, Stats tabs, archive health, settings, gallery, calibration library).
-- Viewer toolbar: **✨ Objects**, **🔬 Optics** and **🎯 Solve** next to the info button; solve and optics
-  results open in wide dialogs.
-- Sessions table: new **Measured** column; the session dialog shows the measured values.
-- Statistics page: new **Optics & sky over time** and **Archive health** sections.
-- Plate solve and optics logic moved to `analysis.py` (shared by the endpoints and the background queue).
-- Docker image: ASTAP CLI, OpenNGC catalogue (v20260501) and DejaVu fonts (annotated export) are included.
-- README screenshots updated; new screenshots of the session dialog, objects overlay, plate solve, optics
-  inspector and the optics trend.
+- Viewer toolbar: ✨ Objects, ⬆ North up, 🔬 Optics and 🎯 Solve next to the info button; wide result dialogs.
+- Plate solve / optics logic in `analysis.py`, shared by the endpoints and the background queue; new modules
+  `platesolve.py`, `photometry.py`, `optics.py`, `conditions.py`, `measured.py`, `annotate.py`, `integrity.py`,
+  `routes_archive.py`.
+- Docker image: ASTAP CLI, OpenNGC catalogue (v20260501) and DejaVu fonts (annotated export).
+- File lists, project cards and the gallery use small cached thumbnails (240 / 640 px).
+- Static files are referenced with a content version (`?v=…`) – browsers never keep an outdated CSS / JS.
+- README rewritten for the current scope (introduction, contents, features by area, workflow, modules, test table)
+  with 14 new screenshots.
 
-### Fixed
-Second review (conditions, tabs):
-- Seeing / sky brightness / transparency were also computed from **stacks** (calibrated, normalised) – now light
-  frames only; stacks get no sky values.
-- Every background analysis re-read all plate solves of the archive (transparency reference) – the session fields
-  are now filled without it.
-- Seeing of colour (CFA) cameras was not flagged as undersampled (measured on the 2×2 image); values below the
-  diffraction limit are no longer reported.
-- A defocused night (stars > 6″) is not written into the session's Seeing automatically (manual “Use” still can).
-- Gain “101” and “101.0” were different setups for the transparency; the zero point now uses the most common gain
-  of the night only.
-- Failed optics analyses are remembered, so automatic measuring does not queue the same night again and again;
-  starting a new batch never removes queued tasks.
-- Camera offset: the shortest linked dark is used (least dark current); a FITS keyword that could never match was
-  removed.
-- Settings: Save did nothing visible when a field on another tab was invalid – that tab now opens with the message.
-- Tabs follow links / hash changes to elements inside a pane; the trend charts show “No data yet” without data and a
-  message when loading fails; small fixes for missing values in the session / Solve / Optics dialogs.
-Full code review – plate solve / analysis:
-- Frames with **binning** (XBINNING > 1) were taken for resized exports and got a doubled focal length; the
-  FOV hint for ASTAP used the unbinned sensor.
-- Session **FWHM in ″** was halved for resized (e.g. 50 % JPEG) frames (multiplied by the sensor scale).
-- An **ASTAP timeout** or missing binary caused a server error (and blocked other solves) – now a failed solve.
-- Limiting magnitude: the star match radius grows with the image scale (wide fields matched almost nothing).
-- Optics: radial / tangential edge classification on non-square frames; tiny frames no longer crash the mosaic;
-  `/optics` uses the viewer orientation by default.
-- Palette / alpha PNGs were measured from palette indices / with the alpha channel.
-- A stored solve shows a warning when the camera's pixel size changed since (Solve again).
-- Objects within half a pixel of the frame edge are counted correctly as inside / outside.
+### Fixed – speed, memory and blocking
+- **Server freeze**: with two optics analyses / annotated exports running, a third request blocked the whole server
+  (a thread semaphore was taken on the event loop).
+- **Thumbnails**: lists loaded the 1600 px previews (~770 kB each) – a project page with 208 frames now loads
+  ~0.7 MB of images instead of ~160 MB.
+- **FITS headers** are no longer read with every file row (deferred column; exports load them in one query).
+- **Star database cache** limited to 150 MB (LRU, float32).
+- **Uploads**: writing and hashing in 4 MB blocks outside the event loop; state of abandoned uploads is freed.
+- Settings cached for 1 s (invalidated on save); OpenNGC catalogue loaded in the background at start (first solved
+  frame 0.9 s → 0.02 s); transparency reference reads only the needed values; waiting for the plate solver is
+  limited; heavy archive-import work no longer blocks the server; new database indexes for frequent filters.
+- Every background analysis re-read all plate solves of the archive; automatic measuring could queue the same night
+  again and again; starting a new batch could remove queued tasks.
 
-Import, worker, integrity:
-- The integrity check reported files imported, deleted or moved during the check as orphans / missing; a stopped
-  check was reported as “OK”.
-- Archive import: dangling symlinks / links pointing outside the import folder broke the scan; a matched project
-  deleted meanwhile created a project with an empty name; equipment of existing sessions was overwritten; dates
-  in file names after midnight started a new night (folder dates now win); failed starts left empty placeholder
-  files; the heavy start work no longer blocks the server; free disk space is checked.
-- Server import: invalid items / failed starts leave no placeholder files; scan skips broken symlinks.
-- Uploads: cancelling during finishing returned a server error; upload locks were not released on cancel.
+### Fixed – plate solve, optics, conditions
+- **Binned** frames got a doubled focal length; the FOV hint used the unbinned sensor.
+- Session **FWHM in ″** was halved for resized (50 % JPEG) frames.
+- An **ASTAP timeout** or missing binary caused a server error and blocked other solves.
+- Limiting magnitude: the match radius now grows with the image scale (wide fields matched almost nothing).
+- Conditions were also computed from **stacks** (calibrated / normalised) – now light frames only.
+- Seeing of colour (CFA) cameras was not flagged as undersampled; values below the diffraction limit are not
+  reported; defocused nights (> 6″) are not filled in as seeing automatically.
+- Gain “101” vs. “101.0” split the transparency reference; the zero point uses the most common gain of the night.
+- Camera offset: the shortest linked dark is used; a FITS keyword that could never match was removed.
+- Optics: the background was 0 along the image edges (re-run 🔬 Optics on frames analysed before); radial /
+  tangential classification on non-square frames; tiny frames crashed the mosaic; `/optics` uses the viewer
+  orientation.
+- Palette / alpha PNGs were measured from palette indices / with the alpha channel; NaN / ±inf pixels (damaged FITS)
+  overflowed the statistics and previews.
+- Objects within half a pixel of the frame edge were counted on the wrong side.
 
-Projects, settings, pages:
-- Settings reset deleted the stored integrity report.
-- Changing a session's date kept the frames of the old night in it.
-- “Untitled” projects warned about duplicates of each other.
-- Deleting an already deleted session redirected to the Referer (now home).
-- Header activity indicator could start several polling loops; a failed upload kept it “uploading” forever.
-- Bulk solve / optics dialogs: a new run could show rows of the previous one, a malformed result stopped the run.
-- Viewer: North up / Objects buttons without a rendered image, endless retry when the image fails, the file's
-  saved view settings now win over the remembered north-up toggle, failed optics results were cached, Reset
-  refreshes the optics overlay, Reject shows an error instead of flipping on failure.
-- Pages no longer reload by themselves while a dialog is open (background job finished).
-- Archive import page: real date validation, empty names, errors re-enable the Start button.
-- Project form: duplicate warning used out-of-order answers; Stats integrity panel survives network errors.
-- Session dialog with optics results but no elongation value.
-- Static files (CSS / JS) are referenced with a content version (`?v=…`), so browsers no longer keep an outdated
-  stylesheet or script after an update (e.g. the activity indicator was invisible with a cached `style.css`).
-- Session dialog failed for sessions that had optics results but no plate solve (or no tilt value).
-- **⬆ North up** appeared only after a page reload when a frame was solved for the first time; it is now
-  available right after solving, waits for the image if clicked while loading, and the on / off choice is
-  remembered when moving to other frames (↺ Reset switches it off).
-- Optics inspector: the smooth background was 0 along the image edges (interpolation), which distorted
-  stars near the edges – re-run 🔬 Optics on frames analysed before.
+### Fixed – import, worker, integrity
+- The integrity check reported files imported / deleted / moved during the check; a stopped check showed “OK”.
+- Archive import: dangling or outside symlinks broke the scan; a deleted matched project created a project with an
+  empty name; equipment of existing sessions was overwritten; file-name dates after midnight started a new night;
+  failed starts left empty placeholder files; free disk space is checked.
+- Server import: invalid items / failed starts leave no placeholder files; broken symlinks are skipped.
+- Uploads: cancelling while finishing returned a server error; locks were not released on cancel.
+
+### Fixed – pages and settings
+- Settings reset deleted the stored integrity report; Save did nothing visible when a field on another tab was
+  invalid.
+- Changing a session's date kept the frames of the old night in it; “Untitled” projects warned about duplicates of
+  each other; deleting an already deleted session redirected to the Referer.
+- Session dialog failed with optics results but no plate solve, tilt or elongation value.
+- Activity indicator could start several polling loops; a failed upload kept it “uploading” forever.
+- Bulk solve / optics dialogs showed rows of a previous run; a malformed result stopped the run.
+- Viewer: ⬆ North up appeared only after a reload; North up / Objects buttons without a rendered image; endless
+  retry when the image failed; saved view settings now win over the remembered north-up toggle; failed optics
+  results were cached; Reset refreshes the optics overlay; Reject shows an error instead of flipping on failure.
+- Pages no longer reload by themselves while a dialog is open.
+- Archive import page: real date validation, empty names, errors re-enable Start; project form duplicate warning
+  used out-of-order answers; Stats panels survive network errors; tabs follow links to elements inside a pane;
+  trend charts show “No data yet”.
+
+### Tests
+- 218 tests (from about 100), code coverage ≈ 88 %; the suite runs without warnings.
+- New: `test_sky.py` (catalogue, WCS, pointing, photometry, optics on synthetic star fields, north up, exports),
+  `test_archive.py` (analysis queue, archive import, duplicates, integrity, background switches, activity, page
+  speed with 3000 frames), `test_conditions.py` (seeing / transparency / sky brightness, measuring / filling, tabs),
+  `test_coverage.py` (full plate solve with a simulated ASTAP, upload / import / worker error paths),
+  `test_review.py` (regressions of the code reviews), `test_paging.py` (pagination), `test_perf.py` (thumbnails,
+  render slots, cache budgets, settings cache, query counts, large uploads).
 
 ## [1.2.0] – 2026-11-06
 

@@ -289,3 +289,26 @@ def test_session_dialog_with_optics_but_no_solve(client, project, tmp_path):
         db.commit()
     r = client.get(f"/projects/{project}")
     assert r.status_code == 200 and "Star FWHM" in r.text
+
+
+def test_infinite_pixels_do_not_break_statistics(tmp_path):
+    """NaN / ±inf pixels (damaged FITS) count as empty – no overflow, finite statistics."""
+    import warnings
+    from app.framestats import frame_stats
+    from app.preview import render
+    data = star_frame().astype(np.float32)
+    data[:5, :] = np.inf
+    data[5:8, :] = -np.inf
+    data[8:10, :] = np.nan
+    src = write_fits(tmp_path / "infpix.fits", data=data)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        st = frame_stats(src)
+        im, _ = render(src)
+    assert np.isfinite(st["bg"]) and np.isfinite(st["noise"]) and st["stars"] > 0
+    assert im is not None and np.asarray(im).mean() < 250                 # not a white image
+    allinf = write_fits(tmp_path / "allinf.fits", data=np.full((40, 40), np.inf, np.float32))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        st = frame_stats(allinf)
+    assert st["bg"] == 0.0

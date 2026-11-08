@@ -21,7 +21,7 @@
 {% for f in items %}
   <figure class="gitem">
     <a href="#" onclick="if(GALLERY_IDS.indexOf({{ f.id }})<0)GALLERY_IDS.unshift({{ f.id }});Slideshow.start(GALLERY_IDS, GALLERY_IDS.indexOf({{ f.id }}), {{ S.slideshow_seconds }}, true);return false;">
-      <img loading="lazy" src="/files/{{ f.id }}/thumb" alt="{{ f.project.name }}"></a>
+      <img loading="lazy" src="/files/{{ f.id }}/thumb?size=m" alt="{{ f.project.name }}"></a>
     <figcaption>
       <a href="/projects/{{ f.project_id }}"><b>{{ f.project.name }}</b></a>
       <span class="muted small">{{ [f.project.target, photo_date(f)]|select|join(' · ') }}</span>
