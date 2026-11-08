@@ -131,3 +131,17 @@ def test_big_upload_in_one_request(client, project, tmp_path):
     with SessionLocal() as db:
         f = db.get(FrameFile, r["id"]) if r.get("id") else None
         assert f is None or f.sha256 in (None, hashlib.sha256(data).hexdigest())
+
+
+def test_viewer_pan_zoom_is_frame_coalesced(client, project, tmp_path):
+    """Pan / zoom: one DOM update per animation frame, full image decoded before the swap, smooth wheel."""
+    from conftest import write_fits, upload, drain
+    from app.models import SessionLocal, FrameFile
+    upload(client, write_fits(tmp_path / "pz.fits", EXPTIME=10.0), project_id=project)
+    drain()
+    with SessionLocal() as db:
+        fid = db.query(FrameFile.id).filter_by(project_id=project).first()[0]
+    html = client.get(f"/files/{fid}/view").text
+    assert "raf=requestAnimationFrame(render)" in html          # wheel / pointer events only change state
+    assert "full.decode" in html and "applyNow()" in html      # no decode hitch, no 1-frame size jump
+    assert "Math.exp(-" in html and "deltaMode" in html        # proportional wheel zoom (trackpads)

@@ -22,7 +22,7 @@ Built with FastAPI, PostgreSQL and plain HTML/JS; runs in Docker, fully offline.
 ## Screenshots
 
 **Overview** – summary, filters on nights / equipment, project cards with nights and integration; the activity
-indicator next to the name and **⬇ Metadata** (export of all projects) in the header
+indicator next to the name and **⬇ Download metadata** (export of all projects) in the 👤 menu
 
 ![Overview](screenshots/01.png)
 
@@ -52,9 +52,15 @@ brightness, zero point, pointing check, objects in the field, annotated JPEG exp
 ![Plate solve dialog](screenshots/06.png)
 
 **🔬 Optics inspector** – findings (tilt, curvature, coma / spacing, guiding) and a 3×3 mosaic of corners, edges
-and centre with FWHM and elongation
+and centre with FWHM and elongation; masks in the tiles (measured stars, star shapes, direction) and stretch
 
 ![Optics inspector](screenshots/07.png)
+
+**Sky map** – all projects on the whole sky, fields drawn exactly from their plate solves, Messier / NGC, ecliptic
+and galactic equator; zoomed in on M81 / M82 with the fields of several nights
+
+![Sky map](screenshots/15.png)
+![Sky map – zoomed in](screenshots/16.png)
 
 **📦 Import archive** – a folder tree becomes projects × nights: project from FITS `OBJECT` or the folders, night
 from `DATE-OBS` / EXIF / path; existing projects and nights are recognised before anything is copied
@@ -127,8 +133,18 @@ FWHM, limiting magnitude, tilt and elongation
 - **Limiting magnitude** and photometric **zero point** from the stars matched to the local Gaia star database
 - **⬇ Annotated JPEG** export (also north up); warning when a stored solve is outdated by an equipment change
 
+### Sky map
+- **Sky map** in the menu: all projects on a whole-sky Hammer–Aitoff map (J2000, east left). Fields are drawn exactly
+  from their plate solves (one outline per night, TAN WCS – checked against astropy to < 0.5″); unsolved projects
+  appear at the catalogue position of their target (◇)
+- Messier and NGC / IC objects to a chosen magnitude (OpenNGC), ecliptic and galactic equator (astropy), constellation
+  of every field from the IAU boundaries – no hand-drawn constellation figures
+- Zoom (wheel, re-centres the projection so the area is undistorted), drag, find an object or project, hover for
+  details, click a field to open the project; list of projects sorted by RA
+
 ### Optics inspector
-- Star size and shape across the field, 3×3 mosaic, overlay on the image
+- Star size and shape across the field, 3×3 mosaic (full dialog width), overlay on the image
+- Selectable masks in the tiles: values, stretch direction, measured stars, star shapes (×3), crosshair; stretch / contrast sliders – remembered
 - Findings: **sensor tilt** (and the worse side), **field curvature**, radial / tangential edge elongation
   (**coma, corrector spacing**), elongation everywhere (**guiding, wind, collimation**)
 - For many frames: what repeats (= optics) and what changes (= conditions)
@@ -160,7 +176,7 @@ FWHM, limiting magnitude, tilt and elongation
 ### Downloads and export
 - Streamed ZIP downloads (start immediately, no temporary files): all sessions as `01_<date>/<type>/…` (the layout
   PixInsight WBPP / Siril expect), one session, selected types, calibration sets; rejected frames excluded by default
-- `INFO.txt` and `metadata.json` in every project ZIP; **📄 Export metadata** of a project and **⬇ Metadata** of
+- `INFO.txt` and `metadata.json` in every project ZIP; **📄 Export metadata** of a project and **⬇ Download metadata** (👤 menu) of
   all projects + calibration library (incl. all FITS headers, EXIF, plate solves and optics results)
 
 ### Overview, search and gallery
@@ -288,7 +304,7 @@ tests/               pytest suite
 ## Tests
 
 ```bash
-./run-tests.sh            # all tests (218, ≈ 50 s, no warnings)
+./run-tests.sh            # all tests (233, ≈ 55 s, no warnings)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
@@ -306,6 +322,7 @@ needed – plate solving is simulated where required.
 | `test_coverage.py` | full plate-solve flow with a simulated ASTAP, star database search across RA 0/360, upload edge cases, import / worker error paths |
 | `test_review.py` | regression tests for the bugs found in the code reviews |
 | `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
+| `test_skymap.py` | sky map: TAN outlines vs. astropy, catalogue, ecliptic / galactic centre, constellations, API |
 | `test_perf.py` | small cached thumbnails, render slots never blocking the server, star-tile cache budget, settings cache, deferred FITS headers (query counts), large uploads |
 
 Coverage report (optional, ≈ 88 %):

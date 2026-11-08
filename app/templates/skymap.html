@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Sky map – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Sky map</h1>
+    <div class="muted">Every project on the sky – fields drawn exactly from their plate solves (J2000). Unsolved projects
+      are shown at their catalogue position (◇).</div></div>
+</div>
+<div class="card sm-bar row">
+  <label class="inline small">centre <select id="sm-centre"><option value="0">0 h</option><option value="180">12 h</option></select></label>
+  <label class="inline small"><input type="checkbox" id="sm-m" checked> Messier</label>
+  <label class="inline small"><input type="checkbox" id="sm-ngc" checked> NGC / IC to mag
+    <select id="sm-mag">{% for m in [6, 8, 9, 10, 11, 12] %}<option{% if m == 10 %} selected{% endif %}>{{ m }}</option>{% endfor %}</select></label>
+  <label class="inline small"><input type="checkbox" id="sm-lines" checked> ecliptic / galactic equator</label>
+  <label class="inline small"><input type="checkbox" id="sm-grid" checked> grid</label>
+  <input id="sm-find" placeholder="Find (M31, NGC 7000, project…)" style="max-width:220px">
+  <button type="button" class="btn small" id="sm-reset">reset view</button>
+  <span class="muted small" id="sm-pos"></span>
+</div>
+<div class="sm-wrap card">
+  <svg id="sm" class="sm-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="sm-tip" id="sm-tip" hidden></div>
+  <div class="muted small" id="sm-msg">⏳ Loading…</div>
+</div>
+<p class="muted small">Hammer–Aitoff projection, seen from the inside of the sky sphere (east to the left, like a star
+  chart). Positions: OpenNGC; ecliptic and galactic equator and the constellations of the fields (IAU boundaries) from
+  astropy. Messier and NGC names appear when zoomed in (hover shows details). Mouse wheel zooms, drag moves, click a field to open the project. No constellation figures are drawn.</p>
+<section class="card"><h3 class="mt0">Projects on the map <span class="muted small" id="sm-count"></span></h3>
+  <table class="sm-list"><thead><tr><th>Project</th><th>Target</th><th>Constellation</th><th>RA</th><th>Dec</th><th>Solved nights</th></tr></thead>
+  <tbody id="sm-rows"></tbody></table></section>
+
+<script>
+(function(){
+var NS='http://www.w3.org/2000/svg',R=200,W=4*Math.SQRT2*R,H=2*Math.SQRT2*R,D=Math.PI/180;
+var svg=document.getElementById('sm'),tip=document.getElementById('sm-tip'),DATA=null;
+var V={x:-W/2,y:-H/2,w:W,h:H},centre=0;
+function $(id){return document.getElementById(id);}
+try{var st=JSON.parse(localStorage.getItem('skymap')||'{}');
+  ['m','ngc','lines','grid'].forEach(function(k){if(k in st)$('sm-'+k).checked=st[k];});
+  if(st.mag)$('sm-mag').value=st.mag;if(st.centre)$('sm-centre').value=st.centre;}catch(e){}
+centre=+$('sm-centre').value;
+// Hammer–Aitoff, east (increasing RA) to the left
+function lam(ra){var l=((ra-centre)%360+540)%360-180;return -l*D;}
+function P(ra,dec){var l=lam(ra),p=dec*D,z=Math.sqrt(1+Math.cos(p)*Math.cos(l/2));
+  return [R*2*Math.SQRT2*Math.cos(p)*Math.sin(l/2)/z,-R*Math.SQRT2*Math.sin(p)/z];}
+function inv(x,y){var X=x/R,Y=-y/R;if(X*X/8+Y*Y/2>1)return null;
+  var z=Math.sqrt(1-X*X/16-Y*Y/4),l=2*Math.atan(z*X/(2*(2*z*z-1))),p=Math.asin(z*Y);
+  return [((centre-l/D)%360+360)%360,p/D];}
+function el(tag,a,parent){var e=document.createElementNS(NS,tag);for(var k in a)e.setAttribute(k,a[k]);(parent||svg).append(e);return e;}
+function path(pts,closed){// split where the line jumps across the map edge
+  var d='',prev=null;pts.forEach(function(q){var p=P(q[0],q[1]);
+    d+=(prev&&Math.abs(p[0]-prev[0])<W/3?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1);prev=p;});
+  return d+(closed?'Z':'');}
+function k(){return V.w/W;}            // < 1 when zoomed in
+function fmtRa(ra){var h=ra/15,hh=Math.floor(h),m=(h-hh)*60;return hh+'h '+m.toFixed(1).padStart(4,'0')+'m';}
+function fmtDec(d){var s=d<0?'−':'+',a=Math.abs(d),dd=Math.floor(a);return s+dd+'° '+String(Math.round((a-dd)*60)).padStart(2,'0')+'′';}
+function draw(){
+  svg.innerHTML='';svg.setAttribute('viewBox',V.x+' '+V.y+' '+V.w+' '+V.h);
+  var s=k(),fs=12*s,lw=1;
+  el('ellipse',{cx:0,cy:0,rx:W/2,ry:H/2,class:'sm-sky'});
+  if($('sm-grid').checked){var g=el('g',{class:'sm-grid','stroke-width':lw*0.8});
+    for(var dec=-75;dec<=75;dec+=15){var pts=[];for(var a=0;a<=360;a+=2)pts.push([centre-180+a+1e-6,dec]);el('path',{d:path(pts)},g);}
+    for(var h=0;h<24;h+=2){var pts=[];for(var dd=-90;dd<=90;dd+=2)pts.push([h*15,dd]);el('path',{d:path(pts)},g);}
+    var gl=el('g',{class:'sm-glab','font-size':fs});
+    for(var h=0;h<24;h+=2){if(Math.abs(((h*15-centre)%360+540)%360-180)>175)continue;var p=P(h*15,0);el('text',{x:p[0]+3*s,y:p[1]-3*s},gl).textContent=h+'h';}
+    for(var dec=-75;dec<=75;dec+=15){if(!dec)continue;var p=P(centre,dec);el('text',{x:p[0]+3*s,y:p[1]-3*s},gl).textContent=(dec>0?'+':'')+dec+'°';}}
+  if($('sm-lines').checked){
+    el('path',{d:path(DATA.ecliptic),class:'sm-ecl','stroke-width':1.5*lw});
+    el('path',{d:path(DATA.galactic),class:'sm-gal','stroke-width':1.5*lw});
+    var gc=P(DATA.galactic_centre[0],DATA.galactic_centre[1]);el('text',{x:gc[0]+4*s,y:gc[1]+12*s,class:'sm-gal-t','font-size':fs*0.9}).textContent='Galactic centre';}
+  var mag=+$('sm-mag').value,cg=el('g',{});
+  DATA.catalogue.forEach(function(o){
+    if(o.m?!$('sm-m').checked:(!$('sm-ngc').checked||o.mag==null||o.mag>mag))return;
+    var p=P(o.ra,o.dec),r=Math.max((o.m?3:1.8)*s,(o.maj||0)/60*R*D/2);   // true size when zoomed in
+    var c=el('circle',{cx:p[0],cy:p[1],r:r,class:o.m?'sm-mes':'sm-ngc','stroke-width':lw},cg);
+    c.dataset.tip=(o.m?o.n+' = '+o.alt:o.n)+(o.c?' – '+o.c:'')+'\n'+o.t+(o.mag!=null?' · mag '+o.mag:'')+(o.maj?' · '+o.maj+'′':'')+'\n'+fmtRa(o.ra)+'  '+fmtDec(o.dec);
+    if((o.m&&s<0.6)||s<0.25)el('text',{x:p[0]+r+2*s,y:p[1]+4*s,class:o.m?'sm-mes-t':'sm-ngc-t','font-size':fs*(o.m?0.95:0.85)},cg).textContent=o.n;});
+  var pg=el('g',{});
+  DATA.projects.forEach(function(pr){
+    var info=pr.name+(pr.target&&pr.target!==pr.name?' ('+pr.target+')':'')+'\n'+(pr.con?'Constellation: '+pr.con+'\n':'')+
+      fmtRa(pr.ra)+'  '+fmtDec(pr.dec)+'\n'+(pr.fields.length?pr.fields.length+' solved night(s) – click to open':'not solved – catalogue position of the target');
+    var a=el('a',{href:'/projects/'+pr.id},pg);
+    if(pr.fields.length){pr.fields.forEach(function(f){var poly=el('path',{d:path(f.outline,true),class:'sm-field','stroke-width':1.5*lw},a);poly.dataset.tip=info+(f.date?'\nnight '+f.date:'');});
+      var p=P(pr.ra,pr.dec),c=el('circle',{cx:p[0],cy:p[1],r:3.5*s,class:'sm-pc','stroke-width':lw},a);c.dataset.tip=info;}
+    else{var p=P(pr.ra,pr.dec),r=4.5*s,dm=el('path',{d:'M'+p[0]+' '+(p[1]-r)+'l'+r+' '+r+'l'+(-r)+' '+r+'l'+(-r)+' '+(-r)+'Z',class:'sm-pu','stroke-width':1.4*lw},a);dm.dataset.tip=info;}
+    var p=P(pr.ra,pr.dec);el('text',{x:p[0]+6*s,y:p[1]-6*s,class:'sm-pt','font-size':fs},a).textContent=pr.name;});
+}
+function save(){try{localStorage.setItem('skymap',JSON.stringify({m:$('sm-m').checked,ngc:$('sm-ngc').checked,lines:$('sm-lines').checked,grid:$('sm-grid').checked,mag:$('sm-mag').value,centre:$('sm-centre').value}));}catch(e){}}
+function load(){fetch('/api/skymap?mag='+$('sm-mag').value).then(function(r){return r.json();}).then(function(d){DATA=d;$('sm-msg').textContent='';draw();rows();})
+  .catch(function(){$('sm-msg').textContent='✗ Loading failed';});}
+function rows(){var tb=$('sm-rows');tb.innerHTML='';
+  DATA.projects.slice().sort(function(a,b){return a.ra-b.ra;}).forEach(function(pr){var tr=document.createElement('tr');
+    [pr.name,pr.target||'',pr.con||'',fmtRa(pr.ra),fmtDec(pr.dec),pr.fields.length||'–'].forEach(function(v,i){var td=document.createElement('td');td.textContent=v;if(i>2)td.className='num nowrap';tr.append(td);});
+    tr.style.cursor='pointer';tr.title='Show on the map';tr.onclick=function(){goTo(pr.ra,pr.dec,0.06);window.scrollTo({top:0,behavior:'smooth'});};tb.append(tr);});
+  $('sm-count').textContent='('+DATA.projects.length+')';}
+// zoomed in: move the projection centre to the viewed RA, so the area is shown without the Hammer shear
+function recentre(){if(k()>0.5)return;var c=inv(V.x+V.w/2,V.y+V.h/2);if(!c)return;centre=c[0];var p=P(c[0],c[1]);V.x=p[0]-V.w/2;V.y=p[1]-V.h/2;}
+function goTo(ra,dec,z){centre=ra;var p=P(ra,dec);V.w=W*z;V.h=H*z;V.x=p[0]-V.w/2;V.y=p[1]-V.h/2;draw();}
+function pt(e){var r=svg.getBoundingClientRect(),sc=Math.max(V.w/r.width,V.h/r.height);   // xMidYMid meet
+  return [V.x+(e.clientX-r.left-(r.width-V.w/sc)/2)*sc,V.y+(e.clientY-r.top-(r.height-V.h/sc)/2)*sc];}
+svg.addEventListener('wheel',function(e){e.preventDefault();var q=pt(e),f=e.deltaY<0?0.8:1.25,nw=Math.min(W,Math.max(W*0.004,V.w*f));f=nw/V.w;
+  V.x=q[0]-(q[0]-V.x)*f;V.y=q[1]-(q[1]-V.y)*f;V.w=nw;V.h=V.w*H/W;
+  if(nw>=W*0.999){centre=+$('sm-centre').value;V={x:-W/2,y:-H/2,w:W,h:H};}clearTimeout(window._rc);window._rc=setTimeout(function(){recentre();draw();},250);draw();},{passive:false});
+var drag=null,moved=false;
+svg.addEventListener('pointerdown',function(e){drag=[e.clientX,e.clientY,V.x,V.y];moved=false;});
+window.addEventListener('pointerup',function(){var d=drag;drag=null;if(d&&moved){recentre();draw();}});
+svg.addEventListener('click',function(e){if(moved)e.preventDefault();},true);
+svg.addEventListener('pointermove',function(e){
+  if(drag){var r=svg.getBoundingClientRect(),sc=Math.max(V.w/r.width,V.h/r.height),dx=e.clientX-drag[0],dy=e.clientY-drag[1];
+    if(Math.abs(dx)+Math.abs(dy)>3){moved=true;V.x=drag[2]-dx*sc;V.y=drag[3]-dy*sc;svg.setAttribute('viewBox',V.x+' '+V.y+' '+V.w+' '+V.h);}}
+  var q=pt(e),c=inv(q[0],q[1]);$('sm-pos').textContent=c?'RA '+fmtRa(c[0])+'  Dec '+fmtDec(c[1]):'';
+  var t=e.target.dataset&&e.target.dataset.tip;
+  if(t&&!drag){tip.hidden=false;tip.textContent=t;var wr=svg.parentNode.getBoundingClientRect();
+    tip.style.left=Math.min(e.clientX-wr.left+14,wr.width-260)+'px';tip.style.top=(e.clientY-wr.top+14)+'px';}else tip.hidden=true;});
+svg.addEventListener('pointerleave',function(){tip.hidden=true;$('sm-pos').textContent='';});
+['sm-m','sm-ngc','sm-lines','sm-grid'].forEach(function(id){$(id).addEventListener('change',function(){save();draw();});});
+$('sm-mag').addEventListener('change',function(){save();load();});
+$('sm-centre').addEventListener('change',function(){centre=+this.value;save();V={x:-W/2,y:-H/2,w:W,h:H};draw();});
+$('sm-reset').addEventListener('click',function(){centre=+$('sm-centre').value;V={x:-W/2,y:-H/2,w:W,h:H};draw();});
+function norm(s){return (s||'').toLowerCase().replace(/\s+/g,'');}
+$('sm-find').addEventListener('keydown',function(e){if(e.key!=='Enter'||!DATA)return;e.preventDefault();var q=norm(this.value);if(!q)return;
+  var hit=DATA.projects.find(function(p){return norm(p.name)===q||norm(p.target)===q;})||DATA.catalogue.find(function(o){return norm(o.n)===q||norm(o.alt)===q||norm(o.c)===q;})
+    ||DATA.projects.find(function(p){return norm(p.name).indexOf(q)>=0;});
+  if(hit){goTo(hit.ra,hit.dec,0.05);this.classList.remove('bad');}else{this.classList.add('bad');this.title='Not found (catalogue limited to Messier and NGC / IC to the selected magnitude)';}});
+load();
+})();
+</script>
+{% endblock %}

@@ -78,7 +78,19 @@ def solve_compute(inp: dict) -> dict:
 def solve_store(f: FrameFile, res: dict) -> None:
     if res.get("error") == "File missing on disk":
         return
-    f.solve = json.dumps(res, ensure_ascii=False)
+    f.solve = json.dumps(finite(res), ensure_ascii=False, allow_nan=False)
+
+
+def finite(v):
+    """Replace NaN / inf by None – 'NaN' in the stored text breaks the SQL JSON casts (sky map, transparency)."""
+    import math
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: finite(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [finite(x) for x in v]
+    return v
 
 
 # ---------- optics ----------

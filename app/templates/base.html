@@ -39,35 +39,37 @@ HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})(
     <a href="/" class="navl{% if request.url.path == '/' or request.url.path.startswith('/projects/') and request.url.path != '/projects/new' %} active{% endif %}" title="Projects">Projects</a>
     <a href="/gallery" class="navl{% if request.url.path.startswith('/gallery') %} active{% endif %}" title="Gallery of final images">Gallery</a>
     <a href="/calibration" class="navl{% if request.url.path.startswith('/calibration') %} active{% endif %}" title="Calibration frame library">Calibration</a>
+    <a href="/skymap" class="navl{% if request.url.path.startswith('/skymap') %} active{% endif %}" title="Sky map of all projects">Sky map</a>
     <a href="/stats" class="navl{% if request.url.path.startswith('/stats') %} active{% endif %}" title="Statistics">Stats</a>
     <a href="/projects/new" class="btn primary">+ New project</a>
-    <a href="/export/projects" class="btn" id="meta-export" title="Export all metadata – every project's sessions, files, FITS headers, EXIF, statistics and the calibration library (JSON in a ZIP)">⬇ Metadata</a>
-    <script>
-    // ask where to save (File System Access API); browsers without it fall back to a normal download
-    document.getElementById('meta-export').addEventListener('click',async function(e){
-      if(!window.showSaveFilePicker)return;
-      e.preventDefault();var a=this,t=a.textContent;
-      try{
-        var h=await showSaveFilePicker({suggestedName:'astrophoto_metadata_'+new Date().toISOString().slice(0,10)+'.zip',
-          types:[{description:'ZIP archive',accept:{'application/zip':['.zip']}}]});
-        a.textContent='⏳ Exporting…';
-        var r=await fetch(a.href);if(!r.ok)throw new Error('HTTP '+r.status);
-        var w=await h.createWritable();await r.body.pipeTo(w);
-      }catch(err){if(err.name!=='AbortError')alert('Export failed: '+err.message);}
-      finally{a.textContent=t;}
-    });
-    </script>
     <details class="usermenu">
       <summary title="Account">👤 {{ user.username }} ▾</summary>
       <div class="menu">
         <a href="/manage">☰ Manage lists</a>
         <a href="/import/archive">📦 Import archive</a>
+        <a href="/export/projects" id="meta-export" title="Export all metadata – every project's sessions, files, FITS headers, EXIF, statistics and the calibration library (JSON in a ZIP)">⬇ Download metadata</a>
         <a href="/settings">⚙ Settings</a>
         <a href="/password">🔑 Change password</a>
         <hr>
         <form method="post" action="/logout" class="inl"><button class="menulink">⎋ Log out</button></form>
       </div>
     </details>
+    <script>
+    // ask where to save (File System Access API); browsers without it fall back to a normal download
+    document.getElementById('meta-export').addEventListener('click',async function(e){
+      if(!window.showSaveFilePicker)return;
+      e.preventDefault();var a=this,t=a.textContent;if(a.dataset.busy)return;a.dataset.busy=1;
+      var sm=a.closest('details').querySelector('summary'),st=sm.textContent;a.closest('details').open=false;
+      try{
+        var h=await showSaveFilePicker({suggestedName:'astrophoto_metadata_'+new Date().toISOString().slice(0,10)+'.zip',
+          types:[{description:'ZIP archive',accept:{'application/zip':['.zip']}}]});
+        a.textContent=sm.textContent='⏳ Exporting…';
+        var r=await fetch(a.href);if(!r.ok)throw new Error('HTTP '+r.status);
+        var w=await h.createWritable();await r.body.pipeTo(w);
+      }catch(err){if(err.name!=='AbortError')alert('Export failed: '+err.message);}
+      finally{a.textContent=t;sm.textContent=st;delete a.dataset.busy;}
+    });
+    </script>
   </nav>
   {% endif %}
   <button class="theme" onclick="toggleTheme()" title="Light / dark mode">◐</button>

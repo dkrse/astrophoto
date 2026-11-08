@@ -189,6 +189,9 @@ def test_optics_on_files(tmp_path, monkeypatch):
         return optics.analyse(tmp_path / "x.fits")
     tilted = run(star_field(sigma=lambda u, v: 1.5 + 2.0 * (1 - u)))
     assert tilted["ok"] and tilted["stars"] > 80 and len(tilted["tiles"]) == 9
+    ts = tilted["tile_stars"]          # star marks per tile, positions inside the tile (0..1)
+    assert len(ts) == 9 and sum(map(len, ts)) > 0
+    assert all(0 <= s[0] <= 1 and 0 <= s[1] <= 1 and s[3] >= 1 for t in ts for s in t)
     tilt = next(d for d in tilted["diagnosis"] if d["key"] == "tilt")
     assert "left" in tilt["dir"] and tilted["metrics"]["tilt_pct"] > 20
     flat = run(star_field())
@@ -213,7 +216,7 @@ def test_optics_endpoint_stores_summary_and_session_measured(client, project, tm
     with SessionLocal() as db:
         f = db.get(FrameFile, f.id)
         summ = json.loads(f.optics)
-        assert summ["fwhm_px"] == r["fwhm_px"] and "tiles" not in summ
+        assert summ["fwhm_px"] == r["fwhm_px"] and "tiles" not in summ and "tile_stars" not in summ
         f.solve = json.dumps(fake_solve(photometry={"limit_mag": 17.2}, focal_mm=520.0))
         db.commit()
     html = client.get(f"/projects/{project}").text

@@ -3,6 +3,41 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.5] – 2026-11-08
+
+### Added
+- **Sky map** (menu): every project on a whole-sky map – exact field outlines from the plate solves, catalogue
+  position for unsolved projects, Messier / NGC / IC (OpenNGC, magnitude limit), ecliptic and galactic equator,
+  constellation of each field (IAU boundaries, astropy); zoom with automatic re-centring, search, tooltips, project
+  list. Tests in `test_skymap.py`.
+- 🔬 Optics inspector: choose which masks are drawn in the tiles – values, stretch direction, measured stars,
+  star shapes (enlarged 3×) and a crosshair (bright, outlined marks), plus **stretch** and **contrast** sliders for
+  the sky background with reset; the choice is remembered in the browser.
+
+### Changed
+- **⬇ Download metadata** (export of all projects) moved from the header to the 👤 menu.
+- 🔬 Optics inspector: the 3×3 tiles fill the dialog width (sharper 320 px tiles).
+- README: screenshots of the sky map and the optics inspector with masks.
+
+### Fixed
+- Sky map: a solve with missing / non-finite WCS values (or a CDELT-only solve) no longer breaks the whole map – such
+  fields are skipped; the map data refresh right away when a file is re-solved or a project renamed / retargeted
+  (the cache stamp covers solve sizes and project names / targets); panning only moves the view (redraw on release).
+- Plate solve: `NaN` / `inf` in FITS keywords are treated as unknown, and stored solves never contain `NaN` /
+  `Infinity` (they broke the SQL JSON casts of the sky map and the transparency reference).
+- Optics inspector: tile star marks are the brightest stars of the crop (up to 300), the caption says so correctly.
+- Viewer pan / zoom: the image transform and the overlays (objects, optics) are updated at most once per animation
+  frame (wheel and pointer events used to redraw the overlays several times per frame), the full-resolution image is
+  decoded before it replaces the preview (no hitch, no one-frame size jump), mouse-wheel / trackpad zoom is
+  proportional to the scroll amount, window resize is debounced, and from 200 % the real pixels are shown sharp
+  instead of blurred. Measured: steady 60 fps while zooming and panning a 3008 × 3008 frame with the objects overlay.
+- ⬇ Download metadata from the 👤 menu: progress is shown on the menu button and a second click while exporting
+  is ignored.
+
+### Tests
+- 233 tests: viewer pan / zoom frame coalescing; `test_skymap.py` (TAN outlines vs. astropy, catalogue, reference lines, constellations, broken solves,
+  cache refresh), NaN-free solve storage, optics tile stars.
+
 ## [1.4.1] – 2026-11-08
 
 From an archive to an analysis platform: local plate solving, optics inspection, observing conditions, trends,

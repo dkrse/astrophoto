@@ -110,7 +110,7 @@ def _cell_stats(st: list):
     return {"fwhm": f, "elong": e, "angle": 0.5 * math.atan2(s_, c), "coherence": coh, "n": len(st)}
 
 
-def _tile_png(img: np.ndarray, x: int, y: int, size: int, lo: float, hi: float, out_px: int = 220) -> str:
+def _tile_png(img: np.ndarray, x: int, y: int, size: int, lo: float, hi: float, out_px: int = 320) -> str:
     from PIL import Image
     H, W = img.shape
     x0, y0 = min(max(x, 0), max(W - size, 0)), min(max(y, 0), max(H - size, 0))
@@ -168,12 +168,17 @@ def analyse(src: Path, orient: int = 0, flip: str = "none", scale_arcsec: float 
     sample = img[::4, ::4]
     lo, hi = float(np.median(sample)) - noise, float(np.percentile(sample, 99.95))
     size = max(int(min(W, H) / 6), 8)
-    tiles = []
+    tiles, tile_stars = [], []
     for r in (range(3) if with_tiles else []):
         for c in range(3):
             x = 0 if c == 0 else (W - size if c == 2 else W // 2 - size // 2)
             y = 0 if r == 0 else (H - size if r == 2 else H // 2 - size // 2)
             tiles.append(_tile_png(img, x, y, size, lo, hi))
+            x0, y0 = min(max(x, 0), max(W - size, 0)), min(max(y, 0), max(H - size, 0))
+            tile_stars.append([[round((s[0] - x0) / size, 4), round((s[1] - y0) / size, 4),   # u, v in the tile
+                                round(s[2] / size, 4), round(s[3], 2), round(math.degrees(s[4]), 1)]
+                               for s in sorted(stars, key=lambda s: -s[5])      # brightest first
+                               if x0 <= s[0] < x0 + size and y0 <= s[1] < y0 + size][:300])
     f = lambda v: round(v * px, 2) if v is not None else None
     for g in regions + vectors:
         if g.get("fwhm") is not None:
@@ -185,7 +190,7 @@ def analyse(src: Path, orient: int = 0, flip: str = "none", scale_arcsec: float 
             g["coherence"] = round(g.get("coherence", 0), 2)
     return {"ok": True, "stars": len(stars), "fwhm_px": f(all_s["fwhm"]), "elong": round(all_s["elong"], 3),
             "fwhm_arcsec": round(all_s["fwhm"] * to_as, 2) if to_as else None,
-            "regions": regions, "vectors": vectors, "tiles": tiles, "tile_arcmin":
+            "regions": regions, "vectors": vectors, "tiles": tiles, "tile_stars": tile_stars, "tile_arcmin":
                 round(size * to_as / 60, 1) if to_as else None, "tile_px": size * binf, "bin": binf,
             "diagnosis": diag, "metrics": metrics, "flip": flip, "orient": orient}
 

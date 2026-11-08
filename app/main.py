@@ -9,7 +9,7 @@ import os as _os
 
 from .core import app, DATA_DIR, ARCHIVE_DIR, hash_pw
 from .models import Base, engine, SessionLocal, User, Project, CatalogItem, MIGRATIONS, CATALOG_KINDS
-from . import routes_main, routes_projects, routes_files, routes_upload, routes_calib, routes_archive  # noqa: F401  (register routes)
+from . import routes_main, routes_projects, routes_files, routes_upload, routes_calib, routes_archive, routes_sky  # noqa: F401  (register routes)
 from . import worker
 
 

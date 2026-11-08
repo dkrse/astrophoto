@@ -45,9 +45,10 @@ def _hdr(header_text: str | None) -> dict:
 
 def _float(v):
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None              # 'nan' / 'inf' in a header -> unknown
 
 
 def _ra_dec_hint(h: dict):
