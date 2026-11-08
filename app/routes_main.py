@@ -398,7 +398,10 @@ def stats_page(request: Request, user: User = Depends(current_user), db: Session
         disk = {"total": du.total, "used": du.used, "free": du.free}
     except OSError:
         disk = None
-    return page(request, "stats.html", user=user, total=total, frames=len(rows), nights=len(nights),
+    from . import worker, integrity
+    return page(request, "stats.html", user=user, status=worker.queue_status(db), total=total,
+                dups=integrity.duplicate_summary(db), integrity_state=dict(integrity.state),
+                integrity_report=integrity.last_report(db), frames=len(rows), nights=len(nights),
                 months=months, years=sorted(by_year.items()), objects=top(by_obj, 15),
                 telescopes=top(by_tel), cameras=top(by_cam), filters=top(by_filter), types=top(by_type),
                 disk_types=disk_types, calib_size=calib_size, files_total=files_total, disk=disk,
@@ -415,7 +418,7 @@ def settings_page(request: Request, user: User = Depends(current_user)):
 async def settings_save(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     form = await request.form()
     if form.get("reset"):
-        db.execute(Setting.__table__.delete())
+        db.execute(Setting.__table__.delete().where(Setting.key.in_(list(SETTINGS))))   # keep e.g. integrity_report
         db.commit()
         flash(request, "Settings reset to defaults")
         return RedirectResponse("/settings", status_code=303)

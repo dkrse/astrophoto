@@ -4,7 +4,9 @@
 <script>document.body.classList.add('viewer-page');document.documentElement.style.setProperty('--hh',document.querySelector('header.top').offsetHeight+'px');</script>
 <div class="viewer" id="viewer">
   <div class="vbar">
-    <a class="btn small" href="{{ owner.url }}#{{ f.frame_type }}" title="Back to {{ 'project' if owner.kind == 'project' else 'calibration set' }}">←</a>
+    {% set back = owner.url ~ '#' ~ (('s%d_'|format(f.session_id)) if f.session_id and owner.kind == 'project' else '') ~ f.frame_type %}
+    <a class="btn small" href="{{ back }}" title="Back to {{ ('the files of session ' ~ (f.session.date|dmy)) if f.session_id and owner.kind == 'project' else ('project' if owner.kind == 'project' else 'calibration set') }}">←</a>
+    {% if f.session_id and owner.kind == 'project' %}<a class="btn small" href="{{ owner.url }}#s{{ f.session_id }}_" title="Back to session {{ f.session.date|dmy }} ({{ [f.session.telescope, f.session.camera]|select|join(' · ') }})">🌙 {{ f.session.date|dmy or 'Session' }}</a>{% endif %}
     {% if prev_f %}<a class="btn small" href="/files/{{ prev_f.id }}/view" id="prev" title="Previous (←)">‹</a>{% else %}<span class="btn small disabled">‹</span>{% endif %}
     <span class="muted small">{{ pos }}/{{ total }}</span>
     {% if next_f %}<a class="btn small" href="/files/{{ next_f.id }}/view" id="next" title="Next (→)">›</a>{% else %}<span class="btn small disabled">›</span>{% endif %}
@@ -44,7 +46,8 @@
       {% if f.frame_type == 'light' %}<button class="btn small {{ 'danger' if f.rejected }}" id="rejbtn" title="Rejected frames are excluded from ZIP and integration time">{{ '↺ Restore' if f.rejected else '✗ Reject' }}</button>{% endif %}
       <button class="btn small" id="fsbtn" title="Fullscreen (Shift+F)">⛶</button>
       <a class="btn small" href="/files/{{ f.id }}/download" title="Download original">⬇</a>
-      <button class="btn small" id="skybtn" title="Show objects in the field, RA/Dec grid and north / east (from the plate solve) (O)" {% if not (solved and solved.ok and solved.wcs) %}hidden{% endif %}>✨ Objects</button>
+      <button class="btn small" id="northbtn" title="Turn the image north up / east left like a sky map (from the plate solve; display only) (N)" {% if not (can_render and solved and solved.ok and solved.wcs) %}hidden{% endif %}>⬆ North up</button>
+      <button class="btn small" id="skybtn" title="Show objects in the field, RA/Dec grid and north / east (from the plate solve) (O)" {% if not (can_render and solved and solved.ok and solved.wcs) %}hidden{% endif %}>✨ Objects</button>
       {% if can_render %}<button class="btn small" id="opticsbtn" title="Optics inspector: star size / shape across the field – tilt, curvature, coma, spacing, guiding">🔬 Optics</button>{% endif %}
       <button class="btn small" id="solvebtn" title="Plate solve: measure image scale → focal length, field of view, centre (ASTAP, local)">🎯 Solve</button>
       <button class="btn small" id="infobtn" title="Info panel (I)">ⓘ Info</button>
@@ -143,7 +146,9 @@
         <label class="inline small" style="font-weight:400;margin-left:12px"><input type="checkbox" id="fi-ovl-toggle"> show on image</label></h3>
       <div class="tablewrap"><table class="kvt small"><thead><tr><th>Object</th><th>Name</th><th>Type</th><th class="num">Mag</th><th class="num">Size</th></tr></thead>
         <tbody id="fi-objs-rows"></tbody></table></div>
-      <p class="muted small">Catalogue: OpenNGC (NGC, IC, Messier + addendum). Objects only partly in the frame are marked with ◐.</p>
+      <p class="muted small">Catalogue: OpenNGC (NGC, IC, Messier + addendum). Objects only partly in the frame are marked with ◐.
+        Click an object to show only it on the image (the dialog closes and the object is centred); click on the image
+        or the object again to show all.</p>
     </div>
   </div>
 </dialog>
@@ -166,7 +171,7 @@
 </dialog>
 
 <form method="post" action="/files/{{ f.id }}/opts" id="saveform" hidden>
-  <input name="bayer"><input name="stretch"><input name="flip"><input name="channels"><input name="brightness"><input name="bp"><input name="mp"><input name="wp"><input name="view"><input name="all">
+  <input name="bayer"><input name="stretch"><input name="flip"><input name="channels"><input name="brightness"><input name="bp"><input name="mp"><input name="wp"><input name="view"><input name="north"><input name="all">
 </form>
 
 <script>
@@ -202,12 +207,24 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
     return o;}
   function url(size){var o=opts();o.size=size;return '/files/{{ f.id }}/render?'+new URLSearchParams(o);}
 
-  window._view=function(){return {s:s,tx:tx,ty:ty,nw:nw,nh:nh};};
-  function apply(){img.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')';if(window._ovl)window._ovl();
+  // north up: rotation (deg, clockwise) + optional horizontal mirror around the image centre (display only)
+  var NUP=window.NUP={on:false,rot:0,mir:false};
+  function q(x,y){if(!NUP.on)return [x,y];var cx=nw/2,cy=nh/2,dx=(x-cx)*(NUP.mir?-1:1),dy=y-cy,a=NUP.rot*Math.PI/180;
+    return [cx+dx*Math.cos(a)-dy*Math.sin(a),cy+dx*Math.sin(a)+dy*Math.cos(a)];}
+  function bbox(){if(!NUP.on)return [nw,nh];var a=NUP.rot*Math.PI/180,c=Math.abs(Math.cos(a)),sn=Math.abs(Math.sin(a));
+    return [nw*c+nh*sn,nw*sn+nh*c];}
+  window._view=function(){return {s:s,tx:tx,ty:ty,nw:nw,nh:nh,
+    at:function(x,y){var p=q(x,y);return [tx+p[0]*s,ty+p[1]*s];}};};
+  window._refitNow=function(){if(mode==='fit')fit();else apply();};
+  window._centerOn=function(x,y){var W=stage.clientWidth,H=stage.clientHeight,p=q(x,y);
+    tx=W/2-p[0]*s;ty=H/2-p[1]*s;if(mode==='fit')mode='zoom';apply();};
+  function apply(){img.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'+(NUP.on?
+      ' translate('+nw/2+'px,'+nh/2+'px) rotate('+NUP.rot+'deg)'+(NUP.mir?' scaleX(-1)':'')+' translate('+(-nw/2)+'px,'+(-nh/2)+'px)':'');
+    if(window._ovl)window._ovl();
     zl.textContent=Math.round(s/fullScale*100)+'%';
     document.querySelectorAll('[data-mode]').forEach(function(b){b.classList.toggle('primary',b.dataset.mode===mode);});}
   function fit(){mode='fit';var W=stage.clientWidth,H=stage.clientHeight;if(!nw)return;
-    s=Math.min(W/nw,H/nh);tx=(W-nw*s)/2;ty=(H-nh*s)/2;apply();}
+    var b=bbox();s=Math.min(W/b[0],H/b[1]);tx=W/2-nw*s/2;ty=H/2-nh*s/2;apply();}
   function one(){mode='one';var W=stage.clientWidth,H=stage.clientHeight;
     var cx=(W/2-tx)/s, cy=(H/2-ty)/s; s=fullScale; tx=W/2-cx*s; ty=H/2-cy*s;apply();}
   function zoomAt(f,px,py){mode='zoom';var ns=Math.max(0.02,Math.min(s*f,fullScale*32));
@@ -374,6 +391,8 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
   bri.addEventListener('dblclick',function(){setBri(0);});
   setBri(bri.value);
   document.getElementById('resetbtn').onclick=function(){
+    if(window.setNorth)setNorth(false);
+    setTimeout(function(){if(window.OPT&&OPT.on&&window.loadOptics)loadOptics();},0);
     setBri(DEFAULTS.brightness);
     var hb=document.getElementById('o-bayer'),hf=document.getElementById('o-flip');
     if((hb&&hb.value!==DEFAULTS.bayer)||(hf&&hf.value!==DEFAULTS.flip))hist=null;
@@ -389,7 +408,7 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
 
   document.querySelectorAll('[data-save]').forEach(function(btn){btn.onclick=function(){
     var fm=document.getElementById('saveform'), o=opts(true);
-    fm.bayer.value=o.bayer||'auto'; fm.stretch.value=o.stretch||'unlinked'; fm.flip.value=o.flip||'auto'; fm.channels.value=o.channels||'rgb'; fm.brightness.value=bri.value; fm.bp.value=LV.bp.toFixed(4); fm.mp.value=LV.mp.toFixed(4); fm.wp.value=LV.wp.toFixed(4); fm.view.value=(mode==='one')?'one':'fit'; fm.all.value=btn.dataset.save;
+    fm.bayer.value=o.bayer||'auto'; fm.stretch.value=o.stretch||'unlinked'; fm.flip.value=o.flip||'auto'; fm.channels.value=o.channels||'rgb'; fm.brightness.value=bri.value; fm.bp.value=LV.bp.toFixed(4); fm.mp.value=LV.mp.toFixed(4); fm.wp.value=LV.wp.toFixed(4); fm.view.value=(mode==='one')?'one':'fit'; fm.north.value=NUP.on?'1':'0'; fm.all.value=btn.dataset.save;
     btn.textContent='⏳'; fm.submit();
   };});
 })();
@@ -411,15 +430,20 @@ function showSolve(r){
     ['Field of view',f(r.fov_w_arcmin,1)+'′ × '+f(r.fov_h_arcmin,1)+'′ ('+f(r.fov_w_arcmin/60,2)+'° × '+f(r.fov_h_arcmin/60,2)+'°)'],
     ['Centre','RA '+r.ra+' · Dec '+r.dec],['Rotation',f(r.rotation_deg,1)+'°<span id="fi-mirror"></span>'],
     ['Limiting magnitude',r.photometry?(r.photometry.limit_mag?f(r.photometry.limit_mag,1)+' mag (Gaia BP, SNR '+r.photometry.snr_limit+') · '+r.photometry.matched+' stars matched, faintest '+f(r.photometry.faintest_detected,1)+' mag':'— '+(r.photometry.error||'')):''],
-    ['Equipment',[r.telescope,r.camera].filter(Boolean).join(' · ')],['Image size',r.note||'']];
+    ['Sky brightness',r.sky?(r.sky.sqm!=null?f(r.sky.sqm,2)+' mag/arcsec² (like SQM, Gaia BP; offset from '+(r.sky.pedestal_src||'the camera')+')':'— '+(r.sky.sqm_note||'')):''],
+    ['Zero point',r.sky&&r.sky.zp_s!=null?f(r.sky.zp_s,2)+' mag for 1 ADU/s'+(r.sky.gain?' · gain '+r.sky.gain:'')+' – compared between nights for the transparency':''],
+    ['Equipment',[r.telescope,r.camera].filter(Boolean).join(' · ')],['Image size',r.note||''],['⚠ Outdated',r.stale||'']];
   rows.forEach(function(x){if(!x[1])return;var dt=document.createElement('dt'),dd=document.createElement('dd');
     dt.textContent=x[0];dd.textContent=x[1].replace('<span id="fi-mirror"></span>','');if(x[0]==='Rotation'){var sp=document.createElement('span');sp.id='fi-mirror';dd.append(sp);}dl.append(dt,dd);});
   showTarget(r.target_check);
-  var a=document.getElementById('fi-annot');a.hidden=!r.wcs;a.href='/files/{{ f.id }}/annotated.jpg?flip='+skyFlip();
+  var a=document.getElementById('fi-annot');a.hidden=!r.wcs;a.onclick=function(){a.href='/files/{{ f.id }}/annotated.jpg?flip='+skyFlip()+'&north='+((window.NUP&&NUP.on)?'1':'0');};
   var uf=document.getElementById('fi-usefocal');
   uf.hidden=!(r.telescope&&r.focal_mm&&r.focal_expected_mm&&Math.abs(r.focal_mm/r.focal_expected_mm-1)>=0.01);
   if(!uf.hidden){uf.textContent='Use '+Math.round(r.focal_mm)+' mm for '+r.telescope;uf.dataset.tel=r.telescope;uf.dataset.focal=r.focal_mm;}
-  document.getElementById('skybtn').hidden=!r.wcs;
+  var CAN={{ can_render|tojson }};
+  document.getElementById('skybtn').hidden=!(r.wcs&&CAN);
+  var nb=document.getElementById('northbtn');if(nb){nb.hidden=!(r.wcs&&CAN);                 // available right after solving
+    if(r.wcs&&window.NUP&&(NUP.on||NUP.want))setTimeout(function(){setNorth(true);},0);}
   if(r.wcs)loadSky(true).then(function(a){listObjects(a);var mi=document.getElementById('fi-mirror');if(a&&mi)mi.textContent=skyMirrored()?' · image is mirrored (as displayed)':'';});
   else{var t=document.getElementById('fi-objs');t.hidden=true;m.textContent+=' · solved with an older version – Solve again for objects in the field';}
 }
@@ -438,7 +462,8 @@ function listObjects(a){
   box.hidden=false;document.getElementById('fi-objs-n').textContent='('+a.objects.length+')';
   document.getElementById('fi-ovl-toggle').checked=SKY.on;
   if(!a.objects.length){var tr=tb.insertRow();var td=tr.insertCell();td.colSpan=5;td.className='muted';td.textContent='No catalogued deep-sky objects in this field.';}
-  a.objects.forEach(function(o){var tr=tb.insertRow();
+  a.objects.forEach(function(o){var tr=tb.insertRow();tr.className='objrow'+(SKY.only===o.name?' sel':'');tr.dataset.name=o.name;
+    tr.title='Show only this object on the image (click again or next to it to show all)';
     [(o.inside?'':'◐ ')+[o.messier,o.name].filter(Boolean).join(' / '),o.common||'',o.type,o.mag!=null?o.mag.toFixed(1):'',
      o.maj?(o.maj<1?Math.round(o.maj*60)+'″':o.maj.toFixed(1)+'′')+(o.min&&o.min!==o.maj?' × '+(o.min<1?Math.round(o.min*60)+'″':o.min.toFixed(1)+'′'):''):'']
     .forEach(function(v,i){var td=tr.insertCell();td.textContent=v;if(i>2)td.className='num';});});
@@ -460,7 +485,7 @@ function skyMap(u,v,o){      // fractions of the solved array -> fractions of th
   var r=SKY.data.orient||0,t;
   if(r===180){u=1-u;v=1-v;}else if(r===90){t=u;u=1-v;v=t;}else if(r===270){t=u;u=v;v=1-t;}
   var f=skyFlip();if(f.indexOf('h')>=0)u=1-u;if(f.indexOf('v')>=0)v=1-v;
-  return [o.tx+u*o.nw*o.s,o.ty+v*o.nh*o.s];
+  return o.at?o.at(u*o.nw,v*o.nh):[o.tx+u*o.nw*o.s,o.ty+v*o.nh*o.s];
 }
 function drawSky(){
   var svg=document.getElementById('sky-ovl');if(!svg)return;
@@ -471,14 +496,14 @@ function drawSky(){
   SKY.data.grid.forEach(function(g){var p=g.pts.map(function(q){return skyMap(q[0],q[1],o);});
     el('polyline',{points:p.map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '),'class':'g'});
     var mid=p[Math.floor(p.length/2)];el('text',{x:mid[0]+3,y:mid[1]-3,'class':'gl'},g.label);});
-  SKY.data.objects.forEach(function(ob){var c=skyMap(ob.u,ob.v,o),rx=9,ry=9,ang=0;
+  SKY.data.objects.forEach(function(ob){if(SKY.only&&ob.name!==SKY.only)return;var c=skyMap(ob.u,ob.v,o),rx=9,ry=9,ang=0;
     if(ob.axis){var a=skyMap(ob.axis[0],ob.axis[1],o);rx=Math.max(Math.hypot(a[0]-c[0],a[1]-c[1]),6);
       ry=Math.max(rx*((ob.min||ob.maj)/ob.maj),4);ang=Math.atan2(a[1]-c[1],a[0]-c[0])*180/Math.PI;}
     el('ellipse',{cx:c[0],cy:c[1],rx:rx,ry:ry,transform:'rotate('+ang+' '+c[0]+' '+c[1]+')','class':'o'});
     var lbl=[ob.messier,ob.name].filter(Boolean).join(' / ')+(ob.common?' – '+ob.common:'');
     el('text',{x:c[0]+Math.max(rx,ry)*0.75+4,y:c[1]-Math.max(rx,ry)*0.75-4,'class':'ol'},lbl);});
   // compass in the top-left corner
-  var cc=skyMap(SKY.data.compass.c[0],SKY.data.compass.c[1],o),base=[Math.max(o.tx,0)+56,Math.max(o.ty,0)+56];
+  var cc=skyMap(SKY.data.compass.c[0],SKY.data.compass.c[1],o),base=(window.NUP&&window.NUP.on)?[56,56]:[Math.max(o.tx,0)+56,Math.max(o.ty,0)+56];
   ['n','e'].forEach(function(k){var p=skyMap(SKY.data.compass[k][0],SKY.data.compass[k][1],o),dx=p[0]-cc[0],dy=p[1]-cc[1],L=Math.hypot(dx,dy)||1;
     var x2=base[0]+dx/L*36,y2=base[1]+dy/L*36;
     el('line',{x1:base[0],y1:base[1],x2:x2,y2:y2,'class':'c'});
@@ -492,7 +517,7 @@ var OPT={data:null,on:false,flip:null};
 function optFlip(){return typeof skyFlip==='function'?skyFlip():'none';}
 function loadOptics(){
   var fl=optFlip();
-  if(OPT.data&&OPT.flip===fl)return Promise.resolve(OPT.data);
+  if(OPT.data&&OPT.data.ok&&OPT.flip===fl)return Promise.resolve(OPT.data);
   var m=document.getElementById('op-msg');m.textContent='⏳ Measuring stars…';
   return fetch('/api/files/{{ f.id }}/optics?flip='+fl).then(function(r){return r.json();})
     .then(function(d){OPT.flip=fl;OPT.data=d;showOptics(d);drawOpt();return d;})
@@ -504,6 +529,7 @@ function showOptics(d){
   dg.innerHTML='';body.hidden=true;document.getElementById('op-ovl-l').hidden=!d.ok;
   if(!d.ok){m.textContent='✗ '+d.error;return;}
   m.textContent=d.stars+' stars · FWHM '+d.fwhm_px.toFixed(2)+' px'+(d.fwhm_arcsec?' ('+d.fwhm_arcsec.toFixed(2)+'″)':'')+
+    (d.seeing&&d.seeing.seeing!=null?' · seeing ≈ '+d.seeing.seeing.toFixed(1)+'″ ('+d.seeing.label+(d.seeing.undersampled?', undersampled – upper limit':'')+(d.seeing.likely_focus?', more likely focus / optics than the atmosphere':'')+')':'')+
     ' · elongation '+d.elong.toFixed(2)+(d.fwhm_arcsec?'':' · plate-solve the frame to get FWHM in arcseconds');
   d.diagnosis.forEach(function(x){var e=document.createElement('div');e.className='target-check '+({ok:'good',warn:'warn',bad:'bad'}[x.level]||'');
     var b=document.createElement('b');b.textContent=({ok:'✓ ',warn:'⚠ ',bad:'✗ '}[x.level]||'')+x.title;
@@ -529,8 +555,8 @@ function drawOpt(){
   svg.style.display='';var NS='http://www.w3.org/2000/svg',out=[],d=OPT.data;
   var fw=d.vectors.map(function(v){return v.fwhm_px;}),lo=Math.min.apply(null,fw),hi=Math.max.apply(null,fw);
   var cell=Math.min(o.nw*o.s/8,o.nh*o.s/6);
-  d.vectors.forEach(function(v){var x=o.tx+v.u*o.nw*o.s,y=o.ty+v.v*o.nh*o.s,col=heat(hi>lo?(v.fwhm_px-lo)/(hi-lo):0);
-    var L=(v.coherence>0.5&&v.elong>1.1)?Math.min(cell*0.45,6+(v.elong-1)*cell*1.5):0,a=v.angle_deg*Math.PI/180,dx=Math.cos(a)*L/2,dy=Math.sin(a)*L/2;
+  d.vectors.forEach(function(v){var P=o.at(v.u*o.nw,v.v*o.nh),x=P[0],y=P[1],col=heat(hi>lo?(v.fwhm_px-lo)/(hi-lo):0);
+    var L=(v.coherence>0.5&&v.elong>1.1)?Math.min(cell*0.45,6+(v.elong-1)*cell*1.5):0,a=(((window.NUP&&NUP.on&&NUP.mir)?180-v.angle_deg:v.angle_deg)+((window.NUP&&NUP.on)?NUP.rot:0))*Math.PI/180,dx=Math.cos(a)*L/2,dy=Math.sin(a)*L/2;
     var c=document.createElementNS(NS,'circle');c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',4);c.setAttribute('fill',col);out.push(c);
     if(L>0){var l=document.createElementNS(NS,'line');l.setAttribute('x1',x-dx);l.setAttribute('y1',y-dy);l.setAttribute('x2',x+dx);l.setAttribute('y2',y+dy);
       l.setAttribute('stroke',col);l.setAttribute('class','ol-line');out.push(l);}
@@ -543,6 +569,49 @@ function drawOpt(){
   document.getElementById('op-ovl').onchange=function(){OPT.on=this.checked;b.classList.toggle('primary',OPT.on);drawOpt();};
   var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){if(OPT.on)loadOptics();else drawOpt();});})();
 window._ovl=function(){drawSky();drawOpt();};
+// ---------- one object only (click in the solve dialog's list) ----------
+function showOnly(name){
+  SKY.only=name||null;
+  document.querySelectorAll('#fi-objs-rows tr.objrow').forEach(function(r){r.classList.toggle('sel',r.dataset.name===SKY.only);});
+  if(SKY.only&&!SKY.on)setSky(true);else drawSky();
+  if(SKY.only&&SKY.data&&window._centerOn){var ob=SKY.data.objects.find(function(x){return x.name===SKY.only;});
+    if(ob){var o=window._view(),b={tx:0,ty:0,nw:o.nw,nh:o.nh,s:1},p=skyMap(ob.u,ob.v,b);window._centerOn(p[0],p[1]);}}
+}
+(function(){
+  var tb=document.getElementById('fi-objs-rows'),dlg=document.getElementById('solve-dlg'),stage=document.getElementById('stage');
+  tb.addEventListener('click',function(e){var tr=e.target.closest('tr.objrow');if(!tr)return;e.stopPropagation();
+    var name=SKY.only===tr.dataset.name?null:tr.dataset.name;showOnly(name);if(name)dlg.close();});   // show it on the image
+  dlg.addEventListener('click',function(e){if(SKY.only&&e.target!==dlg&&!e.target.closest('tr.objrow,button,a,input,label'))showOnly(null);});
+  if(stage){var down=null;
+    stage.addEventListener('pointerdown',function(e){down=[e.clientX,e.clientY];});
+    stage.addEventListener('click',function(e){if(!SKY.only||!down||e.target.closest('.levels'))return;
+      if(Math.hypot(e.clientX-down[0],e.clientY-down[1])<5)showOnly(null);});}   // a click, not a pan
+})();
+// ---------- north up (rotate / mirror the displayed image from the plate solve) ----------
+function northParams(){var o=window._view&&window._view();if(!o||!o.nw||!SKY.data)return null;
+  var b={tx:0,ty:0,nw:o.nw,nh:o.nh,s:1},C=SKY.data.compass,c=skyMap(C.c[0],C.c[1],b),n=skyMap(C.n[0],C.n[1],b),e=skyMap(C.e[0],C.e[1],b);
+  var nx=n[0]-c[0],ny=n[1]-c[1],mir=(nx*(e[1]-c[1])-ny*(e[0]-c[0]))>0;if(mir)nx=-nx;
+  return {mir:mir,rot:-90-Math.atan2(ny,nx)*180/Math.PI};}
+window.setNorth=function(on,keep){var N=window.NUP,b=document.getElementById('northbtn');if(!N||!b)return;
+  if(!keep){N.want=!!on;try{localStorage.setItem('northup',on?'1':'0');}catch(e){}}
+  if(!on){N.on=false;b.classList.remove('primary');b.textContent='⬆ North up';if(window._refitNow)window._refitNow();return;}
+  if(b.hidden)return;                                   // not solved (yet) – applied after solving
+  var o=window._view&&window._view();
+  if(!o||!o.nw){N.tries=(N.tries||0)+1;if(N.tries<150)setTimeout(function(){setNorth(true,true);},200);return;}   // image still loading (max 30 s)
+  N.tries=0;
+  loadSky(true).then(function(){var p=northParams();if(!p){alert('Plate-solve the file first (🎯 Solve).');return;}
+    N.on=true;N.rot=p.rot;N.mir=p.mir;b.classList.add('primary');
+    b.textContent='⬆ North up'+(p.mir?' · mirrored':'')+' ('+Math.round(((p.rot%360)+540)%360-180)+'°)';
+    if(window._refitNow)window._refitNow();});};
+(function(){var b=document.getElementById('northbtn');if(!b||!window.NUP)return;
+  b.onclick=function(){setNorth(!NUP.on);};
+  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&(e.key==='n'||e.key==='N')&&!b.hidden)b.click();});
+  var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){if(NUP.on)setTimeout(function(){setNorth(true);},0);});
+  var want={{ 'true' if opts.north == '1' else 'false' }};
+  {% if not f.view_opts %}try{if(localStorage.getItem('northup')==='1')want=true;}catch(e){}{% endif %}   // saved view settings win
+  NUP.want=want;
+  if(want&&!b.hidden)setNorth(true,true);
+})();
 (function(){var b=document.getElementById('skybtn');if(!b)return;
   b.onclick=function(){setSky(!SKY.on);};b.classList.toggle('primary',SKY.on);
   document.getElementById('fi-ovl-toggle').onchange=function(){setSky(this.checked);};
@@ -565,7 +634,9 @@ function solveFile(){
   document.getElementById('solvebtn').onclick=function(){showSolve(SOLVED);d.showModal();if(!SOLVED)solveFile();};
   d.addEventListener('click',function(e){if(e.target===d)d.close();});})();
 (function(){var b=document.getElementById('rejbtn');if(!b)return;
-  b.onclick=function(){fetch('/files/{{ f.id }}/reject',{method:'POST',headers:{'Accept':'application/json'}}).then(function(r){return r.json();})
-    .then(function(j){b.textContent=j.rejected?'↺ Restore':'✗ Reject';b.classList.toggle('danger',j.rejected);});};})();
+  b.onclick=function(){fetch('/files/{{ f.id }}/reject',{method:'POST',headers:{'Accept':'application/json'}})
+    .then(function(r){if(!r.ok)throw r.status;return r.json();})
+    .then(function(j){b.textContent=j.rejected?'↺ Restore':'✗ Reject';b.classList.toggle('danger',j.rejected);})
+    .catch(function(){alert('Could not change the reject state – reload the page and try again.');});};})();
 </script>
 {% endblock %}

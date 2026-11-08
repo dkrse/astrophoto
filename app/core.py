@@ -204,6 +204,9 @@ SETTINGS = {
     # key: (default, type, choices or (min, max), label)
     "app_title": ("Astrophoto", str, None, "Application title"),
     "page_size": (24, int, (1, 500), "Projects per page"),
+    "sessions_page_size": (20, int, (0, 1000), "Sessions per page (project page; 0 = all)"),
+    "files_page_size": (100, int, (0, 5000), "Files per page in each file group (0 = all)"),
+    "calib_page_size": (25, int, (0, 1000), "Calibration sets per page (0 = all)"),
     "accent_color": ("#3b5bdb", "color", None, "Accent color"),
     "default_theme": ("auto", str, ["auto", "light", "dark"], "Default theme"),
     "default_view": ("grid", str, ["grid", "list"], "Default project view"),
@@ -224,6 +227,14 @@ SETTINGS = {
     "open_session_files": (True, bool, None, "Project: session blocks in Files expanded"),
     "open_file_groups": (True, bool, None, "File lists: type groups (Light, Dark …) expanded"),
     "open_stats_table": (False, bool, None, "Statistics: monthly table expanded"),
+    # background processing (worker / background threads) – each can be switched off
+    "bg_previews": (True, bool, None, "Generate thumbnails for new files"),
+    "bg_frame_stats": (True, bool, None, "Measure frame quality of new light frames (FWHM, stars, background, noise)"),
+    "bg_suspects": (True, bool, None, "Mark suspect light frames automatically"),
+    "bg_analysis": (True, bool, None, "Run queued plate solves / optics analyses"),
+    "bg_integrity": (True, bool, None, "Allow archive integrity checks"),
+    "cond_auto_measure": (True, bool, None, "Measure seeing, transparency and sky brightness of new nights automatically"),
+    "cond_auto_fill": (True, bool, None, "Fill in the session's Seeing and SQM from the measurements"),
 }
 SORT_LABELS = {"date_desc": "Last night (newest)", "date_asc": "First night (oldest)",
                "name_asc": "Name A–Z", "name_desc": "Name Z–A", "created_desc": "Recently added",
@@ -253,7 +264,7 @@ def load_settings(db=None) -> dict:
     own = db is None
     db = db or SessionLocal()
     try:
-        raw = {r.key: r.value for r in db.scalars(select(Setting))}
+        raw = {r.key: r.value for r in db.scalars(select(Setting).where(Setting.key.in_(list(SETTINGS))))}
     finally:
         if own:
             db.close()
@@ -525,3 +536,61 @@ def exposure_summary(files) -> dict:
     for g in rows:
         g["detail"] = " + ".join(f"{n}×{fmt_num(e)}s" for e, n in sorted(g["exps"].items(), key=lambda x: -x[1]))
     return {"rows": rows, "total": total, "count": sum(g["count"] for g in rows), "missing": missing}
+
+
+# ---------- static files with a content version (browsers never keep an outdated CSS / JS) ----------
+STATIC_DIR = Path(__file__).parent / "static"
+_ASSET_V: dict = {}
+
+
+def asset(path: str) -> str:
+    """'/static/<path>?v=<hash of the file>' – computed once per process (the image is rebuilt on every change)."""
+    v = _ASSET_V.get(path)
+    if v is None:
+        import hashlib
+        try:
+            v = hashlib.sha1((STATIC_DIR / path).read_bytes()).hexdigest()[:10]
+        except OSError:
+            v = "0"
+        _ASSET_V[path] = v
+    return f"/static/{path}?v={v}"
+
+
+templates.env.globals["asset"] = asset
+
+
+def page_url(request, anchor: str = "", **changes) -> str:
+    """Current URL with some query parameters changed (None removes one) – for pagers inside a page."""
+    from urllib.parse import urlencode
+    q = {k: v for k, v in request.query_params.items()}
+    for k, v in changes.items():
+        if v is None:
+            q.pop(k, None)
+        else:
+            q[k] = v
+    return request.url.path + ("?" + urlencode(q) if q else "") + (f"#{anchor}" if anchor else "")
+
+
+def paginate(total: int, per: int, page_no) -> dict:
+    """Page window for lists rendered on the server; per = 0 shows everything."""
+    try:
+        page_no = int(page_no or 1)
+    except (TypeError, ValueError):
+        page_no = 1
+    if not per or per <= 0 or total <= per:
+        return {"page": 1, "pages": 1, "start": 0, "end": total, "total": total, "window": [1]}
+    pages = -(-total // per)
+    page_no = max(1, min(page_no, pages))
+    return {"page": page_no, "pages": pages, "start": (page_no - 1) * per, "end": min(page_no * per, total),
+            "total": total, "window": [n for n in range(1, pages + 1) if n in (1, pages) or abs(n - page_no) <= 2]}
+
+
+templates.env.globals.update(page_url=page_url, paginate=paginate)
+
+
+def _sqm_label(v):
+    from .conditions import sqm_label
+    return sqm_label(v)
+
+
+templates.env.globals["sqm_label"] = _sqm_label

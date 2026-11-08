@@ -6,13 +6,13 @@ from datetime import datetime
 from fastapi import Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, FileResponse, PlainTextResponse, JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from .core import (clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
                    DATA_DIR, file_owner, move_file_storage, delete_file_storage, unique_dest, project_dir,
                    load_settings)
-from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, FRAME_TYPES
+from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, AnalysisTask, FRAME_TYPES
 from .preview import (PREVIEW_EXT, FITS_EXT, render, clean_opts, file_info, OPT_CHOICES, DEFAULT_OPTS,
                       RENDER_KEYS, fits_is_mono, histogram)
 from . import worker
@@ -53,7 +53,7 @@ def file_view(request: Request, fid: int, user: User = Depends(current_user), db
                 can_render=ext in PREVIEW_EXT and src.exists(), info=info,
                 prev_f=siblings[i - 1] if i > 0 else None,
                 next_f=siblings[i + 1] if i + 1 < len(siblings) else None,
-                pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"], solved=with_target(f, _solved(f)),
+                pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"], solved=solved_view(db, f),
                 rowflip=ext in FITS_EXT and src.exists() and info_rowflip(src) == "BOTTOM-UP")
 
 
@@ -364,31 +364,12 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
 # ---------- plate solving (ASTAP, on demand) ----------
 @app.post("/api/files/{fid}/solve")
 async def file_solve(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    from . import platesolve
-    from .core import catalog
+    from . import analysis
     f = get_file(db, fid)
-    src = DATA_DIR / f.stored_path
-    if not src.exists():
+    if not (DATA_DIR / f.stored_path).exists():
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
-    pixel_um = focal = None
-    sensor = None
-    s = f.session
-    if s:
-        cat = catalog(db)
-        spec = lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}
-        cam = spec("camera", s.camera)
-        pixel_um = to_float(cam.get("pixel_um"))
-        focal = to_float(spec("telescope", s.telescope).get("focal_mm"))
-        w, h = to_float(cam.get("width_px")), to_float(cam.get("height_px"))
-        sensor = (w, h) if w and h else None
-    res = await run_in_threadpool(platesolve.solve, src, f.header, pixel_um, focal, sensor)
-    if s:
-        res["camera"], res["telescope"] = s.camera, s.telescope
-    if res.get("ok") and sensor and pixel_um:
-        platesolve.resize_check(res, sensor, focal)
-    if res.get("ok"):
-        res["ra"], res["dec"] = platesolve.fmt_ra(res["ra_deg"]), platesolve.fmt_dec(res["dec_deg"])
-    f.solve = platesolve.to_json(res)
+    res = await run_in_threadpool(analysis.solve_compute, analysis.solve_inputs(db, f))
+    analysis.solve_store(f, res)
     db.commit()
     return with_target(f, res)
 
@@ -412,16 +393,28 @@ def with_target(f: FrameFile, res: dict | None):
 @app.get("/api/files/{fid}/solved")
 def file_solved(fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The stored plate solve (with a fresh pointing check)."""
-    f = get_file(db, fid)
-    res = _solved(f)
+    res = solved_view(db, get_file(db, fid))
     if not res:
         return JSONResponse({"ok": False, "error": "Not solved yet"}, status_code=404)
+    return res
+
+
+def solved_view(db, f: FrameFile):
+    """Stored solve + fresh pointing check + comparison with the *current* equipment (stale warning)."""
+    res = _solved(f)
+    if not res:
+        return None
     res = with_target(f, res)
     if f.session:
         from .core import catalog
         tel = next((it.spec for it in catalog(db)["telescope"] if it.name == f.session.telescope), {})
         if res.get("ok") and to_float(tel.get("focal_mm")):     # compare with the current equipment value
             res["focal_expected_mm"] = to_float(tel.get("focal_mm"))
+        cam = next((it.spec for it in catalog(db)["camera"] if it.name == f.session.camera), {})
+        px_now = to_float(cam.get("pixel_um"))
+        if res.get("ok") and res.get("pixel_um") and px_now and \
+                abs(px_now * (res.get("binning") or 1) - res["pixel_um"]) > 0.005:
+            res["stale"] = "The camera's pixel size changed since this solve – click Solve again for a correct focal length."
         res.setdefault("telescope", f.session.telescope)
         res.setdefault("camera", f.session.camera)
     return res
@@ -442,25 +435,27 @@ def file_annotations(fid: int, user: User = Depends(current_user), db: Session =
 
 # ---------- optics inspector (on demand, not stored) ----------
 @app.get("/api/files/{fid}/optics")
-async def file_optics(fid: int, flip: str = "none", tiles: int = 1, user: User = Depends(current_user),
+async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User = Depends(current_user),
                       db: Session = Depends(get_db)):
-    from . import optics, platesolve
+    from . import analysis
     f = get_file(db, fid)
-    src = DATA_DIR / f.stored_path
-    if not src.exists():
+    if not (DATA_DIR / f.stored_path).exists():
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
-    if flip == "auto":                       # as the viewer shows it by default (FITS ROWORDER)
-        flip = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
-    flip = flip if flip in ("none", "v", "h", "vh") else "none"
-    solved = _solved(f) or {}
-    scale = solved.get("scale_arcsec_px") if solved.get("ok") else None
-    orient = solved.get("orient") if "orient" in solved else await run_in_threadpool(platesolve._orientation, src)
+    inp = analysis.optics_inputs(f, flip)
     with _RENDER_SLOTS:
-        res = await run_in_threadpool(optics.analyse, src, orient, flip, scale, bool(tiles))
-    if res.get("ok"):                        # keep the summary for the session / trend views
-        from .measured import optics_summary
-        f.optics = json.dumps(optics_summary(res))
-        db.commit()
+        res = await run_in_threadpool(analysis.optics_compute, inp, bool(tiles))
+    analysis.optics_store(f, res)              # summary for the session / trend views
+    db.commit()
+    if res.get("ok") and res.get("fwhm_arcsec") and len(res.get("regions") or []) == 9:
+        from .conditions import seeing, seeing_label
+        from .core import catalog
+        c = res["regions"][4]
+        per_px = res["fwhm_arcsec"] / res["fwhm_px"]
+        tel = next((it.spec for it in catalog(db)["telescope"] if f.session and it.name == f.session.telescope), {})
+        se = seeing((c.get("fwhm_px") or res["fwhm_px"]) * per_px, tel.get("aperture_mm"),
+                    per_px * (res.get("bin") or 1))
+        if se:
+            res["seeing"] = {**se, "label": seeing_label(se["seeing"])}
     return res
 
 
@@ -484,7 +479,7 @@ async def equipment_focal(request: Request, user: User = Depends(current_user), 
 
 
 @app.get("/files/{fid}/annotated.jpg")
-async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, user: User = Depends(current_user),
+async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str = "", user: User = Depends(current_user),
                          db: Session = Depends(get_db)):
     """The image as shown in the viewer (saved view settings) with objects, RA/Dec grid and N/E drawn in."""
     from fastapi.responses import Response
@@ -501,8 +496,119 @@ async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, user: User
     if eff == "auto":
         eff = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
     with _RENDER_SLOTS:
-        data = await run_in_threadpool(annotate.annotated_jpeg, src, opts, res, eff, bool(grid))
+        data = await run_in_threadpool(annotate.annotated_jpeg, src, opts, res, eff, bool(grid),
+                                       (north or opts.get("north")) == "1")
     if data is None:
         raise HTTPException(422, "Cannot render this file")
     name = os.path.splitext(clean_filename(f.original_name))[0] + "_annotated.jpg"
     return Response(data, media_type="image/jpeg", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# ---------- background analysis queue (plate solve / optics) ----------
+from .analysis import pick_per_session  # noqa: E402  (shared with the conditions queue)
+
+
+@app.post("/api/analysis/queue")
+async def analysis_queue(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Queue plate solves / optics analyses for the worker.
+    scope: files (ids) | project (project_id) | all;  kind: solve | optics | both;
+    only_missing: skip files that already have the result;  per_session: 0 = all frames, N = N per session."""
+    from .models import AnalysisTask
+    data = await request.json()
+    kinds = {"solve": ["solve"], "optics": ["optics"], "both": ["solve", "optics"]}.get(data.get("kind"))
+    if not kinds:
+        return JSONResponse({"error": "Unknown kind"}, status_code=400)
+    q = select(FrameFile).where(FrameFile.status == "done", FrameFile.frame_type.in_(("light", "stack")),
+                                FrameFile.rejected.is_not(True))
+    scope = data.get("scope")
+    if scope == "files":
+        ids = [int(i) for i in data.get("ids") or [] if str(i).isdigit()]
+        q = q.where(FrameFile.id.in_(ids))
+    elif scope == "project":
+        q = q.where(FrameFile.project_id == int(data.get("project_id") or 0))
+    elif scope == "session":
+        q = q.where(FrameFile.session_id == int(data.get("session_id") or 0))
+    elif scope == "all":
+        q = q.where(FrameFile.project_id.is_not(None))
+    else:
+        return JSONResponse({"error": "Unknown scope"}, status_code=400)
+    files = db.scalars(q).all()
+    per = int(data.get("per_session") or 0)
+    if per > 0:
+        files = pick_per_session([f for f in files if f.frame_type == "light"], per) + \
+            [f for f in files if f.frame_type == "stack"]
+    if not db.scalar(select(func.count()).select_from(AnalysisTask).where(AnalysisTask.status.in_(("queued", "running")))):
+        db.query(AnalysisTask).filter(AnalysisTask.status.in_(("done", "error"))) \
+            .delete(synchronize_session=False)      # new batch: progress starts at 0 (never drops queued work)
+    waiting = {(t.file_id, t.kind) for t in db.scalars(select(AnalysisTask).where(AnalysisTask.status.in_(("queued", "running"))))}
+    n = 0
+    for f in files:
+        for k in kinds:
+            if k == "optics" and f.frame_type != "light":
+                continue
+            if data.get("only_missing") and (f.solve if k == "solve" else f.optics):
+                continue
+            if (f.id, k) in waiting:
+                continue
+            db.add(AnalysisTask(file_id=f.id, kind=k))
+            n += 1
+    db.commit()
+    worker.wake()
+    return {"ok": True, "queued": n}
+
+
+@app.post("/api/analysis/cancel")
+async def analysis_cancel(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from .models import AnalysisTask
+    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    q = select(AnalysisTask.id).where(AnalysisTask.status == "queued")
+    if data.get("project_id"):
+        q = q.join(FrameFile, FrameFile.id == AnalysisTask.file_id).where(FrameFile.project_id == int(data["project_id"]))
+    ids = list(db.scalars(q))
+    if ids:
+        db.query(AnalysisTask).filter(AnalysisTask.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, "cancelled": len(ids)}
+
+
+@app.get("/api/analysis/status")
+def analysis_status(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return worker.queue_status(db)
+
+
+
+# ---------- observing conditions (seeing, transparency, sky brightness) of a session ----------
+@app.post("/api/sessions/{sid}/conditions/measure")
+def session_measure(sid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Manual: plate solve + optics of 3 frames spread over the night (background queue)."""
+    from . import analysis
+    s = db.get(ImagingSession, sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if not db.scalar(select(func.count()).select_from(AnalysisTask).where(AnalysisTask.status.in_(("queued", "running")))):
+        db.query(AnalysisTask).filter(AnalysisTask.status.in_(("done", "error"))).delete(synchronize_session=False)
+    n = analysis.queue_conditions(db, [s.id], 3, only_missing=False)
+    db.commit()
+    worker.wake()
+    return {"ok": True, "queued": n, "paused": not load_settings(db)["bg_analysis"]}
+
+
+@app.post("/api/sessions/{sid}/conditions/apply")
+def session_apply_conditions(sid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Manual: write the measured seeing / SQM into the session (overwrites the fields)."""
+    from . import analysis
+    s = db.get(ImagingSession, sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    done = analysis.fill_conditions(db, s, force=True)
+    db.commit()
+    return {"ok": True, "set": done, "conditions": analysis.session_conditions(db, s)}
+
+
+@app.get("/api/sessions/{sid}/conditions")
+def session_get_conditions(sid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from . import analysis
+    s = db.get(ImagingSession, sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    return analysis.session_conditions(db, s) or {}

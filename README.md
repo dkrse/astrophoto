@@ -1,189 +1,180 @@
 # Astrophoto
 
-Self-hosted web application for managing astrophotography data: raw frames (light, dark, bias, flat,
-dark flat), final stacked images, imaging sessions, a shared calibration library and all metadata —
-with a FITS/RAW-aware image viewer.
+**Self-hosted archive and analysis platform for astrophotography.** Astrophoto keeps all your raw frames (light,
+dark, bias, flat, dark flat), final stacks, imaging nights, equipment and a shared calibration library in one place –
+and measures what is actually in the frames: it plate-solves them locally with ASTAP (real focal length, field,
+objects in the field, pointing), inspects the optics (tilt, field curvature, coma, guiding), and derives the
+**observing conditions** of every night (seeing, transparency, sky brightness like an SQM meter). Results are
+collected per night and shown as trends per telescope · camera over time.
 
-Built with FastAPI, PostgreSQL and plain HTML/JS. Runs in Docker.
+It is made for growing archives: whole folder trees are imported at once, analyses run in the background on the
+server, duplicates are reported and the archive's integrity can be verified file by file.
+
+Built with FastAPI, PostgreSQL and plain HTML/JS; runs in Docker, fully offline.
 
 > Original files are **never modified**. Everything you change in the viewer (stretch, levels, Bayer pattern,
-> brightness …) is stored as view settings; thumbnails and renders are separate derived files.
+> brightness, north up …) is stored as view settings; thumbnails, renders and measurements are separate data.
+
+**Contents:** [Screenshots](#screenshots) · [Features](#features) · [Requirements](#requirements) ·
+[Installation](#installation) · [Usage](#usage) · [Storage layout](#storage-layout) · [Development](#development) ·
+[Tests](#tests) · [License](#license)
 
 ## Screenshots
 
-**Overview** – summary, filters on nights / equipment, project cards with nights and integration;
-**⬇ Metadata** exports the metadata of all projects
+**Overview** – summary, filters on nights / equipment, project cards with nights and integration; the activity
+indicator next to the name and **⬇ Metadata** (export of all projects) in the header
 
 ![Overview](screenshots/01.png)
 
-**Project** – one object with its sessions (nights); the **Measured** column shows the plate-solved focal length
-(vs. the equipment), star FWHM and limiting magnitude per night; click a row to jump to its files
+**Project** – one object with its sessions (nights). The **Measured** column shows the plate-solved focal length
+(vs. the equipment), seeing 🌬, sky brightness 🌃 and limiting magnitude per night; sessions and files are paged
 
 ![Project detail](screenshots/02.png)
 
-**Session details** – conditions, equipment and measured values (focal length, scale, rotation, limiting
-magnitude, FWHM, tilt) with a button to store the measured focal length in the equipment list
+**Session details** – measured values (focal length, scale, rotation, limiting magnitude, FWHM, tilt) and the
+**observing conditions** (seeing, transparency, sky brightness) with *🌡 Measure conditions* / *Use for Seeing / SQM*
 
-![Session dialog](screenshots/09.png)
+![Session dialog with conditions](screenshots/03.png)
 
 **Viewer – FITS with manual levels** – histogram with black / midtone / white markers and live preview,
 FITS header and frame quality in the side panel
 
-![Viewer with histogram levels](screenshots/03.png)
+![Viewer with histogram levels](screenshots/04.png)
 
-**Viewer** – fit / 1:1 / zoom, Bayer, flip, channels, stretch and brightness controls, ✨ Objects,
-🔬 Optics and 🎯 Solve (info panel hidden)
+**✨ Objects + ⬆ North up** – objects in the field (OpenNGC), RA / Dec grid and N / E after plate solving; the
+frame turned north up / east left like a sky map
 
-![Viewer – M51 (light)](screenshots/04.png)
+![Objects overlay, north up – M51](screenshots/05.png)
 
-**✨ Objects overlay** – objects in the field from the OpenNGC catalogue, RA / Dec grid and north / east,
-after plate solving
+**🎯 Plate solve** – focal length vs. equipment, scale, field, centre, rotation, limiting magnitude, sky
+brightness, zero point, pointing check, objects in the field, annotated JPEG export
 
-![Objects overlay – M51](screenshots/06.png)
+![Plate solve dialog](screenshots/06.png)
 
-**🎯 Plate solve** – focal length vs. equipment, scale, field of view, centre, rotation, limiting magnitude,
-pointing check, objects in the field, annotated JPEG export
+**🔬 Optics inspector** – findings (tilt, curvature, coma / spacing, guiding) and a 3×3 mosaic of corners, edges
+and centre with FWHM and elongation
 
-![Plate solve dialog](screenshots/07.png)
+![Optics inspector](screenshots/07.png)
 
-**🔬 Optics inspector** – findings (tilt, curvature, coma / spacing, guiding) and a 3×3 mosaic of corners,
-edges and centre with FWHM and elongation
+**📦 Import archive** – a folder tree becomes projects × nights: project from FITS `OBJECT` or the folders, night
+from `DATE-OBS` / EXIF / path; existing projects and nights are recognised before anything is copied
 
-![Optics inspector](screenshots/08.png)
+![Import archive](screenshots/08.png)
 
-**Statistics** – integration per month / year, objects, filters, equipment, disk usage
+**Statistics – Overview** – integration per month / year, objects, filters, equipment, disk usage
 
-![Statistics](screenshots/05.png)
+![Statistics](screenshots/09.png)
 
-**Optics & sky over time** – per equipment and night: star FWHM, limiting magnitude, tilt, elongation
+**Statistics – Optics & conditions** – per telescope · camera and night: seeing, transparency, sky brightness,
+FWHM, limiting magnitude, tilt and elongation
 
-![Optics and sky over time](screenshots/10.png)
+![Optics and conditions over time](screenshots/10.png)
+
+**Statistics – Archive health** – duplicate warning and the quick / full (SHA-256) integrity check
+
+![Archive health](screenshots/11.png)
+
+**Settings** – tabs; *Background processing* switches every automatic job on / off
+
+![Settings – background processing](screenshots/12.png)
+
+**Gallery** of final images with slideshow, and the **calibration library**
+
+![Gallery](screenshots/13.png)
+![Calibration library](screenshots/14.png)
 
 ## Features
 
-**Projects & sessions**
-- A **project is one object** (name, object, object type, tags, description, notes, cover image)
-- **Sessions (nights)** carry everything that changes between nights: date, location, telescope, camera,
-  mount, software, seeing, SQM, temperature, humidity and computed moon illumination
-- Every file – lights and calibration frames – belongs to a session (deleting a session deletes its files);
-  calibration library sets are linked
-  per session
-- Automatic session creation from `DATE-OBS` / EXIF dates (frames after midnight belong to the previous
-  evening); new sessions inherit the equipment of the latest one
+### Projects, sessions and equipment
+- A **project is one object** (name, object, object type, tags, description, notes, cover image); duplicate
+  warning when creating / renaming (`NGC 123`, `ngc123`, `NGC  123` are the same)
+- **Sessions (nights)** carry everything that changes between nights: date, location, telescope, camera, mount,
+  software, seeing, SQM, temperature, humidity and computed moon illumination; new nights inherit the equipment
+  of the latest one; ⚡ automatic sessions from `DATE-OBS` / EXIF (frames after midnight belong to the evening)
 - Integration time per session and filter (rejected frames excluded), total per project
-- Image scale (″/px) and field of view per session from the equipment parameters
-- Session and file details in compact **i** dialogs; created / modified timestamps everywhere
-- Clicking a session row jumps to that session's files
-- Duplicate warning when creating / renaming a project: `NGC 123`, `ngc123` and `NGC  123` are the same
-- Final stacks shown as a compact gallery on the project page; cover image picker
+- Image scale and field of view from the equipment parameters; **measured** values per night next to them
+- **Equipment lists** with technical parameters (telescope aperture / focal length / type, camera resolution /
+  pixel size / sensor / cooling, mount); renames propagate, used items cannot be deleted; measured focal lengths
+  can be stored with one click
+- Details of sessions and files in compact **i** dialogs; clicking a session row jumps to its files
+- **Pagination** of sessions (table + file blocks together), of every file group and of the calibration library;
+  links to a session on another page open the right page
 
-**Equipment**
-- Managed lists with technical parameters: telescope aperture / focal length / type (f-ratio derived),
-  camera resolution / pixel size / sensor / cooling (sensor size derived), mount type / payload / GoTo
+### Files, upload and import
+- Resumable chunked upload (8 MB chunks, retry, pause) with drag & drop of files and folders, pre-check for files
+  already present
+- **📁 Import** of a server folder into a session, **📦 Import archive** of a whole folder tree into many
+  projects and sessions at once (reviewed per project × night before copying)
+- Frame type detection (FITS `IMAGETYP`, file and folder names); duplicate detection by SHA-256 content hash
+- Bulk operations: type, move, session, metadata, reject / restore, reprocess, delete, 🎯 Solve, 🔬 Optics
+- Frame quality statistics for lights (FWHM, stars, background, noise) with automatic “suspect” flags
+- Unreadable / corrupt files are marked with the reason
 
-**Files**
-- Files are added into a specific session (⬆ Add files / 📁 Import on the session)
-- Resumable chunked upload (8 MB chunks, retry, pause) with drag & drop of files and whole folders
-- Upload pre-check: files already present (same name + size) are reported before anything is sent
-- Import of folders already on the server (copied in the background, sources untouched)
-- Frame type auto-detection: FITS `IMAGETYP`, then file and folder names (`lights/`, `darks/`, `biases/` …)
-- Duplicate detection by SHA-256 content hash (atomic across concurrent uploads and imports)
-- Compact file tables (name, size, added, captured); full details, editing and single-file actions in a dialog
-- Bulk operations: change type, move to another project or the calibration library, assign session,
-  edit metadata, reject / restore, reprocess, delete
-- Frame quality statistics for lights (FWHM, star count, background, noise) with automatic
-  “suspect” flagging (compared within the same night and filter) and one-click rejection
-- Unreadable / corrupt files are marked “⚠ unreadable” with the reason
+### Viewer
+- FITS (mono, OSC / Bayer, RGB cubes), camera RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2 …), JPEG / PNG / TIFF
+  incl. 16-bit
+- Fit / 1:1 / zoom / pan, fullscreen, Bayer pattern, flip, channels, linked / unlinked auto stretch, histogram
+  levels with live preview, brightness; settings saved per file or per frame type
+- FITS header and EXIF side panel; back to the frame's session (🌙)
+- **✨ Objects** overlay, **⬆ North up**, **🎯 Solve** and **🔬 Optics** right in the viewer
 
-**Calibration library**
-- Reusable sets of darks, bias, flats and dark flats (camera, telescope, temperature, gain, offset,
-  exposure, filter, binning, date)
-- Link sets to any number of sessions; linked frames are included in that session’s ZIP folder
+### Plate solving and sky (ASTAP, local)
+- Real **image scale** and **focal length** (compared with the telescope; resized exports, drizzle and binning
+  recognised), field of view, centre, rotation
+- **Objects in the field** (OpenNGC: NGC, IC, Messier + addendum) – list, overlay with ellipses, RA / Dec grid and
+  N / E; click an object to show only it
+- **Pointing check** – where the project's object lies in the frame
+- **Limiting magnitude** and photometric **zero point** from the stars matched to the local Gaia star database
+- **⬇ Annotated JPEG** export (also north up); warning when a stored solve is outdated by an equipment change
 
-**Viewer**
-- FITS (mono, OSC/Bayer, RGB cubes incl. 4-D data), camera RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2 …), JPEG/PNG/TIFF incl. 16-bit
-- Fit / 1:1 / zoom (wheel, drag, keyboard), fullscreen
-- Bayer pattern, flip, channels (RGB, BGR, R, G, B, luminance), auto stretch (linked / unlinked), linear
-- Histogram with draggable black / midtone / white levels, live preview, log scale, reset
-- Brightness; save settings per file or per frame type
-- FITS header and EXIF side panel
+### Optics inspector
+- Star size and shape across the field, 3×3 mosaic, overlay on the image
+- Findings: **sensor tilt** (and the worse side), **field curvature**, radial / tangential edge elongation
+  (**coma, corrector spacing**), elongation everywhere (**guiding, wind, collimation**)
+- For many frames: what repeats (= optics) and what changes (= conditions)
 
-**Plate solving** (ASTAP, fully local, on demand – only the file you click **🎯 Solve** on)
-- Measures the real image scale and from it the **focal length** (compared with the session's telescope),
-  field of view, centre (RA / Dec) and rotation; results are stored with the file and in the metadata export
-- Resized exports (e.g. JPEG at 50 %, drizzle) are recognised from the session camera's sensor size and the
-  focal length is corrected (only when the camera's resolution and pixel size are set; crops stay unchanged)
-- **Objects in the field** from the OpenNGC catalogue (NGC, IC, Messier + addendum) with type, magnitude
-  and size
-- **✨ Objects** overlay in the viewer (`O`): object ellipses with names, RA / Dec grid, north / east arrows;
-  follows zoom, pan, flip and RAW / JPEG orientation
-- **Pointing check**: where the project's object lies relative to the frame centre (in frame / off-centre /
-  not in the frame)
-- **Limiting magnitude** of every solved frame: detected stars are matched to the local ASTAP star database
-  (Gaia DR3, BP magnitudes) – zero point and the magnitude reached at SNR 5 (not for stretched 8-bit images)
-- **⬇ Annotated JPEG**: the image as shown in the viewer with objects, RA / Dec grid and N / E drawn in
-- **🎯 Solve in the bulk bar** for many frames; already solved frames are taken over unless “solve again”
-- **Measured per session**: median focal length (vs. the equipment), scale, rotation, limiting magnitude,
-  star FWHM (″) and tilt in the sessions table and the session dialog
-- **Use measured focal length**: one click stores the measured focal length in the telescope's parameters
-  (solve dialog, bulk solve summary, session dialog)
+### Observing conditions
+- **Seeing** – star FWHM in the centre without the telescope's diffraction (upper limit; warnings for
+  undersampled or defocused stars)
+- **Transparency** – zero point per second compared with the best night of the same telescope · camera · gain
+- **Sky brightness** – mag/arcsec² like an SQM meter; camera offset from RAW black level, FITS keyword or a
+  linked bias / dark
+- Per night in the session dialog and the sessions table; **manual** (🌡 Measure conditions, Use for Seeing / SQM)
+  or **automatic** for new nights, filling the session's Seeing / SQM without touching values you typed
 
-**Optics inspector** (**🔬 Optics** in the viewer, on demand, nothing stored)
-- Star size (FWHM, in ″ when the frame is plate-solved) and shape (elongation, direction) in every part of the frame
-- 3×3 mosaic of corners, edges and centre with FWHM / elongation per region (colour = sharpest … worst)
-- Overlay of star size and elongation direction on the image
-- Plain-language findings: sensor tilt (which side is worse), field curvature / soft corners, radial or
-  tangential elongation at the edges (coma, corrector / flattener spacing), elongation in one direction
-  everywhere (guiding, wind, flexure, collimation), irregular star shapes
-- **🔬 Optics** in the bulk bar: analyses the selected frames one after another (max. 60) – table per frame
-  and a summary of what repeats (e.g. tilt consistently towards one side = optics, changing = conditions)
-- The summary of every analysis is stored with the file (the mosaic is not) and feeds the session values
+### Statistics and trends
+- Integration per month / year, top objects, filters, object types, equipment, disk usage
+- **Optics & conditions over time** per telescope · camera: seeing, transparency, sky brightness, FWHM, limiting
+  magnitude, tilt, elongation (charts with tooltips → click opens the night, plus a table)
 
-**Optics & sky over time** (Stats page)
-- Per equipment (telescope · camera) and night: star FWHM (″), limiting magnitude, tilt and elongation as
-  charts with tooltips (click a point to open the session) and as a table
+### Large archives and archive health
+- **🎯🔬 Analyse** a project or the whole archive in the background (all frames or 1 / 3 / 10 per night,
+  only missing results), progress and stop in the processing bar
+- **Activity indicator** in the header while anything runs in the background
+- **Duplicate warning** (project page, Stats) – files with the same content stored more than once
+- **Archive health**: quick check (existence, size, unknown files, processing errors) or full check (SHA-256 of
+  every file), with a stored report
+- Page speed guarded by a test with a 3000-frame project
 
-**Downloads & export**
-- Streamed ZIP downloads (start immediately, no temporary files); rejected frames excluded by default;
-  `INFO.txt` / `metadata.json` describe exactly the downloaded scope (whole project or one session)
-  - **ZIP all sessions** – one folder per session `01_<date>/<type>/…`, `02_<date>/…` (unique even for equal
-    dates), the layout multi-session stacking (PixInsight WBPP, Siril) expects
-  - **ZIP session**, **ZIP selected types**, single type, calibration sets
-- `INFO.txt` summary and `metadata.json` in every project ZIP
-- Metadata export: everything about a project incl. all FITS headers and EXIF as JSON (headers stored per
-  session folder, so equal file names from different nights are all kept)
-- **⬇ Metadata** in the header: the same for all projects at once plus the calibration library
-  (`all_projects.json` + one folder per project)
+### Downloads and export
+- Streamed ZIP downloads (start immediately, no temporary files): all sessions as `01_<date>/<type>/…` (the layout
+  PixInsight WBPP / Siril expect), one session, selected types, calibration sets; rejected frames excluded by default
+- `INFO.txt` and `metadata.json` in every project ZIP; **📄 Export metadata** of a project and **⬇ Metadata** of
+  all projects + calibration library (incl. all FITS headers, EXIF, plate solves and optics results)
 
-**Overview**
-- Search across project fields, session notes and equipment, file names, descriptions and FITS headers;
-  each result shows where it matched (“Found in N places”) with highlighted snippets (`%` and `_` are
-  matched literally)
-- Summary strip (projects, files, total size, integration, frames per type) – can be hidden / shown
-- Project cards with range and number of nights
-- Filters: night date range, size range, telescope, camera, mount, software, location, object type – night
-  filters are combined with AND on the same session (e.g. telescope A + camera B = a night with both)
-- Managed lookup lists (add / rename / delete in a modal dialog; renames propagate everywhere; names are
-  unique regardless of case, max. 100 characters; items still used by a session, project or calibration
-  set cannot be deleted)
-- Pagination, sorting (last / first night, name, recently added, size), grid / list view
-- Gallery of final images with the capture date (DATE-OBS / EXIF, else session date), pagination, sorting
-  (photo date, project, recently added), tile sizes and a fullscreen slideshow
-- Statistics: integration per month / year, top objects, filters, equipment, disk usage
+### Overview, search and gallery
+- Search across projects, sessions, equipment, file names, descriptions and FITS headers with highlighted matches
+- Filters on nights and equipment, sorting, grid / list view, summary strip
+- Gallery of final images with capture date, sorting, tile sizes and a fullscreen slideshow
 
-**Admin**
-- Single admin account (`admin` / `admin` on first start; a banner warns until the password is changed)
-- Login throttling (5 failed attempts → 10 min lock per IP)
-- CSRF protection: every change (forms, API calls, uploads) carries a per-login token; log out is a POST button
-- Warning at startup when `SECRET_KEY` is missing or weak
-- Settings
-  - General / appearance: title, accent color, default theme, project view and card size
-  - Projects overview: page size, default sort, summary on / off
-  - Downloads: ZIP compression, duplicate handling
-  - Gallery: images per page, tile size, default sort, slideshow interval
-  - Panels – expanded by default: overview summary and filters, project Sessions panel, session blocks in
-    Files, file type groups, statistics table (each can still be toggled on the page)
-- Light / dark mode, account menu in the header, date pickers (also inside dialogs)
+### Settings, security and administration
+- Settings in tabs: **General & appearance** (title, accent colour, theme, view, page sizes of projects /
+  sessions / files / calibration sets), **Downloads**, **Gallery**, **Background processing** (thumbnails, frame
+  statistics, suspect marks, background analyses, integrity checks, automatic conditions measuring and filling –
+  each can be switched off) and **Panels** (expanded by default)
+- Single admin account (`admin` / `admin` on first start, banner until changed), login throttling, CSRF protection
+  of every change, warning for a weak `SECRET_KEY`
+- Light / dark mode, keyboard shortcuts in the viewer
 
 ## Requirements
 
@@ -191,6 +182,8 @@ edges and centre with FWHM and elongation
 - A PostgreSQL server with an existing database (tables are created automatically on start)
 - RAM: about 2 GB free is enough for normal use; full-resolution viewing of large colour (Bayer) FITS needs
   roughly 0.55 GB per 24 MP frame (max. 2 such renders run at the same time)
+- Optional for plate solving / sky analysis: about 1 GB of disk for an ASTAP star database (see step 4)
+- Everything runs locally – no internet connection or online service is needed after the installation
 
 ## Installation
 
@@ -236,21 +229,23 @@ edges and centre with FWHM and elongation
 
 ## Usage
 
-- **New project** (= one object) → **+ Add session** (night: date, location, equipment, conditions) →
-  **⬆ Add files** on that session: drop files or folders, check the detected types, **Start upload**.
-  Previews, metadata and statistics are generated in the background.
-- **📁 Import** on a session: put data into the import folder on the server, browse to it, scan, correct the
-  types and start the import.
-- **⚡ Auto from dates** creates one session per night from the frames’ observation dates and assigns them.
-- **Calibration**: create a set in the *Calibration* library, add frames, then *🔗 Calibration library…*
-  on a session in the project's Files panel.
-- **Downloads**: *⬇ ZIP all sessions*, *⬇ ZIP session*, *⬇ ZIP selected types*, per-type ZIPs,
-  *📄 Export metadata*.
-- **Details**: the **i** button on a session or a file opens all its information.
-- **Viewer** shortcuts: `F` fit, `1` 100 %, `+`/`-` zoom, `←`/`→` previous / next file, `I` info panel,
-  `Shift+F` fullscreen, `Esc` close levels, `O` objects overlay (after plate solving).
-- **🎯 Solve** in the viewer plate-solves the file shown (seconds with RA / Dec in the FITS header, longer
-  blind); the dialog shows focal length, FOV, centre, rotation, the pointing check and objects in the field.
+**Typical workflow**
+1. **+ New project** (= one object) → **+ Add session** (night, location, equipment) → **⬆ Add files** on the
+   session. Or bring a whole archive with **📦 Import archive** (account menu).
+2. Previews, metadata and frame statistics are made in the background; with *measure new nights automatically* on,
+   3 frames per night are plate-solved and analysed and the session's Seeing / SQM are filled in.
+3. Open frames in the **viewer**: 🎯 Solve, ✨ Objects, ⬆ North up, 🔬 Optics.
+4. Link **calibration** sets to the sessions (*🔗 Calibration library…*), reject suspect frames, then download the
+   **ZIP** for stacking.
+5. Follow your equipment and sky over time on **Stats → Optics & conditions**; check **Archive health** now and then.
+
+**More**
+- **📁 Import** on a session: browse the server's import folder, scan, correct the types, import.
+- **⚡ Auto from dates** creates one session per night from the observation dates.
+- **🎯🔬 Analyse** (project page, Stats → *Analyse archive…*) runs solves / optics in the background.
+- **Session dialog → Conditions**: *🌡 Measure conditions*, *Use for Seeing / SQM*.
+- Viewer shortcuts: `F` fit, `1` 100 %, `+` / `-` zoom, `←` / `→` previous / next file, `I` info panel,
+  `Shift+F` fullscreen, `Esc` close levels, `O` objects overlay, `N` north up.
 
 ## Storage layout
 
@@ -269,51 +264,55 @@ DATA_DIR/
 
 ```
 app/
-  main.py          entry point, startup (migrations, seeding, worker)
-  core.py          app object, settings, auth, helpers, storage
-  models.py        SQLAlchemy models + idempotent migrations
-  worker.py        background processing (imports, hashes, previews, metadata, statistics)
-  preview.py       loading / stretching / histogram / metadata for FITS, RAW, images
-  framestats.py    FWHM, star count, background, noise
-  platesolve.py    ASTAP plate solving, WCS, OpenNGC catalogue, overlays, pointing check
-  optics.py        optics inspector (star FWHM / elongation across the field, tilt, curvature, coma)
-  photometry.py    ASTAP star database reader, limiting magnitude / zero point
-  annotate.py      annotated JPEG export
-  measured.py      measured values per session (medians of solves and optics analyses)
-  routes_*.py      HTTP routes
-  templates/       Jinja2 templates
-  static/          CSS, JS (uploader, bulk actions, catalog dialog, slideshow), flatpickr
-tests/             pytest suite
+  main.py            entry point, startup (migrations, seeding, worker)
+  core.py            app object, settings, auth, helpers, storage, pagination
+  models.py          SQLAlchemy models + idempotent migrations
+  worker.py          background processing (imports, hashes, previews, statistics, analysis queue)
+  preview.py         loading / stretching / histogram / metadata for FITS, RAW, images
+  framestats.py      FWHM, star count, background, noise
+  platesolve.py      ASTAP plate solving, WCS, OpenNGC catalogue, overlays, pointing check
+  photometry.py      ASTAP star database reader, limiting magnitude / zero point
+  optics.py          optics inspector (star FWHM / elongation across the field, tilt, curvature, coma)
+  conditions.py      seeing, transparency, sky brightness, camera offset
+  measured.py        measured values per session (medians of solves / optics, transparency reference)
+  analysis.py        solve / optics runs shared by endpoints and the queue, conditions measuring / filling
+  annotate.py        annotated JPEG export (also north up)
+  integrity.py       duplicate detection, archive integrity check
+  routes_*.py        HTTP routes (main, projects, files, upload, calibration, archive import / health)
+  templates/         Jinja2 templates
+  static/            CSS, JS (uploader, bulk actions, catalogue dialog, slideshow), flatpickr
+tests/               pytest suite
 ```
 
-### Tests
-
-`tests/test_sky.py` covers plate-solve helpers (catalogue, WCS overlays, pointing, resize detection),
-the star database reader and limiting magnitude, the optics inspector on synthetic star fields (tilt,
-curvature, round stars, flips), measured session values, annotated export, applying the focal length,
-duplicate projects and the export of all projects. It does not need ASTAP's star database.
+## Tests
 
 ```bash
-./run-tests.sh            # all tests
+./run-tests.sh            # all tests (≈ 210)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
-About 100 tests cover authentication and CSRF, pages, projects / sessions / filters, managed lists,
-uploads and imports (incl. duplicates, races, invalid input), file processing of normal and odd files
-(NaN, empty, 1×1, cubes, corrupt, 8/16-bit, CMYK, Bayer), viewer endpoints, bulk actions, ZIP / export,
-calibration library, statistics, settings, migrations and background cleanup.
+The tests run inside the application image against a separate database **`astrophoto_test`** (dropped and
+recreated on every run, on the same server as `DATABASE_URL`) and temporary data folders. Production data is never
+touched; the suite refuses to run if the test database name equals the production one. ASTAP's star database is not
+needed – plate solving is simulated where required.
 
-Coverage report (optional):
+| File | Covers |
+|---|---|
+| `test_app.py`, `test_features.py`, `test_files.py`, `test_units.py` | authentication / CSRF, pages, projects, sessions, filters, lists, uploads / imports, odd files (NaN, empty, cubes, corrupt, 8/16-bit, CMYK, Bayer), viewer endpoints, bulk actions, ZIP / export, calibration, statistics, settings, migrations, cleanup |
+| `test_sky.py` | catalogue, WCS overlays, pointing, resize detection, star database, limiting magnitude, optics on synthetic star fields, north up, annotated export, all-projects export, duplicates |
+| `test_archive.py` | background analysis queue, archive import, duplicate warnings, integrity check, background switches, activity indicator, page speed with 3000 frames |
+| `test_conditions.py` | seeing / transparency / sky brightness, offsets, session values, manual and automatic measuring / filling, tabs |
+| `test_coverage.py` | full plate-solve flow with a simulated ASTAP, star database search across RA 0/360, upload edge cases, import / worker error paths |
+| `test_review.py` | regression tests for the bugs found in the code reviews |
+| `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
+
+Coverage report (optional, ≈ 88 %):
 
 ```bash
 docker run --rm --env-file .env -v "$PWD/tests:/srv/tests:ro" -v "$PWD/pytest.ini:/srv/pytest.ini:ro" \
   -v "$PWD/requirements-dev.txt:/srv/requirements-dev.txt:ro" -w /srv astrophoto-astrophoto \
   sh -c 'pip install -q -r requirements-dev.txt pytest-cov && python -m pytest -q --cov=app --cov-report=term'
 ```
-
-The tests run inside the application image against a separate database **`astrophoto_test`**
-(dropped and recreated on every run, on the same server as `DATABASE_URL`) and temporary data folders.
-Production data is never touched; the suite refuses to run if the test database name equals the production one.
 
 ## License
 

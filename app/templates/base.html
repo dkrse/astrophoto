@@ -22,14 +22,17 @@ document.addEventListener('submit',function(e){tag(e.target);},true);
 var os=HTMLFormElement.prototype.submit;      // form.submit() does not fire the submit event
 HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})();
 </script>
-<link rel="stylesheet" href="/static/vendor/flatpickr.min.css">
-<link rel="stylesheet" href="/static/vendor/dark.css" id="fp-dark">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="{{ asset('vendor/flatpickr.min.css') }}">
+<link rel="stylesheet" href="{{ asset('vendor/dark.css') }}" id="fp-dark">
+<link rel="stylesheet" href="{{ asset('style.css') }}">
 <style>:root{--accent:{{ A.accent }};--accent-fg:{{ A.accent_fg }}}[data-theme=dark]{--accent:{{ A.accent_dark }};--accent-fg:#0d1017}</style>
 </head>
 <body>
 <header class="top">
   <a href="/" class="brand">✦ {{ S.app_title }}</a>
+  <span class="activity" id="activity" hidden tabindex="0" aria-live="polite">
+    <span class="act-orbit" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="act-tip" id="activity-tip"></span></span>
   {% if user %}
   <form action="/" method="get" class="search"><input name="q" value="{{ q or '' }}" placeholder="Search (name, object, notes, files, FITS header…)"></form>
   <nav>
@@ -58,6 +61,7 @@ HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})(
       <summary title="Account">👤 {{ user.username }} ▾</summary>
       <div class="menu">
         <a href="/manage">☰ Manage lists</a>
+        <a href="/import/archive">📦 Import archive</a>
         <a href="/settings">⚙ Settings</a>
         <a href="/password">🔑 Change password</a>
         <hr>
@@ -74,8 +78,8 @@ HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})(
 {% block content %}{% endblock %}
 </main>
 {% block scripts %}{% endblock %}
-<script src="/static/vendor/flatpickr.min.js"></script>
-<script src="/static/catalog.js"></script>
+<script src="{{ asset('vendor/flatpickr.min.js') }}"></script>
+<script src="{{ asset('catalog.js') }}"></script>
 <script>
 function syncFpTheme(){document.getElementById('fp-dark').disabled=document.documentElement.dataset.theme!=='dark';}
 function toggleTheme(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('theme',h.dataset.theme)}catch(e){}syncFpTheme();}
@@ -86,6 +90,49 @@ document.querySelectorAll('.datepicker').forEach(function(el){
   if(dlg)dlg.classList.add('has-dp');
   flatpickr(el,Object.assign({dateFormat:'d-m-Y',allowInput:true,locale:{firstDayOfWeek:1}},dlg?{static:true}:{}));
 });
+</script>
+<script>
+/* header activity indicator: shown while the server works in the background (or this page uploads) */
+(function(){var el=document.getElementById('activity'),tip=document.getElementById('activity-tip');if(!el)return;var t=null;
+  function show(d){var items=(d&&d.items)||[];if(window.UPLOADER_BUSY)items=['Uploading files from this browser'].concat(items);
+    var busy=(d&&d.busy)||window.UPLOADER_BUSY,paused=d&&d.paused&&!busy;
+    el.hidden=!(busy||paused);el.classList.toggle('paused',!!paused);
+    tip.textContent='';items.forEach(function(x){var r=document.createElement('div');r.textContent=x;tip.append(r);});
+    if(d&&d.current&&busy){var c=document.createElement('div');c.className='act-cur';c.textContent=d.current;tip.append(c);}
+    el.setAttribute('aria-label',items.join(' · ')||'Working in the background');
+    return busy;}
+  var inflight=false,again=false;          // one request at a time – pokes during a request just poll once more
+  function poll(){clearTimeout(t);if(inflight){again=true;return;}
+    if(document.hidden){t=setTimeout(poll,15000);return;}
+    inflight=true;
+    fetch('/api/activity',{redirect:'error'}).then(function(r){if(!r.ok)throw r.status;return r.json();})
+      .then(function(d){inflight=false;var busy=show(d);t=setTimeout(poll,again?300:(busy?3000:15000));again=false;})
+      .catch(function(e){inflight=false;again=false;if(e!==401)t=setTimeout(poll,30000);});}
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)poll();});
+  window.activityPoke=function(){setTimeout(poll,500);};          // after starting something on a page
+  poll();})();
+</script>
+<script>
+/* tabs: <nav class="tabs" data-tabs="name"><a href="#pane-id">…</a></nav> + <div class="tabpane" id="pane-id"> */
+(function(){document.querySelectorAll('nav.tabs[data-tabs]').forEach(function(nav){
+  var links=[].slice.call(nav.querySelectorAll('a[href^="#"]')),key='tab-'+nav.dataset.tabs;
+  function show(id,push){var ok=links.some(function(a){return a.getAttribute('href')==='#'+id;});if(!ok)id=links[0].getAttribute('href').slice(1);
+    links.forEach(function(a){var on=a.getAttribute('href')==='#'+id;a.classList.toggle('active',on);a.setAttribute('aria-selected',on);
+      var p=document.getElementById(a.getAttribute('href').slice(1));if(p)p.hidden=!on;});
+    try{localStorage.setItem(key,id);}catch(e){}
+    if(push)history.replaceState(null,'','#'+id);
+    window.dispatchEvent(new Event('resize'));}
+  links.forEach(function(a){a.setAttribute('role','tab');a.addEventListener('click',function(e){e.preventDefault();show(a.getAttribute('href').slice(1),true);});});
+  var start=location.hash.slice(1);
+  if(!document.getElementById(start)||!links.some(function(a){return a.getAttribute('href')==='#'+start;})){
+    var inner=start&&document.getElementById(start),pane=inner&&inner.closest('.tabpane');   // link to something inside a pane
+    start=pane?pane.id:(function(){try{return localStorage.getItem(key);}catch(e){return null;}})();}
+  var target=location.hash.slice(1)&&document.getElementById(location.hash.slice(1));
+  show(start||links[0].getAttribute('href').slice(1),false);
+  if(target&&!target.classList.contains('tabpane'))setTimeout(function(){target.scrollIntoView({block:'start'});},0);
+  window.addEventListener('hashchange',function(){var id=location.hash.slice(1),el=id&&document.getElementById(id);
+    var pane=el&&(el.classList.contains('tabpane')?el:el.closest('.tabpane'));
+    if(pane&&links.some(function(a){return a.getAttribute('href')==='#'+pane.id;})){show(pane.id,false);if(el!==pane)el.scrollIntoView({block:'start'});}});});})();
 </script>
 </body>
 </html>

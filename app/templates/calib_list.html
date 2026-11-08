@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_files.html" import pager with context %}
 {% block title %}Calibration library – {{ S.app_title }}{% endblock %}
 {% block content %}
 <div class="head">
@@ -34,6 +35,7 @@
   {% endfor %}
   </tbody>
 </table></div>
+{{ pager(pg, 'page', '', 'calibration sets') }}
 {% else %}
 <p class="muted">No calibration sets{% if ftype or camera or cq %} match the filter{% endif %}. <a href="/calibration/new">Create one</a>.</p>
 {% endif %}

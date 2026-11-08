@@ -28,7 +28,10 @@ def calib_list(request: Request, type: str = "", camera: str = "", q: str = "",
                               CalibrationSet.filter.ilike(like)))
     sets = db.scalars(stmt.order_by(CalibrationSet.capture_date.desc().nulls_last(), CalibrationSet.id.desc())).all()
     cameras = sorted({c for c in db.scalars(select(CalibrationSet.camera).distinct()) if c})
-    return page(request, "calib_list.html", user=user, sets=sets, ftype=type, camera=camera, cq=q, cameras=cameras)
+    from .core import paginate, load_settings
+    pg = paginate(len(sets), load_settings(db)["calib_page_size"], request.query_params.get("page"))
+    return page(request, "calib_list.html", user=user, sets=sets[pg["start"]:pg["end"]], pg=pg, ftype=type,
+                camera=camera, cq=q, cameras=cameras)
 
 
 async def apply_calib_form(request: Request, c: CalibrationSet):

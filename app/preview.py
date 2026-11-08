@@ -21,13 +21,14 @@ BAYER_PATTERNS = ["RGGB", "BGGR", "GRBG", "GBRG"]
 
 # view options (all string values, used in URLs)
 DEFAULT_OPTS = {"bayer": "auto", "stretch": "unlinked", "flip": "auto", "channels": "rgb", "view": "fit",
-                "brightness": "0", "bp": "0", "mp": "0.5", "wp": "1"}
+                "brightness": "0", "bp": "0", "mp": "0.5", "wp": "1", "north": "0"}
 OPT_CHOICES = {
     "bayer": ["auto", "none", *BAYER_PATTERNS],
     "stretch": ["unlinked", "linked", "manual", "linear", "none"],
     "flip": ["auto", "none", "v", "h", "vh"],
     "channels": ["rgb", "bgr", "r", "g", "b", "lum"],
     "view": ["fit", "one"],
+    "north": ["0", "1"],          # viewer: rotate to north up / east left (after plate solving) – display only
 }
 RENDER_KEYS = ["bayer", "stretch", "flip", "channels", "bp", "mp", "wp"]   # keys that affect pixels
 

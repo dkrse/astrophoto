@@ -35,8 +35,9 @@
 // live duplicate warning ('NGC 123' == 'ngc123' == 'ngc  123')
 (function(){var f=document.getElementById('proj-form'),w=document.getElementById('dup-warn'),l=document.getElementById('dup-list'),t;
   if(w.querySelector('input[name=confirm_dup]'))return;   // server already asked for confirmation
-  function chk(){var q=new URLSearchParams({name:f.name.value,target:f.target.value,exclude:'{{ p.id if p else 0 }}'});
-    fetch('/api/projects/similar?'+q).then(function(r){return r.json();}).then(function(d){
+  var seq=0;
+  function chk(){var q=new URLSearchParams({name:f.name.value,target:f.target.value,exclude:'{{ p.id if p else 0 }}'}),my=++seq;
+    fetch('/api/projects/similar?'+q).then(function(r){return r.json();}).then(function(d){if(my!==seq)return;   // only the latest answer
       l.innerHTML='';d.forEach(function(x,i){var a=document.createElement('a');a.href='/projects/'+x.id;a.target='_blank';a.textContent=x.name;
         if(i)l.append(', ');l.append(a);});w.hidden=!d.length;});}
   ['name','target'].forEach(function(n){f[n].addEventListener('input',function(){clearTimeout(t);t=setTimeout(chk,300);});});

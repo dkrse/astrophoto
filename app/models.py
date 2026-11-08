@@ -206,6 +206,18 @@ class ImportJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AnalysisTask(Base):
+    """Background plate solve / optics analysis of one file (queued from the UI, run by the worker)."""
+    __tablename__ = "analysis_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_id: Mapped[int] = mapped_column(ForeignKey("frame_files.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))                 # solve / optics
+    status: Mapped[str] = mapped_column(String(10), default="queued", index=True)   # queued/running/done/error
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class CatalogItem(Base):
     __tablename__ = "catalog_items"
     __table_args__ = (UniqueConstraint("kind", "name"),)

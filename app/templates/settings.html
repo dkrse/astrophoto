@@ -4,7 +4,11 @@
 <form method="post" class="card settings">
   <div class="head"><h1>Settings</h1>
     <span class="row"><a class="btn" href="/password">🔑 Change password</a><a class="btn" href="/manage">☰ Manage lists</a></span></div>
+  <nav class="tabs" data-tabs="settings">
+    <a href="#t-general">General &amp; appearance</a><a href="#t-files">Downloads</a><a href="#t-gallery">Gallery</a>
+    <a href="#t-processing">Background processing</a><a href="#t-panels">Panels</a></nav>
 
+  <div class="tabpane" id="t-general">
   <h3>General</h3>
   <div class="cols">
     <label>Application title<input name="app_title" value="{{ S.app_title }}" maxlength="60"></label>
@@ -31,11 +35,19 @@
   <h3>Projects overview</h3>
   <div class="cols">
     <label>Projects per page<input type="number" name="page_size" min="1" max="500" value="{{ S.page_size }}"></label>
+    <label>Sessions per page<input type="number" name="sessions_page_size" min="0" max="1000" value="{{ S.sessions_page_size }}">
+      <small class="muted">project page: sessions table and their file blocks; 0 = all</small></label>
+    <label>Files per page<input type="number" name="files_page_size" min="0" max="5000" value="{{ S.files_page_size }}">
+      <small class="muted">in each file group (Light, Dark …); 0 = all</small></label>
+    <label>Calibration sets per page<input type="number" name="calib_page_size" min="0" max="1000" value="{{ S.calib_page_size }}">
+      <small class="muted">calibration library; 0 = all</small></label>
     <label>Default sort
       <select name="sort">{% for k, l in SORT_LABELS.items() %}<option value="{{ k }}" {% if S.sort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
     <label class="check"><input type="checkbox" name="show_stats" {% if S.show_stats %}checked{% endif %}> Show statistics on overview</label>
   </div>
+  </div>
 
+  <div class="tabpane" id="t-files">
   <h3>Downloads</h3>
   <div class="cols">
     <label>ZIP compression
@@ -43,7 +55,29 @@
       <small class="muted">ZIPs are streamed – download starts immediately. FITS/RAW compress little; “None” is usually best.</small></label>
     <label class="check"><input type="checkbox" name="skip_duplicates" {% if S.skip_duplicates %}checked{% endif %}> Skip duplicate files on upload / import (default)</label>
   </div>
+  </div>
 
+  <div class="tabpane" id="t-processing">
+  <h3>Background processing</h3>
+  <p class="muted small">What the server does on its own with your files. Copying, the SHA-256 hash (duplicates, integrity)
+    and reading the FITS header / EXIF always run – the app needs them. Switching something off does not delete existing
+    results; files added meanwhile can be processed later with ↻ Reprocess.</p>
+  <div class="bgproc">
+    {% for k, hint in [
+      ('bg_previews', 'Small preview images for file lists, cards and the gallery. Off: new files show no thumbnail (the viewer still works).'),
+      ('bg_frame_stats', 'Star size, star count, background and noise of each new light frame – used for the frame quality and suspect detection.'),
+      ('bg_suspects', 'Frames clearly worse than the median of their night and filter get the ⚠ suspect mark.'),
+      ('bg_analysis', 'Plate solves and optics analyses started with 🎯🔬 Analyse (or for more than 20 frames in the bulk bar). Off: they stay in the queue until switched on again. Solve / Optics in the viewer always work.'),
+      ('bg_integrity', 'The quick / full archive check on the Stats page (reads every file).'),
+      ('cond_auto_measure', 'When the frames of a new night are processed, 3 light frames of each night without results are plate-solved and analysed (needs “Run queued plate solves / optics analyses”). Off: use 🌡 Measure conditions in the session dialog or 🎯🔬 Analyse.'),
+      ('cond_auto_fill', 'Measured seeing and sky brightness are written into the session (marked “(measured)”); values you typed yourself are never replaced. Off: use “Use for Seeing / SQM” in the session dialog.')] %}
+    <label class="bgrow"><input type="checkbox" name="{{ k }}" {% if S[k] %}checked{% endif %}>
+      <span><b>{{ defs[k][3] }}</b><small class="muted">{{ hint }}</small></span></label>
+    {% endfor %}
+  </div>
+  </div>
+
+  <div class="tabpane" id="t-gallery">
   <h3>Gallery</h3>
   <div class="cols">
     <label>Images per page<input type="number" name="gallery_page_size" min="4" max="500" value="{{ S.gallery_page_size }}"></label>
@@ -53,7 +87,9 @@
       <select name="gallery_sort">{% for k, l in GALLERY_SORTS.items() %}<option value="{{ k }}" {% if S.gallery_sort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
     <label>Slideshow interval (seconds)<input type="number" name="slideshow_seconds" min="2" max="120" value="{{ S.slideshow_seconds }}"></label>
   </div>
+  </div>
 
+  <div class="tabpane" id="t-panels">
   <h3>Panels – expanded by default</h3>
   <p class="muted small">How sections look when a page opens. You can still expand / collapse them on the page at any time.</p>
   <div class="cols panels">
@@ -63,6 +99,7 @@
     <label class="check"><input type="checkbox" name="{{ k }}" {% if S[k] %}checked{% endif %}> {{ label }}</label>
     {% endfor %}
   </div>
+  </div>
 
   <div class="row" style="margin-top:16px">
     <button class="btn primary">Save</button>
@@ -70,6 +107,10 @@
   </div>
 </form>
 <script>
+// a field outside the visible tab that fails validation: open its tab so the browser can show the message
+document.querySelector('form.settings').addEventListener('invalid',function(e){
+  var pane=e.target.closest('.tabpane');if(pane&&pane.hidden){var a=document.querySelector('nav.tabs a[href="#'+pane.id+'"]');if(a)a.click();
+    setTimeout(function(){e.target.reportValidity();},0);}},true);
 (function(){var c=document.getElementById('accent'),h=document.getElementById('accent-hex');
 function set(v){c.value=v;h.textContent=v;document.documentElement.style.setProperty('--accent',v);}
 c.addEventListener('input',function(){set(c.value);});

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_files.html" import file_groups, bulk_bar, uploader, status_box with context %}
+{% from "_files.html" import file_groups, bulk_bar, uploader, status_box, analysis_dialog, pager with context %}
 {% block title %}{{ p.name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
 <div class="head">
@@ -12,13 +12,17 @@
   <div class="row">
     <button type="button" class="btn" onclick="document.getElementById('cover-dlg').showModal()" title="Choose the project thumbnail">🖼 Cover</button>
     <a class="btn" href="/projects/{{ p.id }}/export" title="Download all metadata (project, sessions, files, FITS headers, EXIF, statistics) as JSON in a ZIP">📄 Export metadata</a>
+    <button type="button" class="btn" onclick="openAnalysis()" title="Plate solve and optics analysis of this project's frames in the background">🎯🔬 Analyse</button>
     <a class="btn" href="/projects/{{ p.id }}/edit">Edit</a>
     <form method="post" action="/projects/{{ p.id }}/reprocess"><button class="btn" title="Regenerate previews, metadata and statistics of all files (background)">↻ Reprocess</button></form>
     <form method="post" action="/projects/{{ p.id }}/delete" onsubmit="return confirm('Delete project including all files?')"><button class="btn danger">Delete</button></form>
   </div>
 </div>
 
+{% if dups %}<div class="flash warn-box" title="Same file content (SHA-256) stored more than once">⚠ {{ dups.files }} file{{ 's' if dups.files != 1 }} of this project {{ 'are' if dups.files != 1 else 'is' }} stored more than once – other copies in:
+  {% for w in dups.where %}{{ w.name }} ({{ w.files }}){{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
 {{ status_box(status, '/api/projects/%d/status'|format(p.id)) }}
+{{ analysis_dialog('project', p.id) }}
 
 {% set stacks = groups['stack'] %}
 {% if stacks %}
@@ -57,7 +61,7 @@
   <div class="tablewrap"><table class="kvt">
     <thead><tr><th>Night</th><th>Equipment</th><th title="Image scale · field of view (from equipment parameters)">Scale / FOV</th><th title="Moon illumination">Moon</th><th title="From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude">Measured</th><th>Files</th><th></th></tr></thead>
     <tbody>
-    {% for r in sessions %}{% set s = r.s %}
+    {% for r in page_rows %}{% set s = r.s %}
     <tr class="sessrow" data-target="s{{ s.id }}_" title="Show files of this session">
       <td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>
       <td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>
@@ -65,7 +69,10 @@
       <td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>
       <td class="small nowrap">{% set m = r.measured %}{% if m %}
         {% if m.focal_mm %}<span title="Median focal length of {{ m.solved }} solved frame(s)">{{ m.focal_mm|round|int }} mm{% if m.get('focal_diff_pct') is not none and m.focal_diff_pct|abs >= 3 %} <b class="{{ 'bad-text' if m.focal_diff_pct|abs >= 10 else 'warn-text' }}">{{ '%+.0f'|format(m.focal_diff_pct) }} %</b>{% endif %}</span>{% endif %}
-        {% if m.fwhm_arcsec %} · <span title="Median star FWHM ({{ m.analysed }} analysed frame(s))">{{ '%.1f'|format(m.fwhm_arcsec) }}″</span>{% endif %}
+        {% if m.get('seeing') %} · <span title="Seeing ≈ star FWHM in the centre without diffraction ({{ m.seeing_label }}){{ ' – undersampled, upper limit' if m.seeing_undersampled }}">🌬 {{ '%.1f'|format(m.seeing) }}″</span>
+        {% elif m.fwhm_arcsec %} · <span title="Median star FWHM ({{ m.analysed }} analysed frame(s))">{{ '%.1f'|format(m.fwhm_arcsec) }}″</span>{% endif %}
+        {% if m.get('sqm') %} · <span title="Sky brightness (mag/arcsec², like SQM)">🌃 {{ '%.1f'|format(m.sqm) }}</span>{% endif %}
+        {% if m.get('transparency_mag') is not none and m.transparency_mag >= 0.3 %} · <span class="warn-text" title="Transparency: {{ m.get('transparency_pct', '?') }} % of the best night of this setup">☁ −{{ '%.1f'|format(m.transparency_mag) }} mag</span>{% endif %}
         {% if m.limit_mag %} · <span title="Limiting magnitude (Gaia BP, SNR 5)">{{ '%.1f'|format(m.limit_mag) }} mag</span>{% endif %}
       {% endif %}</td>
       <td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>
@@ -78,7 +85,8 @@
     {% endfor %}
     </tbody>
   </table></div>
-  {% for r in sessions %}{% set s = r.s %}
+  {{ pager(spg, 'sp', 'sessions', 'sessions') }}
+  {% for r in page_rows %}{% set s = r.s %}
   <dialog id="sinfo-{{ s.id }}" class="cat-dialog wide">
     <form method="dialog" class="cat-head"><h2>🌙 Session {{ s.date|dmy or '#' ~ s.id }}</h2><button class="btn small" aria-label="Close">✕</button></form>
     <div class="dlg-body">
@@ -119,11 +127,28 @@
           {% if s.telescope and m.get('focal_diff_pct') is not none and m.focal_diff_pct|abs >= 1 %}
           <button type="button" class="btn small" data-tel="{{ s.telescope }}" data-focal="{{ m.focal_mm|round(1) }}" onclick="applyFocal(this)">Use {{ m.focal_mm|round|int }} mm for {{ s.telescope }}</button>{% endif %}</dd>{% endif %}
         {% if m.scale %}<dt>Image scale</dt><dd>{{ '%.3f'|format(m.scale) }} ″/px</dd>{% endif %}
-        {% if m.rotation is not none %}<dt>Rotation</dt><dd>{{ '%.1f'|format(m.rotation) }}°</dd>{% endif %}
+        {% if m.get('rotation') is not none %}<dt>Rotation</dt><dd>{{ '%.1f'|format(m.rotation) }}°</dd>{% endif %}
         {% if m.limit_mag %}<dt>Limiting magnitude</dt><dd>{{ '%.1f'|format(m.limit_mag) }} mag <span class="muted">(Gaia BP, SNR 5, {{ m.limit_n }} frame(s))</span></dd>{% endif %}
-        {% if m.fwhm_px %}<dt>Star FWHM</dt><dd>{{ '%.2f'|format(m.fwhm_px) }} px{% if m.fwhm_arcsec %} · {{ '%.2f'|format(m.fwhm_arcsec) }}″{% endif %} · elongation {{ '%.2f'|format(m.elong) }}</dd>
-          <dt>Tilt</dt><dd>{{ m.tilt_pct|round|int }} %{% if m.tilt_dir %} · worse towards the {{ m.tilt_dir }} in {{ m.tilt_frames }} of {{ m.analysed }} frame(s){% endif %}</dd>{% endif %}
+        {% if m.fwhm_px %}<dt>Star FWHM</dt><dd>{{ '%.2f'|format(m.fwhm_px) }} px{% if m.fwhm_arcsec %} · {{ '%.2f'|format(m.fwhm_arcsec) }}″{% endif %} {% if m.elong is not none %} · elongation {{ '%.2f'|format(m.elong) }}{% endif %}</dd>
+          {% if m.tilt_pct is not none %}<dt>Tilt</dt><dd>{{ m.tilt_pct|round|int }} %{% if m.tilt_dir %} · worse towards the {{ m.tilt_dir }} in {{ m.tilt_frames }} of {{ m.analysed }} frame(s){% endif %}</dd>{% endif %}{% endif %}
       </dl>{% endif %}
+      <h3>Conditions <span class="muted small" style="font-weight:400">– measured from the frames</span></h3>
+      {% if m and (m.get('seeing') or m.get('sqm') or m.get('transparency_mag') is not none) %}
+      <dl class="meta-dl">
+        {% if m.get('seeing') %}<dt>Seeing</dt><dd>≈ {{ '%.1f'|format(m.seeing) }}″ – {{ m.seeing_label }}
+          <span class="muted small">{{ '(undersampled – upper limit)' if m.seeing_undersampled else '(star FWHM in the centre without diffraction; focus and guiding add to it)' }}</span>
+          {% if m.seeing_focus %}<div class="small warn-text">Stars this large are rarely the atmosphere alone – check focus, optics (🔬 Optics) and guiding.</div>{% endif %}</dd>{% endif %}
+        {% if m.get('transparency_mag') is not none and m.get('transparency_pct') is not none %}<dt>Transparency</dt><dd>{{ m.transparency_pct }} % of the best night of this setup
+          <span class="muted small">({{ '−%.2f'|format(m.transparency_mag) }} mag{{ ', gain ' ~ m.gain if m.gain }})</span></dd>{% endif %}
+        {% if m.get('sqm') %}<dt>Sky brightness</dt><dd>{{ '%.2f'|format(m.sqm) }} mag/arcsec² – {{ sqm_label(m.sqm) }}
+          <span class="muted small">(like SQM, Gaia BP; offset from {{ m.sqm_src or 'the camera' }}{{ ', moon %d %%'|format(s.moon_illum|int) if s.moon_illum }})</span></dd>
+        {% elif m.get('sqm_note') %}<dt>Sky brightness</dt><dd class="muted small">not available – {{ m.sqm_note }}</dd>{% endif %}
+      </dl>
+      {% else %}<p class="muted small">Not measured yet – plate solve + optics of a few light frames are needed.</p>{% endif %}
+      <div class="row">
+        <button type="button" class="btn small" data-sid="{{ s.id }}" onclick="measureConditions(this)" title="Plate solve + optics of 3 frames spread over the night, in the background">🌡 Measure conditions</button>
+        {% if m and (m.get('seeing') or m.get('sqm')) %}<button type="button" class="btn small" data-sid="{{ s.id }}" onclick="applyConditions(this)" title="Write the measured values into the session's Seeing / SQM fields (overwrites them)">Use for Seeing / SQM</button>{% endif %}
+        <span class="muted small" id="cond-msg-{{ s.id }}"></span></div>
       <h3>Files</h3>
       <div class="chips big">{% for t in FRAME_TYPES %}{% set n = r.files|selectattr('frame_type', 'equalto', t)|list|length %}{% if n %}<span class="chip t-{{ t }}">{{ FRAME_LABELS[t] }} {{ n }}</span>{% endif %}{% endfor %}
         <span class="chip">{{ r.count }} files · {{ r.files|sum(attribute='size')|size }}</span></div>
@@ -160,6 +185,7 @@
   <div class="flash warnbox">⚠ {{ suspects }} light frame(s) look clearly worse than the rest (FWHM, star count or background).
     <form method="post" action="/projects/{{ p.id }}/rejectsuspects" class="inl"><button class="btn small">Reject all suspicious</button></form></div>
   {% endif %}
+  {% if spg.pages > 1 %}<p class="muted small">Sessions {{ spg.start + 1 }}–{{ spg.end }} of {{ spg.total }} – change the page in the Sessions panel or here: {{ pager(spg, 'sp', 'files', 'sessions') }}</p>{% endif %}
   {% for g in sess_groups %}{% set r = g.r %}
   <details class="sessblock" id="{{ g.key }}" {% if S.open_session_files %}open{% endif %}>
     <summary class="sesshead">
@@ -267,8 +293,8 @@ var SESS_CALIB = {{ {}|tojson }};
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/files.js"></script>
-<script src="/static/uploader.js"></script>
+<script src="{{ asset('files.js') }}"></script>
+<script src="{{ asset('uploader.js') }}"></script>
 <script>
 function openCalib(sid){
   var S=SESS_CALIB[sid], dlg=document.getElementById('calib-dlg'), f=document.getElementById('calib-form');
@@ -314,11 +340,22 @@ function openSession(d){
   if(f.date._flatpickr)f.date._flatpickr.setDate(d.date||null,false,'d-m-Y');
   dlg.showModal();
 }
+function measureConditions(b){var m=document.getElementById('cond-msg-'+b.dataset.sid);b.disabled=true;
+  fetch('/api/sessions/'+b.dataset.sid+'/conditions/measure',{method:'POST'}).then(function(r){return r.json();}).then(function(j){
+    b.disabled=false;m.textContent=j.queued?('✓ '+j.queued+' analyses queued'+(j.paused?' – background analysis is switched off in Settings':' – the values appear when they are done')):'Nothing to do';
+    if(j.queued&&window.startStatusPoll)startStatusPoll();}).catch(function(){b.disabled=false;m.textContent='✗ Request failed';});}
+function applyConditions(b){if(!confirm('Write the measured seeing / sky brightness into this session (replaces the current values)?'))return;
+  fetch('/api/sessions/'+b.dataset.sid+'/conditions/apply',{method:'POST'}).then(function(r){return r.json();}).then(function(){location.reload();});}
 function applyFocal(b){
   if(!confirm('Set the focal length of “'+b.dataset.tel+'” to '+b.dataset.focal+' mm in the equipment list?'))return;
   fetch('/api/equipment/focal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telescope:b.dataset.tel,focal_mm:b.dataset.focal})})
     .then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);return;}location.reload();});
 }
+// a session (#s12_ / #s12_light) on another page of sessions: go to that page
+var SESSION_PAGE={{ session_page|tojson }};
+(function(){var m=/^#s(\d+)_/.exec(location.hash);
+  if(m&&!document.getElementById(location.hash.slice(1))&&SESSION_PAGE[m[1]]&&String(SESSION_PAGE[m[1]])!==new URLSearchParams(location.search).get('sp')){
+    var q=new URLSearchParams(location.search);q.set('sp',SESSION_PAGE[m[1]]);location.replace(location.pathname+'?'+q+location.hash);}})();
 // open a folded panel when linked to (e.g. after saving a session)
 function openHash(){var el=location.hash&&document.getElementById(location.hash.slice(1));
   for(var d=el&&el.closest('details');d;d=d.parentElement&&d.parentElement.closest('details'))d.open=true;  // incl. parents

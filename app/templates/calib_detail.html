@@ -38,6 +38,6 @@
 {{ bulk_bar(None, others, None, 'calib', CALIB_TYPES) }}
 {% endblock %}
 {% block scripts %}
-<script src="/static/files.js"></script>
-<script src="/static/uploader.js"></script>
+<script src="{{ asset('files.js') }}"></script>
+<script src="{{ asset('uploader.js') }}"></script>
 {% endblock %}

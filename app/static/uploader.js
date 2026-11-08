@@ -188,6 +188,7 @@
   }
 
   async function runQueue() {
+    window.UPLOADER_BUSY = true; if (window.activityPoke) activityPoke();   // header indicator
     running = true; startBtn.disabled = true; pauseBtn.hidden = false;
     root.querySelectorAll('.up-session, .up-alltype, .up-filter, .up-desc, .up-skipdups').forEach(function (e) { e.disabled = true; });
     var it, tried = new Set();
@@ -205,7 +206,7 @@
     var failed = items.filter(function (x) { return x.state === 'error'; }).length;
     startBtn.textContent = failed ? 'Retry failed' : 'Start upload';
     var left = items.some(function (x) { return x.state === 'queued' || x.state === 'error'; });
-    window.UPLOADER_BUSY = left;
+    window.UPLOADER_BUSY = items.some(function (x) { return x.state === 'queued'; });   // failed files are not "uploading" 
     if (ok && window.startStatusPoll) window.startStatusPoll();
     else if (ok && !left) location.reload();
   }

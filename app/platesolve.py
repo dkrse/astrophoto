@@ -81,7 +81,12 @@ def _run(fits_path: Path, fov_deg: float | None, ra_h, dec):
         cmd += ["-ra", f"{ra_h:.5f}", "-spd", f"{dec + 90:.5f}", "-r", "30"]
     else:
         cmd += ["-r", "180"]
-    subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, check=False)
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        return {"ERROR": f"ASTAP did not finish within {TIMEOUT_S} s"}
+    except OSError as e:
+        return {"ERROR": f"ASTAP could not be started: {e}"}
     return _read_ini(fits_path.with_suffix(".ini"))
 
 
@@ -97,12 +102,16 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
         return {"ok": False, "error": "Unsupported or unreadable file"}
     lum = np.nan_to_num(np.asarray(lum, dtype=np.float32))
     h_px, w_px = lum.shape[:2]
+    from .conditions import sky_level
+    sky_adu = sky_level(lum)                     # for the sky brightness (conditions.py)
     h = _hdr(header_text)
     xbin = _float(h.get("XBINNING")) or 1
     if not pixel_um:                       # XPIXSZ is the (binned) pixel size by convention
         pixel_um = _float(h.get("XPIXSZ"))
     elif xbin > 1:
         pixel_um = pixel_um * xbin
+    if sensor_px and xbin > 1:                  # camera spec is unbinned, the frame is binned
+        sensor_px = (sensor_px[0] / xbin, sensor_px[1] / xbin)
     ra_h, dec = _ra_dec_hint(h)
     # FOV hint (height, degrees, of the possibly 2×2-binned image) from the expected focal length
     fov_hint = None
@@ -145,7 +154,8 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
            "ra_deg": round(_float(ini.get("CRVAL1")) or 0, 5), "dec_deg": round(_float(ini.get("CRVAL2")) or 0, 5),
            "rotation_deg": round(_float(ini.get("CROTA2")) or 0, 2),
            "fov_w_arcmin": round(w_px * scale_bin / 60, 2), "fov_h_arcmin": round(h_px * scale_bin / 60, 2),
-           "image_px": [w_px * binf, h_px * binf], "pixel_um": pixel_um,
+           "image_px": [w_px * binf, h_px * binf], "pixel_um": pixel_um, "binning": xbin,
+           "sky_adu": round(sky_adu, 3), "lum_bin": binf,
            # full TAN WCS of the solved (possibly 2×2-binned, un-flipped) array -> overlays / objects in field
            "wcs": {"crpix": [_float(ini.get("CRPIX1")), _float(ini.get("CRPIX2"))],
                    "crval": [_float(ini.get("CRVAL1")), _float(ini.get("CRVAL2"))],
@@ -157,7 +167,7 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
     elif stars is not None:
         try:
             res["photometry"] = _photometry(stars, res["ra_deg"], res["dec_deg"],
-                                            math.hypot(w_px, h_px) / 2 * scale_bin / 3600)
+                                            math.hypot(w_px, h_px) / 2 * scale_bin / 3600, scale_bin)
         except Exception as e:                  # photometry is a bonus – never fail the solve
             res["photometry"] = {"error": str(e)}
     if pixel_um:
@@ -167,11 +177,12 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
     return res
 
 
-def _photometry(stars, ra0, dec0, radius):
+def _photometry(stars, ra0, dec0, radius, scale_arcsec=1.0):
     from . import photometry
     snr, flux, ra, dec = stars
     cra, cdec, cmag = photometry.catalogue_stars(Path(ASTAP_DB), ra0, dec0, radius)
-    return photometry.limiting_magnitude(snr, flux, ra, dec, cra, cdec, cmag) or \
+    return photometry.limiting_magnitude(snr, flux, ra, dec, cra, cdec, cmag,
+                                         match_arcsec=max(3.0, scale_arcsec)) or \
         {"error": "Too few stars matched to the star database"}
 
 
@@ -348,12 +359,12 @@ def annotations(res: dict) -> dict:
             for i, (x, y) in zip(near, px):
                 o = cat[i]
                 rad_px = (o["maj"] or 0) / 60 / 2 / scale
-                if not (-rad_px <= x <= W + rad_px and -rad_px <= y <= H + rad_px):
+                if not (-0.5 - rad_px <= x <= W - 0.5 + rad_px and -0.5 - rad_px <= y <= H - 0.5 + rad_px):
                     continue
                 u, v = _uv(res, x, y)
                 d = {"name": o["name"], "messier": o["messier"], "common": o["common"], "type": o["type_label"],
                      "mag": o["mag"], "maj": o["maj"], "min": o["min"], "u": float(u), "v": float(v),
-                     "inside": bool(0 <= x <= W and 0 <= y <= H)}
+                     "inside": bool(-0.5 <= x <= W - 0.5 and -0.5 <= y <= H - 0.5)}
                 if o["maj"]:                               # end of the major axis -> ellipse size and angle
                     ra2, dec2 = _offset(o["ra"], o["dec"], o["pa"] or 0, o["maj"] / 60 / 2)
                     x2, y2 = w.all_world2pix([[ra2, dec2]], 0)[0]
@@ -413,7 +424,7 @@ def target_check(res: dict, target: str | None) -> dict | None:
     ra0, dec0 = w.all_pix2world([[wd["w"] / 2 - 0.5, wd["h"] / 2 - 0.5]], 0)[0]
     sep = float(_sep_deg(o["ra"], o["dec"], ra0, dec0))
     x, y = w.all_world2pix([[o["ra"], o["dec"]]], 0)[0]
-    inside = bool(0 <= x <= wd["w"] and 0 <= y <= wd["h"])
+    inside = bool(-0.5 <= x <= wd["w"] - 0.5 and -0.5 <= y <= wd["h"] - 0.5)
     pa = _pa_deg(ra0, dec0, o["ra"], o["dec"])
     dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     return {"target": target, "found": True, "name": o["name"], "messier": o["messier"], "common": o["common"],

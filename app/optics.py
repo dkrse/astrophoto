@@ -162,12 +162,12 @@ def analyse(src: Path, orient: int = 0, flip: str = "none", scale_arcsec: float 
             pts.append((u * 2 - 1, v * 2 - 1, cs["fwhm"], cs["elong"], cs["angle"], cs["coherence"]))
     all_s = _cell_stats(stars)
     centre = regions[4] if regions[4]["n"] >= 3 else None
-    diag, metrics = _diagnose(regions, pts, all_s, centre)
+    diag, metrics = _diagnose(regions, pts, all_s, centre, W / H)
 
     # mosaic tiles (display orientation), same stretch for all
     sample = img[::4, ::4]
     lo, hi = float(np.median(sample)) - noise, float(np.percentile(sample, 99.95))
-    size = int(min(W, H) / 6)
+    size = max(int(min(W, H) / 6), 8)
     tiles = []
     for r in (range(3) if with_tiles else []):
         for c in range(3):
@@ -186,11 +186,11 @@ def analyse(src: Path, orient: int = 0, flip: str = "none", scale_arcsec: float 
     return {"ok": True, "stars": len(stars), "fwhm_px": f(all_s["fwhm"]), "elong": round(all_s["elong"], 3),
             "fwhm_arcsec": round(all_s["fwhm"] * to_as, 2) if to_as else None,
             "regions": regions, "vectors": vectors, "tiles": tiles, "tile_arcmin":
-                round(size * to_as / 60, 1) if to_as else None, "tile_px": size * binf,
+                round(size * to_as / 60, 1) if to_as else None, "tile_px": size * binf, "bin": binf,
             "diagnosis": diag, "metrics": metrics, "flip": flip, "orient": orient}
 
 
-def _diagnose(regions, pts, all_s, centre) -> list:
+def _diagnose(regions, pts, all_s, centre, aspect: float = 1.0) -> list:
     """Plain-language findings: (level, title, text). level: ok / warn / bad / info."""
     out, metrics = [], {}
     corners = [regions[i] for i in (0, 2, 6, 8) if regions[i]["n"] >= 3]
@@ -232,7 +232,7 @@ def _diagnose(regions, pts, all_s, centre) -> list:
     if edge:
         rad = []
         for x, y, _f, e, ang, _c in edge:
-            rdir = math.atan2(y, x)
+            rdir = math.atan2(y, x * aspect)           # direction from the centre in pixel space
             rad.append(math.cos(2 * (ang - rdir)))     # +1 radial, -1 tangential
         m = float(np.mean(rad))
         e_edge = float(np.median([p[3] for p in edge]))

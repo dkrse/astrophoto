@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Import archive – {{ S.app_title }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>📦 Import archive</h1>
+    <div class="muted">A whole folder tree into many projects and sessions at once</div></div>
+  <a class="btn" href="/">← Back</a>
+</div>
+
+{% if not root_ok %}
+<div class="flash err">Import folder <code>{{ import_root }}</code> is not available. Mount it in <code>docker-compose.yml</code>.</div>
+{% else %}
+<section class="card">
+  <p class="muted small">Choose the folder with your archive and scan it. Every file gets a <b>project</b> (FITS <code>OBJECT</code>,
+    otherwise the first folder below the scanned one, e.g. <code>M51/2023-09-15/Light/…</code> → M51), a <b>night</b>
+    (<code>DATE-OBS</code> / EXIF date, otherwise a date in the path) and a <b>frame type</b>. You review the groups before
+    anything is copied. Files are <b>copied</b> in the background; originals stay untouched.</p>
+  <div class="crumbs" id="crumbs"></div>
+  <div class="dirlist" id="dirlist"><span class="muted">Loading…</span></div>
+  <div class="row" style="margin-top:10px">
+    <button class="btn primary" id="scanbtn">🔍 Scan this folder (with subfolders)</button>
+    <span class="muted small" id="dirinfo"></span>
+  </div>
+</section>
+
+<section class="card" id="res" hidden>
+  <div class="head"><h2>Proposed projects &amp; nights</h2><span class="muted" id="sum"></span></div>
+  <p class="muted small">Rename a project to merge groups or to use an existing project (names are compared ignoring case,
+    spaces and punctuation – “ngc 123” = “NGC123”). Telescope / camera are set on <b>new</b> sessions (prefilled from
+    the FITS header when it matches your equipment list, or from the project's latest session).</p>
+  <label class="check"><input type="checkbox" id="skipdups" {% if skip_dups %}checked{% endif %}> Skip files that already exist in the archive (same content)</label>
+  <div class="tablewrap"><table class="kvt small" id="gtable">
+    <thead><tr><th><input type="checkbox" id="selall" checked></th><th>Project</th><th>Night</th><th>Files</th>
+      <th class="num">Size</th><th>Telescope</th><th>Camera</th><th>Folders</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <datalist id="plist">{% for i, n in projects %}<option value="{{ n }}">{% endfor %}</datalist>
+  <div class="row" style="margin-top:12px">
+    <button class="btn primary" id="startbtn">⬇ Import selected</button>
+    <span class="muted small" id="startinfo"></span>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  var LABELS={{ FRAME_LABELS|tojson }}, TELS={{ cat.telescope|map(attribute='name')|list|tojson }}, CAMS={{ cat.camera|map(attribute='name')|list|tojson }};
+  var EXIST={{ projects|map('last')|list|tojson }};
+  var cur='', groups=[];
+  function fmt(n){var u=['B','KB','MB','GB','TB'],i=0;while(n>=1024&&i<4){n/=1024;i++;}return (i?n.toFixed(1):n)+' '+u[i];}
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function validNight(v){var m=/^(\d{1,2})-(\d{1,2})-(\d{4})$/.exec(v||'');if(!m)return false;
+    var d=new Date(+m[3],+m[2]-1,+m[1]);return d.getFullYear()===+m[3]&&d.getMonth()===+m[2]-1&&d.getDate()===+m[1];}
+  function key(s){return String(s||'').toLowerCase().replace(/[\W_]+/g,'');}
+  function browse(path){
+    fetch('/api/import/browse?path='+encodeURIComponent(path)).then(function(r){return r.json();}).then(function(j){
+      if(j.error){document.getElementById('dirlist').textContent=j.error;return;}
+      cur=j.path;var parts=cur?cur.split('/'):[],acc='',cr='<a href="#" data-p="">📁 import</a>';
+      parts.forEach(function(x){acc+=(acc?'/':'')+x;cr+=' / <a href="#" data-p="'+esc(acc)+'">'+esc(x)+'</a>';});
+      document.getElementById('crumbs').innerHTML=cr;
+      document.getElementById('dirlist').innerHTML=j.dirs.map(function(d){return '<a href="#" class="dir" data-p="'+esc((cur?cur+'/':'')+d)+'">📁 '+esc(d)+'</a>';}).join('')||'<span class="muted">No subfolders.</span>';
+      document.getElementById('dirinfo').textContent=j.files+' supported file(s) directly in this folder';});
+  }
+  document.addEventListener('click',function(e){var a=e.target.closest('[data-p]');if(a){e.preventDefault();browse(a.dataset.p);}});
+  browse('');
+  function sel(list,v){return '<option value="">'+(v?'':'—')+'</option>'+list.map(function(n){return '<option'+(n===v?' selected':'')+'>'+esc(n)+'</option>';}).join('');}
+  function folders(g){var s={};g.files.forEach(function(f){var d=f.rel.split('/').slice(0,-1).join('/')||'.';s[d]=1;});var k=Object.keys(s);
+    return k.slice(0,3).join(', ')+(k.length>3?' … (+'+(k.length-3)+')':'');}
+  function matched(g){return g.match&&key(g.project)===key(g.orig)?g.match:null;}   // server match (name or object)
+  function status(g){var m=matched(g),ex=m||EXIST.some(function(n){return key(n)===key(g.project);});
+    return ex?'<span class="chip" title="Files go into the existing project">→ existing'+(m&&key(m.name)!==key(g.project)?' “'+esc(m.name)+'”':'')+
+      (m&&g.session_exists?' · night exists':'')+'</span>':'<span class="chip t-light">new project</span>';}
+  function render(){
+    var tb=document.querySelector('#gtable tbody');
+    tb.innerHTML=groups.map(function(g,i){
+      var c=Object.keys(g.counts).map(function(t){return '<span class="chip t-'+t+'">'+LABELS[t]+' '+g.counts[t]+'</span>';}).join(' ');
+      return '<tr data-i="'+i+'"><td><input type="checkbox" class="gon" '+(g.on?'checked':'')+'></td>'+
+        '<td><input class="gname" list="plist" value="'+esc(g.project)+'" style="min-width:160px"> <span class="gst">'+status(g)+'</span></td>'+
+        '<td><input class="gnight" placeholder="dd-mm-yyyy" value="'+esc(g.night_dmy)+'" style="width:110px'+(validNight(g.night_dmy)?'':';border-color:var(--danger)')+'"></td>'+
+        '<td>'+c+'</td><td class="num nowrap">'+fmt(g.size)+'</td>'+
+        '<td><select class="gtel">'+sel(TELS,g.telescope)+'</select></td><td><select class="gcam">'+sel(CAMS,g.camera)+'</select></td>'+
+        '<td class="muted small" title="'+esc(g.files.map(function(f){return f.rel;}).slice(0,50).join('\n'))+'">'+esc(folders(g))+'</td></tr>';}).join('');
+    summary();
+  }
+  function summary(){var on=groups.filter(function(g){return g.on;}),n=0,size=0,ps={};
+    on.forEach(function(g){n+=g.files.length;size+=g.size;ps[key(g.project)]=1;});
+    document.getElementById('sum').textContent=on.length+' of '+groups.length+' groups · '+Object.keys(ps).length+' project(s) · '+n+' files · '+fmt(size);}
+  document.addEventListener('input',function(e){var tr=e.target.closest('#gtable tr[data-i]');if(!tr)return;var g=groups[+tr.dataset.i];
+    if(e.target.classList.contains('gname')){g.project=e.target.value;tr.querySelector('.gst').innerHTML=status(g);summary();}
+    if(e.target.classList.contains('gnight')){g.night_dmy=e.target.value;e.target.style.borderColor=validNight(g.night_dmy)?'':'var(--danger)';}});
+  document.addEventListener('change',function(e){var tr=e.target.closest('#gtable tr[data-i]');
+    if(e.target.id==='selall'){groups.forEach(function(g){g.on=e.target.checked;});render();return;}
+    if(!tr)return;var g=groups[+tr.dataset.i];
+    if(e.target.classList.contains('gon')){g.on=e.target.checked;summary();}
+    if(e.target.classList.contains('gtel'))g.telescope=e.target.value;
+    if(e.target.classList.contains('gcam'))g.camera=e.target.value;});
+  document.getElementById('scanbtn').onclick=function(){
+    var b=this;b.disabled=true;document.getElementById('dirinfo').textContent='⏳ Scanning (reading FITS headers / EXIF)…';
+    fetch('/api/import/archive/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:cur})})
+      .then(function(r){return r.json();}).then(function(j){b.disabled=false;
+        if(j.error){document.getElementById('dirinfo').textContent='✗ '+j.error;return;}
+        document.getElementById('dirinfo').textContent=j.files+' files found'+(j.truncated?' (limit '+j.limit+' reached – scan a smaller folder)':'');
+        groups=j.groups.map(function(g){g.on=true;g.orig=g.project;return g;});document.getElementById('res').hidden=!groups.length;render();})
+      .catch(function(){b.disabled=false;document.getElementById('dirinfo').textContent='✗ Scan failed';});
+  };
+  document.getElementById('startbtn').onclick=function(){
+    var on=groups.filter(function(g){return g.on;});
+    if(!on.length){alert('Nothing selected');return;}
+    var bad=on.filter(function(g){return !validNight(g.night_dmy);});
+    if(bad.length){alert(bad.length+' group(s) have no valid night date – enter it (dd-mm-yyyy) or uncheck them.');return;}
+    var noname=on.filter(function(g){return !String(g.project||'').trim();});
+    if(noname.length){alert(noname.length+' group(s) have no project name.');return;}
+    var n=on.reduce(function(a,g){return a+g.files.length;},0);
+    if(!confirm('Import '+n+' files in '+on.length+' group(s)? Missing projects and sessions are created.'))return;
+    var b=this;b.disabled=true;document.getElementById('startinfo').textContent='⏳ Starting…';
+    fetch('/api/import/archive/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:cur,
+      skip_dups:document.getElementById('skipdups').checked,
+      groups:on.map(function(g){var m=matched(g);return {project:g.project.trim(),project_id:m?m.id:null,night:g.night_dmy,telescope:g.telescope||'',camera:g.camera||'',
+        files:g.files.map(function(f){return {rel:f.rel,type:f.type,filter:f.filter};})};})})})
+      .then(function(r){return r.json().catch(function(){return {error:'Server error ('+r.status+')'};});}).then(function(j){
+        if(j.error){b.disabled=false;document.getElementById('startinfo').textContent='✗ '+j.error;return;}
+        location='/';})
+      .catch(function(){b.disabled=false;document.getElementById('startinfo').textContent='✗ Request failed – try again';});
+  };
+})();
+</script>
+{% endblock %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_files.html" import status_box, analysis_dialog with context %}
 {% block title %}Statistics – {{ S.app_title }}{% endblock %}
 {% macro ranked(title, rows, unit='dur') %}
 <section class="card">
@@ -18,6 +19,11 @@
 {% endmacro %}
 {% block content %}
 <h1>Statistics</h1>
+<nav class="tabs" data-tabs="stats">
+  <a href="#t-overview">Overview</a><a href="#t-conditions">Optics &amp; conditions</a><a href="#t-health">Archive health</a></nav>
+{{ status_box(status, '/api/analysis/status') }}
+{{ analysis_dialog('all') }}
+<div class="tabpane" id="t-overview">
 <section class="stats">
   <div class="stat"><b>{{ total|dur }}</b><span>total integration (lights)</span></div>
   <div class="stat"><b>{{ frames }}</b><span>light frames</span></div>
@@ -63,17 +69,76 @@
     {% if disk %}<div class="progress big" title="{{ (disk.used / disk.total * 100)|round(1) }}% used"><div class="bar" style="width:{{ (disk.used / disk.total * 100)|round(1) }}%"></div></div>{% endif %}
   </section>
 </div>
+</div>
+<div class="tabpane" id="t-conditions">
 <section class="card" id="trend">
-  <div class="head"><h3 class="mt0">Optics &amp; sky over time</h3>
-    <label class="inline small">Equipment <select id="tr-eq"></select></label></div>
+  <div class="head"><h3 class="mt0">Optics &amp; conditions over time</h3>
+    <span class="row"><label class="inline small">Equipment <select id="tr-eq"></select></label>
+    <button type="button" class="btn small" onclick="openAnalysis()" title="Plate solve and optics analysis of the whole archive in the background">🎯🔬 Analyse archive…</button></span></div>
   <p class="muted small" id="tr-hint">Per night, medians of the plate-solved (🎯 Solve) and analysed (🔬 Optics) frames. Select frames in a project and use 🎯 Solve / 🔬 Optics in the bulk bar to fill it.</p>
   <div class="tr-grid" id="tr-charts"></div>
   <details class="small"><summary>Table</summary><div class="tablewrap"><table class="kvt small" id="tr-table"></table></div></details>
   <div class="tr-tip" id="tr-tip" hidden></div>
 </section>
+</div>
+<div class="tabpane" id="t-health">
+<section class="card" id="health">
+  <div class="head"><h3 class="mt0">Archive health</h3>
+    <span class="row"><button type="button" class="btn small" id="ic-quick" title="Every file of the database exists on disk with the right size; files on disk unknown to the database">✔ Quick check</button>
+      <button type="button" class="btn small" id="ic-full" title="Like the quick check, plus the SHA-256 of every file (reads the whole archive – takes long)">🔒 Full check (hash)</button>
+      <button type="button" class="btn small" id="ic-cancel" hidden>Stop</button></span></div>
+  {% if not S.bg_integrity %}<p class="flash warn-box small">Integrity checks are switched off in <a href="/settings">Settings</a>.</p>{% endif %}
+  {% if dups.extra_files %}
+  <div class="flash warn-box">⚠ {{ dups.extra_files }} file{{ 's' if dups.extra_files != 1 }} {{ 'are' if dups.extra_files != 1 else 'is' }} stored more than once (same content) – {{ dups.wasted|size }} extra. The project pages show where.</div>
+  {% else %}<p class="small">✓ No duplicate files (same content stored twice).</p>{% endif %}
+  <div id="ic-progress" class="small" hidden><span class="spinner"></span> <span id="ic-ptext"></span></div>
+  <div id="ic-report"></div>
+</section>
+</div>
 <script>
 (function(){
-  var METRICS=[['fwhm_arcsec','Star FWHM','″','lower is sharper',2],['limit_mag','Limiting magnitude','mag','higher is deeper (Gaia BP, SNR 5)',1],
+  var rep=document.getElementById('ic-report'),pr=document.getElementById('ic-progress'),pt=document.getElementById('ic-ptext'),
+      cancel=document.getElementById('ic-cancel'),timer=null;
+  function fmt(n){var u=['B','KB','MB','GB','TB'],i=0;while(n>=1024&&i<4){n/=1024;i++;}return (i?n.toFixed(1):n)+' '+u[i];}
+  function list(title,items,cols){if(!items||!items.length)return null;var d=document.createElement('details');var sm=document.createElement('summary');
+    sm.textContent=title;d.append(sm);var t=document.createElement('table');t.className='kvt small';
+    items.forEach(function(it){var tr=t.insertRow();cols.forEach(function(c){var td=tr.insertCell();td.textContent=c(it);});});
+    var w=document.createElement('div');w.className='tablewrap';w.append(t);d.append(w);return d;}
+  function show(r){rep.innerHTML='';if(!r){var p=document.createElement('p');p.className='muted small';p.textContent='No check run yet.';rep.append(p);return;}
+    var c=r.counts,box=document.createElement('div');box.className='target-check '+(r.ok===null?'warn':(r.ok?'good':'bad'));
+    var b=document.createElement('b');b.textContent=r.ok===null||r.cancelled?'⚠ Check stopped – incomplete':(r.ok?'✓ Archive OK':'✗ Problems found');
+    var p=document.createElement('div');p.className='small';
+    p.textContent='Last '+r.mode+' check '+(r.finished_at||'').replace('T',' ')+' · '+r.files+' files in '+r.seconds+' s'+
+      (r.mode==='full'?' · '+fmt(r.hashed_bytes)+' hashed':'')+' · missing '+c.missing+' · wrong size '+c.size+(r.mode==='full'?' · wrong hash '+c.hash:'')+
+      ' · on disk but unknown '+c.orphans+(c.orphans?' ('+fmt(r.orphans_size)+')':'')+' · processing errors '+c.errors;
+    box.append(b,p);rep.append(box);
+    var who=function(it){return it.project_id?'project #'+it.project_id:(it.calib_set_id?'calibration #'+it.calib_set_id:'');};
+    [list('Missing on disk ('+c.missing+')',r.missing,[function(i){return i.name;},who,function(i){return i.path;}]),
+     list('Wrong size ('+c.size+')',r.size,[function(i){return i.name;},who,function(i){return fmt(i.actual)+' instead of '+fmt(i.expected);}]),
+     list('Content changed – wrong SHA-256 ('+c.hash+')',r.hash,[function(i){return i.name;},who,function(i){return i.path;}]),
+     list('On disk but not in the database ('+c.orphans+')',r.orphans,[function(i){return i.path;},function(i){return fmt(i.size);}]),
+     list('Files with processing errors ('+c.errors+')',r.errors,[function(i){return i.name;},who,function(i){return i.path;}])]
+      .forEach(function(d){if(d)rep.append(d);});}
+  function poll(){fetch('/api/integrity/status').then(function(r){if(!r.ok)throw r.status;return r.json();}).then(function(s){
+    pr.hidden=!s.running;cancel.hidden=!s.running;document.getElementById('ic-quick').disabled=document.getElementById('ic-full').disabled=s.running||!{{ S.bg_integrity|tojson }};
+    if(s.running){pt.textContent=(s.mode==='full'?'Full':'Quick')+' check: '+s.done+' / '+s.total+' files…';timer=setTimeout(poll,1500);}
+    else show(s.report);}).catch(function(){timer=setTimeout(poll,5000);});}
+  function start(full){if(full&&!confirm('The full check reads every file of the archive to verify its SHA-256 – this can take a long time. Start?'))return;
+    fetch('/api/integrity/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({full:full})})
+      .then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);clearTimeout(timer);poll();if(window.activityPoke)activityPoke();});}
+  document.getElementById('ic-quick').onclick=function(){start(false);};
+  document.getElementById('ic-full').onclick=function(){start(true);};
+  cancel.onclick=function(){fetch('/api/integrity/cancel',{method:'POST'}).then(function(){setTimeout(poll,500);});};
+  poll();
+})();
+</script>
+<script src="{{ asset('files.js') }}"></script>
+<script>
+(function(){
+  var METRICS=[['seeing','Seeing','″','star FWHM in the centre without diffraction – lower is better',2],
+               ['transparency_pct','Transparency','%','of the best night of this setup – higher is clearer',0],
+               ['sqm','Sky brightness','mag/arcsec²','like SQM – higher is darker',2],
+               ['fwhm_arcsec','Star FWHM','″','lower is sharper',2],['limit_mag','Limiting magnitude','mag','higher is deeper (Gaia BP, SNR 5)',1],
                ['tilt_pct','Tilt','%','FWHM change across the field',0],['elong','Elongation','','1.00 = round stars',2]];
   var DATA=[],sel=document.getElementById('tr-eq'),box=document.getElementById('tr-charts'),tip=document.getElementById('tr-tip');
   var NS='http://www.w3.org/2000/svg';
@@ -111,17 +176,18 @@
   function draw(){box.innerHTML='';var eq=sel.value,rows=DATA.filter(function(r){return r.equipment===eq;});
     METRICS.forEach(function(m){chart(rows,m);});
     var tb=document.getElementById('tr-table');tb.innerHTML='';var hd=tb.createTHead().insertRow();
-    ['Night','Project','FWHM ″','FWHM px','Elong.','Tilt %','Lim. mag','Focal mm','Solved','Analysed'].forEach(function(x){var th=document.createElement('th');th.textContent=x;hd.append(th);});
+    ['Night','Project','Seeing ″','Transp. %','SQM','FWHM ″','FWHM px','Elong.','Tilt %','Lim. mag','Focal mm','Solved','Analysed'].forEach(function(x){var th=document.createElement('th');th.textContent=x;hd.append(th);});
     var bd=tb.createTBody();rows.forEach(function(r){var tr=bd.insertRow();
-      [r.date_dmy,r.project,r.fwhm_arcsec,r.fwhm_px,r.elong,r.tilt_pct,r.limit_mag,r.focal_mm,r.solved,r.analysed].forEach(function(v,i){var td=tr.insertCell();
+      [r.date_dmy,r.project,r.seeing,r.transparency_pct,r.sqm,r.fwhm_arcsec,r.fwhm_px,r.elong,r.tilt_pct,r.limit_mag,r.focal_mm,r.solved,r.analysed].forEach(function(v,i){var td=tr.insertCell();
         td.textContent=v==null?'':(typeof v==='number'&&i>1?(+v.toFixed(2)):v);});});}
   fetch('/api/stats/optics').then(function(r){return r.json();}).then(function(d){DATA=d;
     var eqs=[];d.forEach(function(r){if(eqs.indexOf(r.equipment)<0)eqs.push(r.equipment);});
-    if(!eqs.length){sel.parentElement.hidden=true;return;}
+    if(!eqs.length){sel.parentElement.hidden=true;draw();return;}      // empty charts say "No data yet"
     eqs.sort(function(a,b){return d.filter(function(r){return r.equipment===b;}).length-d.filter(function(r){return r.equipment===a;}).length;});
     eqs.forEach(function(e){var o=document.createElement('option');o.textContent=e;sel.append(o);});
     try{var k=localStorage.getItem('trend-eq');if(k&&eqs.indexOf(k)>=0)sel.value=k;}catch(e){}
-    sel.onchange=function(){try{localStorage.setItem('trend-eq',sel.value);}catch(e){}draw();};draw();});
+    sel.onchange=function(){try{localStorage.setItem('trend-eq',sel.value);}catch(e){}draw();};draw();})
+    .catch(function(){document.getElementById('tr-hint').textContent='Could not load the measurements – reload the page.';});
 })();
 </script>
 {% endblock %}

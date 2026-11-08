@@ -174,6 +174,7 @@ def upload_cancel(uid: str, user: User = Depends(current_user)):
     part.unlink(missing_ok=True)
     meta.unlink(missing_ok=True)
     _HASH.pop(uid, None)
+    _LOCKS.pop(uid, None)
     return {"ok": True}
 
 
@@ -227,6 +228,10 @@ def _store_locked(part, meta_p, m, size, sha, db):
     dest = unique_dest(owner_dir(m["project_id"], m["calib_set_id"]) / m["frame_type"], m["filename"])
     try:
         os.replace(part, dest)
+    except FileNotFoundError:                   # cancelled while finishing
+        dest.unlink(missing_ok=True)
+        meta_p.unlink(missing_ok=True)
+        return err("The upload was cancelled", 410)
     except OSError:
         dest.unlink(missing_ok=True)            # remove the reserved placeholder
         raise
@@ -295,6 +300,11 @@ def scan_folder(root: Path, recursive: bool, limit=20000):
             p = Path(dirpath) / fn
             if fn.startswith(".") or p.suffix.lower() not in KNOWN_EXT:
                 continue
+            try:
+                if root.resolve() not in p.resolve().parents or not p.is_file():
+                    continue                    # dangling symlink or link pointing outside the import folder
+            except OSError:
+                continue
             rel = str(p.relative_to(root))
             header = None
             if p.suffix.lower() in FITS_EXT:
@@ -343,23 +353,32 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
     db.add(job)
     db.flush()
     base = owner_dir(project.id if project else None, calib.id if calib else None)
-    for it in items:
-        src = (root / str(it.get("rel", ""))).resolve()
-        if root not in src.parents:
-            continue
-        ftype = it.get("type") if it.get("type") in FRAME_TYPES else "light"
-        if not src.is_file():
-            continue
-        dest = unique_dest(base / ftype, src.name)
-        dest.touch()     # reserve the name; worker fills it
-        db.add(FrameFile(project_id=job.project_id, calib_set_id=job.calib_set_id, session_id=sid,
-                         import_job_id=job.id, frame_type=ftype, original_name=src.name,
-                         stored_path=str(dest.relative_to(DATA_DIR)), source_path=str(src),
-                         size=src.stat().st_size, status="importing",
-                         description=none_if_empty(mm.get("description")),
-                         filter=none_if_empty(mm.get("filter")) or none_if_empty(it.get("filter"))))
-        job.total += 1
-    db.commit()
+    reserved = []
+    try:
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            src = (root / str(it.get("rel", ""))).resolve()
+            if root.resolve() not in src.parents:
+                continue
+            ftype = it.get("type") if it.get("type") in FRAME_TYPES else "light"
+            if not src.is_file():
+                continue
+            dest = unique_dest(base / ftype, src.name)     # reserve the name; worker fills it
+            reserved.append(dest)
+            db.add(FrameFile(project_id=job.project_id, calib_set_id=job.calib_set_id, session_id=sid,
+                             import_job_id=job.id, frame_type=ftype, original_name=src.name,
+                             stored_path=str(dest.relative_to(DATA_DIR)), source_path=str(src),
+                             size=src.stat().st_size, status="importing",
+                             description=none_if_empty(mm.get("description")),
+                             filter=none_if_empty(mm.get("filter")) or none_if_empty(it.get("filter"))))
+            job.total += 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        for d in reserved:                    # no rows -> no empty placeholder files left behind
+            d.unlink(missing_ok=True)
+        raise
     worker.wake()
     flash(request, f"Import started: {job.total} files are being copied in the background")
     return {"ok": True, "job": job.id, "total": job.total,

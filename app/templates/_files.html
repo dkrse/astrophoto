@@ -1,19 +1,69 @@
 {# Shared file tables + bulk action bar + processing status. #}
 
 {% macro status_box(status, api_url) %}
-<div class="procbox" id="procbox" data-api="{{ api_url }}" {% if not (status.pending or status.importing or status.jobs) %}hidden{% endif %}>
+<div class="procbox" id="procbox" data-api="{{ api_url }}" {% if not (status.pending or status.importing or status.jobs or status.analysis) %}hidden{% endif %}>
   <span class="spinner"></span>
   <span id="proctext">
     {% for j in status.jobs %}Importing {{ j.done + j.skipped + j.failed }}/{{ j.total }}{% if j.skipped %} ({{ j.skipped }} duplicates skipped){% endif %} · {% endfor %}
     {% if status.pending %}Processing {{ status.pending }} file(s) – previews, metadata, statistics…{% endif %}
+    {% if status.analysis %}{% if status.analysis.paused %}⏸ Analysis paused (switched off in Settings) – {{ status.analysis.queued }} waiting{% else %}Analysing {{ status.analysis.done + status.analysis.error }}/{{ status.analysis.done + status.analysis.error + status.analysis.queued }} (plate solve / optics){% endif %}{% endif %}
   </span>
   <span class="muted small" id="proccur">{{ status.current or '' }}</span>
+  <button type="button" class="btn small" id="proccancel" {% if not status.analysis %}hidden{% endif %} title="Remove the analyses still waiting in the queue">Stop analysis</button>
 </div>
+{% endmacro %}
+
+{# Background plate solve / optics for a project or the whole archive #}
+{% macro analysis_dialog(scope, project_id=None) %}
+<dialog id="an-dlg" class="cat-dialog">
+  <form method="dialog" class="cat-head"><h2>🎯🔬 Analyse {{ 'this project' if scope == 'project' else 'the whole archive' }}</h2><button class="btn small" aria-label="Close">✕</button></form>
+  <form class="dlg-body" id="an-form">
+    <p class="muted small">Runs on the server in the background – you can close the page. Imports and previews always go first.</p>
+    {% if not S.bg_analysis %}<p class="flash warn-box small">⏸ Background analyses are switched off in <a href="/settings">Settings</a> – queued work waits until they are switched on.</p>{% endif %}
+    <label>What<select name="kind"><option value="both">Plate solve + optics</option><option value="solve">Plate solve only</option><option value="optics">Optics only</option></select></label>
+    <label>Frames<select name="per_session">
+      <option value="3">3 light frames per session (start / middle / end) – enough for measured values</option>
+      <option value="1">1 light frame per session</option>
+      <option value="10">10 light frames per session</option>
+      <option value="0">all light frames</option></select></label>
+    <label class="inline"><input type="checkbox" name="only_missing" checked> skip frames that already have a result</label>
+    <p class="muted small">Final stacks are always plate-solved too. Rejected frames are skipped.</p>
+    <div class="row"><button class="btn primary">Start</button><span class="muted small" id="an-msg"></span></div>
+  </form>
+</dialog>
+<script>
+(function(){var d=document.getElementById('an-dlg'),f=document.getElementById('an-form');
+  window.openAnalysis=function(){document.getElementById('an-msg').textContent='';d.showModal();};
+  d.addEventListener('click',function(e){if(e.target===d)d.close();});
+  f.addEventListener('submit',function(e){e.preventDefault();
+    var body={scope:{{ scope|tojson }},project_id:{{ project_id|tojson }},kind:f.kind.value,per_session:+f.per_session.value,only_missing:f.only_missing.checked};
+    fetch('/api/analysis/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j.error){document.getElementById('an-msg').textContent='✗ '+j.error;return;}
+        document.getElementById('an-msg').textContent=j.queued?'✓ '+j.queued+' analyses queued':'Nothing to do – everything already analysed';
+        if(j.queued){setTimeout(function(){d.close();},900);if(window.startStatusPoll)window.startStatusPoll();}});});
+})();
+</script>
+{% endmacro %}
+
+{# pager for server-side pages: pg = paginate(...), param = query parameter, anchor = element to scroll back to #}
+{% macro pager(pg, param, anchor='', label='') %}
+{% if pg.pages > 1 %}
+<nav class="pager small" aria-label="Pages{{ ' – ' ~ label if label }}">
+  <span class="muted">{{ pg.start + 1 }}–{{ pg.end }} of {{ pg.total }}</span>
+  {% if pg.page > 1 %}<a class="btn small" href="{{ page_url(request, anchor, **{param: pg.page - 1}) }}">‹ Prev</a>{% else %}<span class="btn small disabled">‹ Prev</span>{% endif %}
+  {% set last = namespace(n=0) %}
+  {% for n in pg.window %}{% if n - last.n > 1 %}<span class="muted">…</span>{% endif %}{% set last.n = n %}
+    {% if n == pg.page %}<span class="btn small primary" aria-current="page">{{ n }}</span>{% else %}<a class="btn small" href="{{ page_url(request, anchor, **{param: n}) }}">{{ n }}</a>{% endif %}{% endfor %}
+  {% if pg.page < pg.pages %}<a class="btn small" href="{{ page_url(request, anchor, **{param: pg.page + 1}) }}">Next ›</a>{% else %}<span class="btn small disabled">Next ›</span>{% endif %}
+</nav>
+{% endif %}
 {% endmacro %}
 
 {% macro file_groups(groups, sizes, types, zip_base, med=None, light_stats=False, show='', limit=100, prefix='') %}
 {% for t in types %}{% if groups[t] %}
 {% set gk = prefix ~ t %}
+{% set fpg = paginate(groups[t]|length, 0 if show in (gk, 'all') else S.files_page_size, request.query_params.get('p_' ~ gk)) %}
 <details class="group" id="{{ gk }}" {% if S.open_file_groups %}open{% endif %}>
   <summary>
     <input type="checkbox" class="selgroup" data-group="{{ gk }}" title="Select all {{ FRAME_LABELS[t] }}" onclick="event.stopPropagation()">
@@ -24,7 +74,7 @@
   <table class="ftable">
     <thead><tr><th></th><th></th><th>File</th><th class="num">Size</th><th title="Date added">Added</th><th title="Capture time (FITS DATE-OBS / EXIF)">Captured</th><th></th></tr></thead>
     <tbody>
-    {% for f in groups[t] %}{% if loop.index <= limit or show == gk or show == 'all' %}
+    {% for f in groups[t][fpg.start:fpg.end] %}
     {% set info = {"id": f.id, "name": f.original_name, "type": FRAME_LABELS[f.frame_type], "size": f.size|size,
         "added": f.uploaded_at|dmy, "modified": f.updated_at|dmy, "captured": f.date_obs|dmy,
         "session": (f.session.date|dmy) if f.session else "", "status": f.status, "error": f.error or "",
@@ -59,13 +109,16 @@
         <form method="post" action="/files/{{ f.id }}/delete" class="inl" onsubmit="return confirm('Delete file?')"><button class="btn small danger" title="Delete">🗑</button></form>
       </td>
     </tr>
-    {% endif %}{% endfor %}
+    {% endfor %}
     </tbody>
   </table>
   </div>
-  {% if groups[t]|length > limit and show != gk and show != 'all' %}
-  <p class="showall"><a class="btn small" href="?show={{ gk }}#{{ gk }}">Show all {{ groups[t]|length }} {{ FRAME_LABELS[t] }} files</a>
-    <span class="muted small">(first {{ limit }} shown – “select all” selects only visible rows)</span></p>
+  {% if fpg.pages > 1 %}
+  <div class="showall">{{ pager(fpg, 'p_' ~ gk, gk, FRAME_LABELS[t]) }}
+    <a class="btn small" href="{{ page_url(request, gk, show=gk) }}">Show all {{ groups[t]|length }}</a>
+    <span class="muted small">“select all” selects the files of this page</span></div>
+  {% elif show == gk and S.files_page_size and groups[t]|length > S.files_page_size %}
+  <div class="showall"><a class="btn small" href="{{ page_url(request, gk, show=None) }}">Show in pages</a></div>
   {% endif %}
 </details>
 {% endif %}{% endfor %}
@@ -196,11 +249,20 @@ document.querySelectorAll('#info-dlg [data-fi]').forEach(function(sel){
 });
 document.getElementById('info-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
 // ---------- plate solve for several frames ----------
+function queueInBackground(ids,kind){
+  return fetch('/api/analysis/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({scope:'files',ids:ids,kind:kind,only_missing:false})}).then(function(r){return r.json();})
+    .then(function(j){if(j.error){alert(j.error);return;}alert(j.queued+' analyses queued – they run on the server in the background.');
+      if(window.startStatusPoll)window.startStatusPoll();});
+}
 window.bulkSolve=function(ids){
+  if(ids.length>20&&confirm(ids.length+' frames: run the plate solves in the background on the server?\n\nOK = background (you can close the page)\nCancel = here, with the result table'))
+    return queueInBackground(ids,'solve');
   var dlg=document.getElementById('bsolve-dlg'),rows=document.getElementById('bs-rows'),msg=document.getElementById('bs-msg'),
       sum=document.getElementById('bs-sum'),stop=document.getElementById('bs-stop'),res=[],cancel=false,MAX=200;
   if(ids.length>MAX&&!confirm('Solve the first '+MAX+' of '+ids.length+' selected frames?'))return;
   ids=ids.slice(0,MAX);rows.innerHTML='';sum.innerHTML='';document.getElementById('bs-n').textContent=ids.length;
+  var run=window._bsRun=(window._bsRun||0)+1;
   stop.hidden=false;stop.onclick=function(){cancel=true;};dlg.onclose=function(){cancel=true;};dlg.showModal();
   var tr0=function(id){return document.querySelector('tr[data-id="'+id+'"]');};
   var name=function(id){var r=tr0(id);r=r&&r.querySelector('.fname a');return r?r.textContent:'#'+id;};
@@ -209,7 +271,7 @@ window.bulkSolve=function(ids){
     var a=document.createElement('a');a.href='/files/'+id+'/view';a.textContent=name(id);tr.insertCell().append(a);
     if(!d.ok){var td=c('✗ '+(d.error||'failed'),'muted');td.colSpan=5;return;}
     c(d.focal_mm?Math.round(d.focal_mm)+' mm'+(d.focal_expected_mm?' ('+(d.focal_mm>=d.focal_expected_mm?'+':'')+(d.focal_mm/d.focal_expected_mm*100-100).toFixed(1)+' %)':''):'—','num');
-    c((d.sensor_scale_arcsec_px||d.scale_arcsec_px).toFixed(3)+'″','num');c(d.rotation_deg.toFixed(1)+'°','num');
+    var sc=d.sensor_scale_arcsec_px||d.scale_arcsec_px;c(sc!=null?sc.toFixed(3)+'″':'—','num');c(d.rotation_deg!=null?d.rotation_deg.toFixed(1)+'°':'—','num');
     c(d.photometry&&d.photometry.limit_mag?d.photometry.limit_mag.toFixed(1):'—','num');
     var t=d.target_check;c(!t?'':(!t.found?'? '+t.target:(t.inside?(t.offset_pct<=15?'✓ ':'⚠ ')+t.sep_arcmin.toFixed(1)+'′ '+t.direction:'✗ not in frame')));}
   function summary(){
@@ -235,22 +297,26 @@ window.bulkSolve=function(ids){
     msg.textContent='⏳ '+i+' / '+ids.length+': '+name(id);
     var req=(t&&t.dataset.solved&&!again)?fetch('/api/files/'+id+'/solved'):fetch('/api/files/'+id+'/solve',{method:'POST'});
     req.then(function(r){return r.json();}).catch(function(){return {ok:false,error:'request failed'};})
-      .then(function(d){res.push(d);row(id,d);summary();if(d.ok&&t)t.dataset.solved='1';next();});
+      .then(function(d){if(run!==window._bsRun)return;           // a newer run owns the dialog
+        res.push(d);try{row(id,d);summary();}catch(e){console.error(e);}if(d.ok&&t)t.dataset.solved='1';next();});
   })();
 };
 document.getElementById('bsolve-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});
 // ---------- optics for several frames (one after another) ----------
 window.bulkOptics=function(ids){
+  if(ids.length>20&&confirm(ids.length+' frames: run the optics analysis in the background on the server?\n\nOK = background (results go to the session values and trends)\nCancel = here, with the result table and summary'))
+    return queueInBackground(ids,'optics');
   var dlg=document.getElementById('bopt-dlg'),rows=document.getElementById('bo-rows'),msg=document.getElementById('bo-msg'),
       sum=document.getElementById('bo-sum'),stop=document.getElementById('bo-stop'),res=[],cancel=false,MAX=60;
   if(ids.length>MAX&&!confirm('Analyse the first '+MAX+' of '+ids.length+' selected frames?'))return;
   ids=ids.slice(0,MAX);rows.innerHTML='';sum.innerHTML='';document.getElementById('bo-n').textContent=ids.length;
+  var run=window._boRun=(window._boRun||0)+1;
   stop.hidden=false;stop.onclick=function(){cancel=true;};dlg.onclose=function(){cancel=true;};dlg.showModal();
   var name=function(id){var r=document.querySelector('tr[data-id="'+id+'"] .fname a');return r?r.textContent:'#'+id;};
   var icon={ok:'✓',warn:'⚠',bad:'✗'};
   function row(id,d){var tr=rows.insertRow(),c=function(v,cls){var td=tr.insertCell();td.textContent=v==null?'':v;if(cls)td.className=cls;return td;};
     var a=document.createElement('a');a.href='/files/'+id+'/view';a.textContent=name(id);tr.insertCell().append(a);
-    if(!d.ok){var td=c('✗ '+d.error,'muted');td.colSpan=6;return;}
+    if(!d.ok){var td=c('✗ '+(d.error||'failed'),'muted');td.colSpan=6;return;}
     var m=d.metrics||{},tilt=d.diagnosis.find(function(x){return x.key==='tilt';});
     c(d.stars,'num');c(d.fwhm_px.toFixed(2)+' px'+(d.fwhm_arcsec?' / '+d.fwhm_arcsec.toFixed(1)+'″':''),'num');c(d.elong.toFixed(2),'num');
     c(m.corners_pct!=null?(m.corners_pct>0?'+':'')+m.corners_pct+' %':'','num');
@@ -284,7 +350,8 @@ window.bulkOptics=function(ids){
     var id=ids[i++];msg.textContent='⏳ '+i+' / '+ids.length+': '+name(id);
     fetch('/api/files/'+id+'/optics?flip=auto&tiles=0').then(function(r){return r.json();})
       .catch(function(){return {ok:false,error:'request failed'};})
-      .then(function(d){res.push(d);row(id,d);summary();next();});
+      .then(function(d){if(run!==window._boRun)return;
+        res.push(d);try{row(id,d);summary();}catch(e){console.error(e);}next();});
   })();
 };
 document.getElementById('bopt-dlg').addEventListener('click',function(e){if(e.target===this)this.close();});

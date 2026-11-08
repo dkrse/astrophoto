@@ -279,3 +279,36 @@ def test_bulk_bar_has_solve_and_optics(client, project, tmp_path):
     drain()
     html = client.get(f"/projects/{project}").text
     assert 'data-bulk="solve"' in html and 'data-bulk="optics"' in html
+
+
+# ---------- north up ----------
+@pytest.mark.parametrize("flip,mirror,angle", [("none", False, 0), ("h", True, 0), ("v", True, 180), ("vh", False, 180)])
+def test_north_up_parameters(flip, mirror, angle):
+    ann = platesolve.annotations(fake_solve())                       # north up, east left as solved
+    m, a = annotate.north_up(ann, 0, flip, 1000, 1000)
+    assert m is mirror and abs(((a - angle) + 180) % 360 - 180) < 0.5
+
+
+def test_north_up_rotated_frame_and_export(client, project, tmp_path):
+    s = 1.5 / 3600                                                    # north pointing right in the image
+    res = fake_solve(w=400, h=300)
+    res["wcs"]["cd"] = [[0.0, -s], [s, 0.0]]
+    m, a = annotate.north_up(platesolve.annotations(res), 0, "none", 400, 300)
+    assert not m and abs(((a + 90) + 180) % 360 - 180) < 0.5        # rotate 90° counter-clockwise
+    upload(client, write_fits(tmp_path / "n.fits", data=star_frame(h=300, w=400)), "light", project_id=project)
+    drain()
+    with SessionLocal() as db:
+        f = db.scalars(select(FrameFile).where(FrameFile.project_id == project)).first()
+        f.solve = json.dumps(res)
+        db.commit()
+        fid = f.id
+    from PIL import Image
+    up = Image.open(io.BytesIO(client.get(f"/files/{fid}/annotated.jpg", params={"north": "1"}).content))
+    assert up.size == (300, 400)                                      # turned by 90°
+    plain = Image.open(io.BytesIO(client.get(f"/files/{fid}/annotated.jpg", params={"north": "0"}).content))
+    assert plain.size == (400, 300)
+    # the option is a saved view setting
+    client.post(f"/files/{fid}/opts", data={"north": "1", "stretch": "unlinked"})
+    with SessionLocal() as db:
+        assert json.loads(db.get(FrameFile, fid).view_opts)["north"] == "1"
+    assert 'id="northbtn"' in client.get(f"/files/{fid}/view").text

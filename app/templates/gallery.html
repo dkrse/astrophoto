@@ -46,4 +46,4 @@
 </nav>
 {% endif %}
 {% endblock %}
-{% block scripts %}<script>var GALLERY_IDS = {{ all_ids|tojson }};</script><script src="/static/slideshow.js"></script>{% endblock %}
+{% block scripts %}<script>var GALLERY_IDS = {{ all_ids|tojson }};</script><script src="{{ asset('slideshow.js') }}"></script>{% endblock %}

@@ -12,9 +12,9 @@ from pathlib import Path
 
 from sqlalchemy import select, func
 
-from .core import DATA_DIR, night_of, thumb_rel
+from .core import DATA_DIR, night_of, thumb_rel, load_settings
 from .framestats import frame_stats, flag_suspects
-from .models import SessionLocal, FrameFile, ImportJob, ImagingSession
+from .models import SessionLocal, FrameFile, ImportJob, ImagingSession, AnalysisTask
 from .preview import (PREVIEW_EXT, FITS_EXT, RAW_EXT, IMAGE_EXT, make_preview, header_text, header_meta,
                       exif_meta, clean_opts)
 
@@ -55,20 +55,30 @@ def find_duplicate(db, sha: str, exclude_id=None):
     return db.scalars(q.limit(1)).first()
 
 
-def compute_preview(stored_path: str, opts: dict):
-    """Slow part (no DB access): thumbnail + metadata. Returns dict or None."""
+def compute_preview(stored_path: str, opts: dict, thumbs: bool = True):
+    """Slow part (no DB access): thumbnail + metadata. Returns dict or None.
+    thumbs=False (setting “Generate thumbnails” off): only the metadata is read."""
     src = DATA_DIR / stored_path
     ext = src.suffix.lower()
     if ext not in PREVIEW_EXT:
         return None
     thumb = DATA_DIR / thumb_rel(stored_path)
-    ok, header, error = make_preview(src, thumb, opts)
+    if thumbs:
+        ok, header, error = make_preview(src, thumb, opts)
+    else:
+        from .preview import fits_header
+        ok, error, header = False, None, None
+        if ext in FITS_EXT:
+            try:
+                header = fits_header(src)
+            except Exception as e:
+                error = str(e) or e.__class__.__name__
     meta = {}
     if header is not None:
         meta = header_meta(header)
     elif ext in RAW_EXT or ext in IMAGE_EXT:
         meta = exif_meta(src)
-    return {"stored_path": stored_path, "thumb": str(thumb.relative_to(DATA_DIR)) if ok else None,
+    return {"stored_path": stored_path, "thumb": str(thumb.relative_to(DATA_DIR)) if ok else None, "keep_thumb": not thumbs,
             "header": header_text(header) if header is not None else None, "meta": meta,
             "error": f"Cannot read file: {error}" if error else None}
 
@@ -77,9 +87,10 @@ def apply_preview(ff: FrameFile, res):
     """Fast part: apply results to a *fresh* row; fills only fields that are still empty."""
     if not res or res["stored_path"] != ff.stored_path:     # file moved meanwhile -> keep row as is
         return
-    if ff.thumb_path and ff.thumb_path != res["thumb"]:
-        (DATA_DIR / ff.thumb_path).unlink(missing_ok=True)
-    ff.thumb_path = res["thumb"]
+    if not res.get("keep_thumb"):                 # thumbnails switched off: keep an existing one
+        if ff.thumb_path and ff.thumb_path != res["thumb"]:
+            (DATA_DIR / ff.thumb_path).unlink(missing_ok=True)
+        ff.thumb_path = res["thumb"]
     ff.error = res.get("error")                   # shown in the file list / info dialog (status stays "done")
     if res["header"] is not None:
         ff.header = res["header"]
@@ -104,6 +115,8 @@ def assign_session(db, ff: FrameFile):
 
 def reflag_project(db, project_id):
     """Recompute 'suspect' flags per filter group once all lights of a project are processed."""
+    if not load_settings(db)["bg_suspects"]:
+        return
     pending = db.scalar(select(func.count()).where(FrameFile.project_id == project_id,
                                                    FrameFile.frame_type == "light",
                                                    FrameFile.status.in_(["pending", "importing"])))
@@ -128,12 +141,13 @@ def process_file(db, ff: FrameFile, with_stats=True):
     src = DATA_DIR / path
     if not src.is_file():
         raise FileNotFoundError(path)
+    cfg = load_settings(db)
     db.commit()                                   # end read transaction while we work
     if not sha:
-        sha = sha256_file(src)
-    res = compute_preview(path, opts)
+        sha = sha256_file(src)                    # always (duplicates, integrity)
+    res = compute_preview(path, opts, cfg["bg_previews"])
     st = None
-    if with_stats and ftype == "light" and src.suffix.lower() in (FITS_EXT | RAW_EXT | IMAGE_EXT):
+    if with_stats and cfg["bg_frame_stats"] and ftype == "light" and src.suffix.lower() in (FITS_EXT | RAW_EXT | IMAGE_EXT):
         try:
             st = frame_stats(src)
         except Exception as e:
@@ -270,7 +284,7 @@ def step() -> bool:
         ff = db.scalars(select(FrameFile).where(FrameFile.status == "pending")
                         .order_by(FrameFile.id).limit(1)).first()
         if not ff:
-            return False
+            return run_analysis(db)
         current.update(file=ff.original_name, since=time.time())
         try:
             if process_file(db, ff) is not False:
@@ -291,11 +305,78 @@ def step() -> bool:
         if ff.project_id and ff.frame_type == "light":
             reflag_project(db, ff.project_id)
             db.commit()
+            try:                                  # Settings: measure new nights automatically
+                if not db.scalar(select(func.count()).where(FrameFile.project_id == ff.project_id,
+                                                            FrameFile.status.in_(["pending", "importing"]))):
+                    from .analysis import auto_measure_project
+                    if auto_measure_project(db, ff.project_id):
+                        db.commit()
+            except Exception:
+                db.rollback()
+                traceback.print_exc()
         return True
+
+
+def run_analysis(db) -> bool:
+    """One queued plate solve / optics analysis (lowest priority: after imports and previews)."""
+    from datetime import datetime
+    from . import analysis
+    if not load_settings(db)["bg_analysis"]:      # switched off in Settings: the queue waits
+        return False
+    t = db.scalars(select(AnalysisTask).where(AnalysisTask.status == "queued").order_by(AnalysisTask.id)
+                   .limit(1)).first()
+    if not t:
+        return False
+    f = db.get(FrameFile, t.file_id)
+    if f is None or f.status != "done":
+        t.status, t.error, t.finished_at = "error", "File not available", datetime.now()
+        db.commit()
+        return True
+    current.update(file=f"{'Plate solve' if t.kind == 'solve' else 'Optics'}: {f.original_name}", since=time.time())
+    t.status = "running"
+    inp = analysis.solve_inputs(db, f) if t.kind == "solve" else analysis.optics_inputs(f, "auto")
+    tid, fid = t.id, f.id
+    db.commit()                                   # no open transaction while ASTAP / measuring runs
+    try:
+        res = analysis.solve_compute(inp) if t.kind == "solve" else analysis.optics_compute(inp)
+        err = None if res.get("ok") else res.get("error") or "failed"
+    except Exception as e:
+        traceback.print_exc()
+        res, err = None, str(e)[:500]
+    t, f = db.get(AnalysisTask, tid), db.get(FrameFile, fid)
+    if t is None:                                 # cancelled meanwhile
+        return True
+    if f is not None and res is not None:
+        (analysis.solve_store if t.kind == "solve" else analysis.optics_store)(f, res)
+    t.status, t.error, t.finished_at = ("error" if err else "done"), err, datetime.now()
+    db.commit()
+    if f is not None and f.session is not None and load_settings(db)["cond_auto_fill"]:
+        try:                                      # Settings: fill in the session's Seeing / SQM
+            if analysis.fill_conditions(db, f.session):
+                db.commit()
+        except Exception:
+            db.rollback()
+            traceback.print_exc()
+    return True
+
+
+def cleanup_tasks():
+    """Finished analysis tasks are only kept for the progress display (1 day)."""
+    from datetime import datetime, timedelta
+    with SessionLocal() as db:
+        db.query(AnalysisTask).filter(AnalysisTask.status.in_(["done", "error"]),
+                                      AnalysisTask.finished_at < datetime.now() - timedelta(days=1)) \
+            .delete(synchronize_session=False)
+        db.query(AnalysisTask).filter(AnalysisTask.status == "running").update({"status": "queued"})
+        db.commit()
 
 
 def loop():
     last_cleanup = 0
+    try:
+        cleanup_tasks()                           # also re-queues tasks interrupted by a restart
+    except Exception:
+        traceback.print_exc()
     while True:
         try:
             busy = step()
@@ -339,5 +420,13 @@ def queue_status(db, project_id=None, calib_set_id=None) -> dict:
         jq = jq.where(ImportJob.calib_set_id == calib_set_id)
     for j in db.scalars(jq):
         jobs.append({"id": j.id, "total": j.total, "done": j.done, "skipped": j.skipped, "failed": j.failed})
+    aq = select(AnalysisTask.status, func.count()).group_by(AnalysisTask.status)
+    if project_id or calib_set_id:
+        aq = aq.join(FrameFile, FrameFile.id == AnalysisTask.file_id)
+        aq = aq.where(FrameFile.project_id == project_id) if project_id else aq.where(FrameFile.calib_set_id == calib_set_id)
+    ac = dict(db.execute(aq).all())
+    queued = ac.get("queued", 0) + ac.get("running", 0)
+    analysis = {"queued": queued, "done": ac.get("done", 0), "error": ac.get("error", 0),
+                "paused": not load_settings(db)["bg_analysis"]} if queued else None
     return {"importing": counts.get("importing", 0), "pending": counts.get("pending", 0),
-            "error": counts.get("error", 0), "jobs": jobs, "current": current["file"]}
+            "error": counts.get("error", 0), "jobs": jobs, "current": current["file"], "analysis": analysis}

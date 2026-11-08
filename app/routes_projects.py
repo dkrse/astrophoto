@@ -38,7 +38,7 @@ def name_key(v) -> str:
 
 
 def similar_projects(db, name, target=None, exclude_id=None) -> list:
-    keys = {k for k in (name_key(name), name_key(target)) if k}
+    keys = {k for k in (name_key(name), name_key(target)) if k and k != "untitled"}   # placeholder name
     if not keys:
         return []
     return [(pid, n) for pid, n, t in db.execute(select(Project.id, Project.name, Project.target)).all()
@@ -70,18 +70,28 @@ async def project_create(request: Request, user: User = Depends(current_user), d
     return RedirectResponse(f"/projects/{p.id}", status_code=303)
 
 
-def session_rows(p: Project, cat=None):
+def session_values(cat, s, files, ref=None):
+    """Measured values of one session (solves + optics + conditions), transparency relative to `ref`."""
+    from .measured import session_measured, add_transparency
     spec_of = (lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}) \
         if cat else (lambda kind, name: {})
-    from .measured import session_measured
+    tel = spec_of("telescope", s.telescope)
+    opt = optics(tel, spec_of("camera", s.camera))
+    m = session_measured([f for f in files if f.frame_type in ("light", "stack")], tel.get("focal_mm"),
+                         opt["scale"] if opt else None, tel.get("aperture_mm"))
+    if ref is not None:
+        add_transparency(m, s.telescope, s.camera, ref)
+    return m
+
+
+def session_rows(p: Project, cat=None, ref=None):
+    spec_of = (lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}) \
+        if cat else (lambda kind, name: {})
     out = []
     for s in p.sessions:
         files = [f for f in p.files if f.session_id == s.id]
-        opt = optics(spec_of("telescope", s.telescope), spec_of("camera", s.camera))
         out.append({"s": s, "files": files, "count": len(files),
-                    "measured": session_measured([f for f in files if f.frame_type in ("light", "stack")],
-                                                 spec_of("telescope", s.telescope).get("focal_mm"),
-                                                 opt["scale"] if opt else None),
+                    "measured": session_values(cat, s, files, ref),
                     "lights": sum(1 for f in files if f.frame_type == "light"),
                     "exposure": exposure_summary(files)["total"], "expo": exposure_summary(files),
                     "optic": optics(spec_of("telescope", s.telescope), spec_of("camera", s.camera))})
@@ -120,10 +130,17 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
     others = db.execute(select(Project.id, Project.name).where(Project.id != p.id)
                         .order_by(func.lower(Project.name))).all()
     cat = catalog(db)
-    rows = session_rows(p, cat)
+    from .measured import zp_reference
+    rows = session_rows(p, cat, zp_reference(db))
     unassigned = [f for f in p.files if not f.session_id]
     sess_groups = [{"key": f"s{r['s'].id}_", "r": r, "groups": {t: [f for f in r["files"] if f.frame_type == t]
                                                                for t in FRAME_TYPES}} for r in rows]
+    # pagination of the sessions (table + their file blocks); a link to a session on another page finds it
+    from .core import paginate
+    spg = paginate(len(sess_groups), load_settings(db)["sessions_page_size"], request.query_params.get("sp"))
+    per = load_settings(db)["sessions_page_size"] or 0
+    session_page = {g["r"]["s"].id: (i // per + 1 if per else 1) for i, g in enumerate(sess_groups)}
+    sess_groups = sess_groups[spg["start"]:spg["end"]]
     if unassigned or not rows:
         sess_groups.append({"key": "u_", "r": None,
                             "groups": {t: [f for f in unassigned if f.frame_type == t] for t in FRAME_TYPES}})
@@ -131,8 +148,11 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
         g["sizes"] = {t: sum(f.size for f in fs) for t, fs in g["groups"].items()}
     dates = [s.date for s in p.sessions if s.date]
     last_s = p.sessions[-1] if p.sessions else None
+    from .integrity import project_duplicates
     return page(request, "project_detail.html", user=user, p=p, groups=groups, sizes=sizes,
-                sess_groups=sess_groups, unassigned=len(unassigned), last_s=last_s,
+                dups=project_duplicates(db, p.id),
+                sess_groups=sess_groups, unassigned=len(unassigned), last_s=last_s, spg=spg,
+                page_rows=rows[spg["start"]:spg["end"]], session_page=session_page,
                 date_range=(min(dates), max(dates)) if dates else None,
                 cover=project_cover(p), thumbs=[f for f in p.files if f.thumb_path],
                 expo=exposure_summary(p.files), sessions=rows, cat=cat,
@@ -145,9 +165,9 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
 @app.get("/api/stats/optics")
 def optics_trend(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Per session (with solved / analysed frames): measured FWHM, elongation, tilt, limiting magnitude, focal."""
-    from .measured import session_measured
+    from .measured import zp_reference
     cat = catalog(db)
-    spec = lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}
+    ref = zp_reference(db)
     files = db.scalars(select(FrameFile).where(FrameFile.session_id.is_not(None),
                                                FrameFile.frame_type.in_(("light", "stack")),
                                                (FrameFile.solve.is_not(None)) | (FrameFile.optics.is_not(None)))).all()
@@ -157,8 +177,7 @@ def optics_trend(user: User = Depends(current_user), db: Session = Depends(get_d
     out = []
     for sid, fs in by_s.items():
         s = fs[0].session
-        opt = optics(spec("telescope", s.telescope), spec("camera", s.camera))
-        m = session_measured(fs, spec("telescope", s.telescope).get("focal_mm"), opt["scale"] if opt else None)
+        m = session_values(cat, s, fs, ref)
         if not m:
             continue
         out.append({"session_id": sid, "project_id": s.project_id, "project": s.project.name,
@@ -267,6 +286,12 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     if not d:
         flash(request, "Please enter a valid night date (dd-mm-yyyy)", "err")
         return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
+    if s.id and s.date and d != s.date:
+        # date changed: frames whose observation date belongs to the old night leave this session
+        other = next((x for x in p.sessions if x.id != s.id and x.date == s.date), None)
+        for f in s.files:
+            if f.date_obs and night_of(f.date_obs) == s.date:
+                f.session_id = other.id if other else None     # to another session of that night, else unassigned
     s.date = d
     for f in SESSION_FIELDS:
         v = none_if_empty(form.get(f))
@@ -291,7 +316,7 @@ def session_delete(request: Request, sid: int, user: User = Depends(current_user
     s = db.get(ImagingSession, sid)
     if not s:                                    # already deleted (double submit)
         flash(request, "Session was already deleted")
-        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
+        return RedirectResponse("/", status_code=303)
     pid = s.project_id
     files = list(s.files)
     if any(f.status == "importing" for f in files):

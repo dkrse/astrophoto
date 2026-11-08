@@ -518,3 +518,37 @@ tr.sessrow{cursor:pointer}tr.sessrow:hover td{background:color-mix(in srgb,var(-
 .tr-svg .tr-dot{fill:var(--accent);stroke:var(--card);stroke-width:2}
 .tr-svg .tr-hit{fill:transparent;cursor:pointer}
 .tr-tip{position:absolute;pointer-events:none;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.2);white-space:nowrap;z-index:5}
+.flash.warn-box{background:color-mix(in srgb,#f59f00 15%,var(--card));border-color:color-mix(in srgb,#f59f00 40%,transparent)}
+tr.objrow{cursor:pointer}tr.objrow:hover td{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+tr.objrow.sel td{background:color-mix(in srgb,var(--accent) 20%,transparent);font-weight:600}
+.bgproc{display:flex;flex-direction:column;gap:10px;margin:6px 0 4px}
+.bgproc .bgrow{display:flex;gap:10px;align-items:flex-start;margin:0;font-size:14px;cursor:pointer}
+.bgproc .bgrow input{width:auto;margin:3px 0 0}
+.bgproc .bgrow b{font-weight:500}.bgproc .bgrow small{display:block;margin-top:2px}
+/* header activity indicator */
+.activity{position:relative;display:inline-flex;align-items:center;margin-left:-4px;cursor:default;outline:none}
+.act-orbit{position:relative;width:22px;height:22px;display:inline-block}
+.act-orbit i{position:absolute;inset:0;border-radius:50%;animation:act-spin 1.6s linear infinite}
+.act-orbit i::before{content:"";position:absolute;top:0;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:var(--accent)}
+.act-orbit i:nth-child(2){inset:4px;animation-duration:1.1s;animation-direction:reverse}
+.act-orbit i:nth-child(2)::before{width:4px;height:4px;margin-left:-2px;opacity:.75}
+.act-orbit i:nth-child(3){inset:9px;border-radius:50%;background:var(--accent);opacity:.35;animation:act-pulse 1.6s ease-in-out infinite}
+.act-orbit i:nth-child(3)::before{display:none}
+@keyframes act-spin{to{transform:rotate(360deg)}}
+@keyframes act-pulse{50%{opacity:.9;transform:scale(1.25)}}
+.activity.paused .act-orbit i{animation:none}
+.activity.paused .act-orbit i:nth-child(3){opacity:.5;background:var(--muted)}
+.act-tip{display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:50;min-width:240px;max-width:360px;padding:8px 10px;
+  background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);font-size:12px;line-height:1.5;white-space:normal}
+.act-tip .act-cur{color:var(--muted);margin-top:4px;word-break:break-all}
+.activity:hover .act-tip,.activity:focus .act-tip{display:block}
+@media (prefers-reduced-motion:reduce){.act-orbit i{animation-duration:6s}}
+/* tabs */
+nav.tabs{display:flex;flex-wrap:wrap;gap:2px;border-bottom:1px solid var(--border);margin:6px 0 16px}
+nav.tabs a{padding:8px 14px;border-radius:8px 8px 0 0;color:var(--muted);font-size:14px;border:1px solid transparent;border-bottom:none;margin-bottom:-1px}
+nav.tabs a:hover{color:var(--fg);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+nav.tabs a.active{color:var(--fg);font-weight:600;background:var(--card);border-color:var(--border);border-bottom:2px solid var(--accent)}
+.tabpane[hidden]{display:none}
+.pager{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:10px 0}
+.pager .muted{margin-right:6px}
+.showall{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 4px}

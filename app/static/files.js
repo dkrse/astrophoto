@@ -86,20 +86,31 @@
         if (r.status === 401) throw 'logout';
         return r.json();
       }).then(function (s) {
-        var busy = s.pending || s.importing || (s.jobs && s.jobs.length);
+        var busy = s.pending || s.importing || (s.jobs && s.jobs.length) || s.analysis;
         var t = (s.jobs || []).map(function (j) {
           return 'Importing ' + (j.done + j.skipped + j.failed) + '/' + j.total + (j.skipped ? ' (' + j.skipped + ' duplicates skipped)' : '');
         });
         if (s.pending) t.push('Processing ' + s.pending + ' file(s) – previews, metadata, statistics…');
+        if (s.analysis) t.push((s.analysis.paused ? '⏸ Analysis paused (switched off in Settings) – ' + s.analysis.queued + ' waiting' :
+          'Analysing ' + (s.analysis.done + s.analysis.error) + '/' + (s.analysis.done + s.analysis.error + s.analysis.queued) + ' (plate solve / optics)') + (s.analysis.error ? ', ' + s.analysis.error + ' failed' : ''));
+        var sp = box.querySelector('.spinner'); if (sp) sp.hidden = !!(s.analysis && s.analysis.paused && !s.pending && !s.importing);
+        var cb = document.getElementById('proccancel'); if (cb) cb.hidden = !s.analysis;
         document.getElementById('proctext').textContent = t.join(' · ');
         document.getElementById('proccur').textContent = s.current || '';
         box.hidden = !busy;
-        if (busy) { wasBusy = true; later(2500); }
-        else if (wasBusy && !window.UPLOADER_BUSY) { location.reload(); }
+        if (busy) { wasBusy = true; later(s.analysis && s.analysis.paused && !s.pending && !s.importing ? 15000 : 2500); }
+        else if (wasBusy && !window.UPLOADER_BUSY && !document.querySelector('dialog[open]')) { location.reload(); }   // never while editing in a dialog
         else if (wasBusy) { document.getElementById('proctext').textContent = 'Processing finished – reload the page to see the new files.'; box.hidden = false; box.querySelector('.spinner').hidden = true; }
       }).catch(function (e) { if (e !== 'logout') later(8000); });
     }
     if (wasBusy) later(1500);
-    window.startStatusPoll = function () { wasBusy = true; box.hidden = false; box.querySelector('.spinner').hidden = false; later(300); };
+    var cancel = document.getElementById('proccancel');
+    if (cancel) cancel.onclick = function () {
+      if (!confirm('Remove the analyses still waiting in the queue? Finished results are kept.')) return;
+      var m = box.dataset.api.match(/projects\/(\d+)/);
+      fetch('/api/analysis/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(m ? { project_id: +m[1] } : {}) }).then(function () { later(300); });
+    };
+    window.startStatusPoll = function () { if (window.activityPoke) activityPoke(); wasBusy = true; box.hidden = false; box.querySelector('.spinner').hidden = false; later(300); };
   }
 })();

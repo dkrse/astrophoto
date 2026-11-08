@@ -33,6 +33,8 @@ def _luminance(src: Path):
     if ext in IMAGE_EXT:
         from PIL import Image
         with Image.open(src) as im:
+            if im.mode not in ("L", "I", "I;16", "I;16B", "F", "RGB"):   # palette, alpha, CMYK … -> luminance
+                im = im.convert("L")
             a = np.asarray(im, dtype=np.float32)
         return (a[..., :3].mean(axis=-1) if a.ndim == 3 else a), 1
     return None, 1

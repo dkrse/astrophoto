@@ -32,6 +32,20 @@ def to_display(u: float, v: float, orient: int, flip: str):
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
+def north_up(ann: dict, orient: int, flip: str, W: int, H: int):
+    """(mirror, angle): mirror horizontally first (if east is not left of north), then rotate clockwise by
+    `angle` degrees (screen convention, like CSS rotate) so that north points up."""
+    def px(u, v):
+        u, v = to_display(u, v, orient, flip)
+        return u * W, v * H
+    c, n, e = (px(*ann["compass"][k]) for k in ("c", "n", "e"))
+    nx, ny, ex, ey = n[0] - c[0], n[1] - c[1], e[0] - c[0], e[1] - c[1]
+    mirror = (nx * ey - ny * ex) > 0             # normal sky: east 90° counter-clockwise from north
+    if mirror:
+        nx = -nx
+    return mirror, -90 - math.degrees(math.atan2(ny, nx))
+
+
 def _font(size: int):
     try:
         return ImageFont.truetype(FONT, size)
@@ -43,13 +57,16 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
-def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True):
-    W, H = im.size
+def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True, xf=None, size=None):
+    """xf: optional mapping of pixel coordinates of the un-rotated image (size) onto `im` (north-up export)."""
+    SW, SH = size or im.size                      # size of the image the (u, v) fractions refer to
     d = ImageDraw.Draw(im)
-    lw = max(1, round(W / 900))
-    fs = max(12, round(W / 80))
+    lw = max(1, round(max(im.size) / 900))
+    fs = max(12, round(max(im.size) / 80))
     font, small = _font(fs), _font(max(10, round(fs * 0.8)))
-    P = lambda u, v: tuple(a * b for a, b in zip(to_display(u, v, orient, flip), (W, H)))
+    xf = xf or (lambda x, y: (x, y))
+    P = lambda u, v: xf(*(a * b for a, b in zip(to_display(u, v, orient, flip), (SW, SH))))
+    W, H = im.size
     if grid:
         for g in ann["grid"]:
             pts = [P(u, v) for u, v in g["pts"]]
@@ -90,14 +107,40 @@ def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True):
     return im
 
 
-def annotated_jpeg(src: Path, opts: dict, res: dict, flip: str, grid: bool = True) -> bytes | None:
+def rotate_north_up(im, ann: dict, orient: int, flip: str):
+    """Image turned north up / east left + the matching point transform (for drawing the overlay)."""
+    from PIL import ImageOps
+    W, H = im.size
+    mirror, ang = north_up(ann, orient, flip, W, H)
+    if mirror:
+        im = ImageOps.mirror(im)
+    out = im.rotate(-ang, expand=True, resample=3, fillcolor=(0, 0, 0))    # PIL: counter-clockwise
+    W2, H2 = out.size
+    a = math.radians(ang)
+    ca, sa = math.cos(a), math.sin(a)
+
+    def xf(x, y):
+        if mirror:
+            x = W - x
+        dx, dy = x - W / 2, y - H / 2
+        return W2 / 2 + dx * ca - dy * sa, H2 / 2 + dx * sa + dy * ca
+    return out, xf
+
+
+def annotated_jpeg(src: Path, opts: dict, res: dict, flip: str, grid: bool = True, north: bool = False) -> bytes | None:
     im, _ = render(src, {**opts, "flip": flip}, max_side=None)
     if im is None:
         return None
     if max(im.size) > MAX_SIDE:
         im.thumbnail((MAX_SIDE, MAX_SIDE))
     im = im.convert("RGB")
-    draw_annotations(im, annotations(res), res.get("orient", 0), flip, grid)
+    ann, orient = annotations(res), res.get("orient", 0)
+    if north:
+        size = im.size
+        im, xf = rotate_north_up(im, ann, orient, flip)
+        draw_annotations(im, ann, orient, flip, grid, xf=xf, size=size)
+    else:
+        draw_annotations(im, ann, orient, flip, grid)
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=90)
     return buf.getvalue()
