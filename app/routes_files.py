@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse, FileResponse, PlainTextResponse,
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from .core import (clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
+from .core import (safe_referer, json_body, as_dict, to_int, clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
                    DATA_DIR, file_owner, move_file_storage, delete_file_storage, unique_dest, project_dir,
                    load_settings)
 from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, AnalysisTask, FRAME_TYPES
@@ -233,7 +233,7 @@ def file_reject(request: Request, fid: int, user: User = Depends(current_user), 
     db.commit()
     if request.headers.get("accept", "").startswith("application/json"):
         return {"rejected": f.rejected}
-    return RedirectResponse(request.headers.get("referer") or back_url(f), status_code=303)
+    return RedirectResponse(safe_referer(request, back_url(f)), status_code=303)
 
 
 @app.post("/files/{fid}/delete")
@@ -277,7 +277,7 @@ def reject_suspects(request: Request, pid: int, user: User = Depends(current_use
 # ---------- bulk operations ----------
 @app.post("/api/files/bulk")
 async def files_bulk(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await request.json()
+    data = await json_body(request)
     ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
     files = db.scalars(select(FrameFile).where(FrameFile.id.in_(ids))).all() if ids else []
     if not files:
@@ -365,11 +365,11 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
         msg = f"Session updated for {done} file{'s' if done != 1 else ''}"
         n = done
     elif action == "meta":
-        vals = value or {}
+        vals = as_dict(value)
         for f in files:
             for k in ("description", "filter", "gain", "temperature"):
-                if (vals.get(k) or "").strip():
-                    setattr(f, k, vals[k].strip())
+                if none_if_empty(vals.get(k)):
+                    setattr(f, k, none_if_empty(vals[k]))
             if to_float(vals.get("exposure_s")) is not None:
                 f.exposure_s = to_float(vals["exposure_s"])
         msg = f"Metadata updated for {n} files"
@@ -406,6 +406,8 @@ async def file_solve(fid: int, user: User = Depends(current_user), db: Session =
     f = get_file(db, fid)
     if not (DATA_DIR / f.stored_path).exists():
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
+    if f.status == "importing":
+        return JSONResponse({"ok": False, "error": "File is still being imported"}, status_code=409)
     res = await run_in_threadpool(analysis.solve_compute, analysis.solve_inputs(db, f))
     analysis.solve_store(f, res)
     db.commit()
@@ -479,11 +481,13 @@ async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User =
     f = get_file(db, fid)
     if not (DATA_DIR / f.stored_path).exists():
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
+    if f.status == "importing":
+        return JSONResponse({"ok": False, "error": "File is still being imported"}, status_code=409)
     inp = analysis.optics_inputs(f, flip)
     res = await slotted(analysis.optics_compute, inp, bool(tiles))
     analysis.optics_store(f, res)              # summary for the session / trend views
     db.commit()
-    if res.get("ok") and res.get("fwhm_arcsec") and len(res.get("regions") or []) == 9:
+    if res.get("ok") and res.get("fwhm_arcsec") and res.get("fwhm_px") and len(res.get("regions") or []) == 9:
         from .conditions import seeing, seeing_label
         from .core import catalog
         c = res["regions"][4]
@@ -500,7 +504,7 @@ async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User =
 async def equipment_focal(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Store a measured focal length in the telescope's parameters (from a plate solve)."""
     from .models import CatalogItem
-    data = await request.json()
+    data = await json_body(request)
     name, focal = data.get("telescope"), to_float(data.get("focal_mm"))
     if not name or not focal or not 10 <= focal <= 20000:
         return JSONResponse({"error": "Telescope and a focal length (10–20000 mm) are required"}, status_code=400)
@@ -549,7 +553,7 @@ async def analysis_queue(request: Request, user: User = Depends(current_user), d
     scope: files (ids) | project (project_id) | all;  kind: solve | optics | both;
     only_missing: skip files that already have the result;  per_session: 0 = all frames, N = N per session."""
     from .models import AnalysisTask
-    data = await request.json()
+    data = await json_body(request)
     kinds = {"solve": ["solve"], "optics": ["optics"], "both": ["solve", "optics"]}.get(data.get("kind"))
     if not kinds:
         return JSONResponse({"error": "Unknown kind"}, status_code=400)
@@ -560,15 +564,15 @@ async def analysis_queue(request: Request, user: User = Depends(current_user), d
         ids = [int(i) for i in data.get("ids") or [] if str(i).isdigit()]
         q = q.where(FrameFile.id.in_(ids))
     elif scope == "project":
-        q = q.where(FrameFile.project_id == int(data.get("project_id") or 0))
+        q = q.where(FrameFile.project_id == to_int(data.get("project_id"), 0))
     elif scope == "session":
-        q = q.where(FrameFile.session_id == int(data.get("session_id") or 0))
+        q = q.where(FrameFile.session_id == to_int(data.get("session_id"), 0))
     elif scope == "all":
         q = q.where(FrameFile.project_id.is_not(None))
     else:
         return JSONResponse({"error": "Unknown scope"}, status_code=400)
     files = db.scalars(q).all()
-    per = int(data.get("per_session") or 0)
+    per = to_int(data.get("per_session"), 0)
     if per > 0:
         files = pick_per_session([f for f in files if f.frame_type == "light"], per) + \
             [f for f in files if f.frame_type == "stack"]
@@ -595,10 +599,13 @@ async def analysis_queue(request: Request, user: User = Depends(current_user), d
 @app.post("/api/analysis/cancel")
 async def analysis_cancel(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     from .models import AnalysisTask
-    data = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    data = await json_body(request) if request.headers.get("content-type", "").startswith("application/json") else {}
     q = select(AnalysisTask.id).where(AnalysisTask.status == "queued")
     if data.get("project_id"):
-        q = q.join(FrameFile, FrameFile.id == AnalysisTask.file_id).where(FrameFile.project_id == int(data["project_id"]))
+        pid = to_int(data["project_id"])
+        if pid is None:
+            return JSONResponse({"error": "Invalid project_id"}, status_code=400)
+        q = q.join(FrameFile, FrameFile.id == AnalysisTask.file_id).where(FrameFile.project_id == pid)
     ids = list(db.scalars(q))
     if ids:
         db.query(AnalysisTask).filter(AnalysisTask.id.in_(ids)).delete(synchronize_session=False)

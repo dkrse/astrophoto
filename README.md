@@ -96,13 +96,16 @@ FWHM, limiting magnitude, tilt and elongation
   warning when creating / renaming (`NGC 123`, `ngc123`, `NGC  123` are the same)
 - **Sessions (nights)** carry everything that changes between nights: date, location, telescope, camera, mount,
   software, seeing, SQM, temperature, humidity and computed moon illumination; new nights inherit the equipment
-  of the latest one; ⚡ automatic sessions from `DATE-OBS` / EXIF (frames after midnight belong to the evening)
+  of the latest one; ⚡ automatic sessions from `DATE-OBS` / EXIF (frames after midnight belong to the evening);
+  FITS `DATE-OBS` (UTC) is converted to the **site time zone** (Settings), `DATE-LOC` / EXIF are already local
+- Moon illumination at 23:00 local time (Meeus, accurate to ~0.5 %)
 - Integration time per session and filter (rejected frames excluded), total per project
 - Image scale and field of view from the equipment parameters; **measured** values per night next to them
 - **Equipment lists** with technical parameters (telescope aperture / focal length / type, camera resolution /
   pixel size / sensor / cooling, mount); renames propagate, used items cannot be deleted; measured focal lengths
   can be stored with one click
-- Details of sessions and files in compact **i** dialogs; clicking a session row jumps to its files
+- Details of sessions and files in compact **i** dialogs; the Files section lists **only the clicked session**
+  (nothing is listed until a session is chosen)
 - **Pagination** of sessions (table + file blocks together), of every file group and of the calibration library;
   links to a session on another page open the right page
 
@@ -115,6 +118,7 @@ FWHM, limiting magnitude, tilt and elongation
 - Bulk operations: type, move, session, metadata, reject / restore, reprocess, delete, 🎯 Solve, 🔬 Optics
 - Frame quality statistics for lights (FWHM, stars, background, noise) with automatic “suspect” flags
 - Unreadable / corrupt files are marked with the reason
+- File lists as **☰ list** (table) or **▦ image tiles** – switch above every list, default in Settings
 
 ### Viewer
 - FITS (mono, OSC / Bayer, RGB cubes), camera RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2 …), JPEG / PNG / TIFF
@@ -185,12 +189,14 @@ FWHM, limiting magnitude, tilt and elongation
 - Gallery of final images with capture date, sorting, tile sizes and a fullscreen slideshow
 
 ### Settings, security and administration
-- Settings in tabs: **General & appearance** (title, accent colour, theme, view, page sizes of projects /
-  sessions / files / calibration sets), **Downloads**, **Gallery**, **Background processing** (thumbnails, frame
+- Settings in tabs: **General & appearance** (title, accent colour, theme, project view, default file view
+  list / images, page sizes of projects / sessions / files / calibration sets), **Files & downloads** (ZIP,
+  duplicates, site time zone), **Gallery**, **Background processing** (thumbnails, frame
   statistics, suspect marks, background analyses, integrity checks, automatic conditions measuring and filling –
   each can be switched off) and **Panels** (expanded by default)
-- Single admin account (`admin` / `admin` on first start, banner until changed), login throttling, CSRF protection
-  of every change, warning for a weak `SECRET_KEY`
+- Single admin account (`admin` / `admin` on first start, banner until changed), login throttling (per client IP –
+  behind a reverse proxy set `FORWARDED_ALLOW_IPS`), CSRF protection of every change and of the sign-in form,
+  warning for a weak `SECRET_KEY`
 - Light / dark mode, keyboard shortcuts in the viewer
 
 ## Requirements
@@ -216,6 +222,7 @@ FWHM, limiting magnitude, tilt and elongation
    | `SECRET_KEY` | session signing key – `python3 -c 'import secrets; print(secrets.token_hex(32))'` |
    | `DATA_DIR` | data folder inside the container (default `/data`) |
    | `TEST_DATABASE_URL` | optional, database for `./run-tests.sh` (default `astrophoto_test` on the same server) |
+   | `FORWARDED_ALLOW_IPS` | optional, behind a reverse proxy: the proxy's IP(s) whose `X-Forwarded-For` is trusted (login lock-out per real client) |
 
 2. Adjust the volumes in `docker-compose.yml`:
 
@@ -243,6 +250,9 @@ FWHM, limiting magnitude, tilt and elongation
    small fields use D80. Paths can be changed with `ASTAP_DB` / `ASTAP_BIN` / `OPENNGC_DIR`.
 
 5. Open <http://localhost:8010>, sign in with `admin` / `admin` and **change the password** (account menu → Change password).
+
+6. Settings → Files & downloads → **Time zone of the observing site** (e.g. `Europe/Bratislava`): FITS times are
+   UTC; with the zone set, capture times and nights are local. Default `UTC`.
 
 ## Usage
 
@@ -304,7 +314,7 @@ tests/               pytest suite
 ## Tests
 
 ```bash
-./run-tests.sh            # all tests (233, ≈ 55 s, no warnings)
+./run-tests.sh            # all tests (364, ≈ 60 s, no warnings)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
@@ -320,7 +330,8 @@ needed – plate solving is simulated where required.
 | `test_archive.py` | background analysis queue, archive import, duplicate warnings, integrity check, background switches, activity indicator, page speed with 3000 frames |
 | `test_conditions.py` | seeing / transparency / sky brightness, offsets, session values, manual and automatic measuring / filling, tabs |
 | `test_coverage.py` | full plate-solve flow with a simulated ASTAP, star database search across RA 0/360, upload edge cases, import / worker error paths |
-| `test_review.py` | regression tests for the bugs found in the code reviews |
+| `test_review.py`, `test_audit.py` | regression tests for the bugs found in the code reviews (malformed API input → 400, busy files, upload races, login CSRF, time zone, foreign keys, moon phase, session-only file list, list / image view) |
+| `test_helpers.py` | small pure helpers: formatting, passwords, settings, file names, equipment specs, nights, FITS header values / dates, RA / Dec, geometry, view options |
 | `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
 | `test_skymap.py` | sky map: TAN outlines vs. astropy, catalogue, ecliptic / galactic centre, constellations, API |
 | `test_perf.py` | small cached thumbnails, render slots never blocking the server, star-tile cache budget, settings cache, deferred FITS headers (query counts), large uploads |

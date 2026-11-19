@@ -3,7 +3,7 @@
 Nothing in here ever writes to the original file.
 """
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -369,18 +369,75 @@ def header_text(header) -> str | None:
     return header.tostring(sep="\n").rstrip() if header is not None else None
 
 
+def fits_value(raw: str) -> str:
+    """Value part of a FITS card ("= 'M31/M32' / comment"): quoted strings may contain '/' and '' (escaped quote)."""
+    raw = raw.strip()
+    if raw.startswith("'"):
+        out, i = [], 1
+        while i < len(raw):
+            if raw[i] == "'":
+                if raw[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                break
+            out.append(raw[i])
+            i += 1
+        return "".join(out).strip()
+    return raw.split("/")[0].strip()
+
+
 def parse_date_obs(v) -> datetime | None:
-    s = str(v or "").strip().replace("Z", "")
+    """FITS DATE-OBS -> naive datetime. A timezone suffix (Z, +00:00, +0200) is converted to UTC."""
+    s = str(v or "").strip()
+    m = re.search(r"(Z|[+-]\d{2}:?\d{2})$", s) if "T" in s or " " in s else None
+    off = None
+    if m:
+        z = m.group(1)
+        off = timedelta(0) if z == "Z" else (1 if z[0] == "+" else -1) * timedelta(hours=int(z[1:3]),
+                                                                                  minutes=int(z[-2:]))
+        s = s[:m.start()]
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(s[:26], fmt)
+            d = datetime.strptime(s[:26], fmt)
+            return d - off if off else d
         except ValueError:
             pass
     return None
 
 
-def header_meta(header) -> dict:
-    """Extract common acquisition values from a FITS header."""
+def utc_to_local(dt: datetime | None, tz: str | None) -> datetime | None:
+    """Naive UTC datetime -> naive local time of the zone tz (None / 'UTC' / unknown zone: unchanged)."""
+    if dt is None or not tz or tz == "UTC":
+        return dt
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    try:
+        return dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz)).replace(tzinfo=None)
+    except (KeyError, ValueError, OSError):
+        return dt
+
+
+def local_to_utc(dt: datetime, tz: str | None) -> datetime:
+    """Naive local time of zone tz -> naive UTC (None / 'UTC' / unknown zone: unchanged)."""
+    if not tz or tz == "UTC":
+        return dt
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    try:
+        return dt.replace(tzinfo=ZoneInfo(tz)).astimezone(timezone.utc).replace(tzinfo=None)
+    except (KeyError, ValueError, OSError):
+        return dt
+
+
+def header_date(get, tz: str | None = None) -> datetime | None:
+    """Capture time in local time: DATE-LOC as is, else DATE-OBS (UTC by the FITS standard) converted to tz."""
+    loc = parse_date_obs(get("DATE-LOC"))
+    return loc if loc else utc_to_local(parse_date_obs(get("DATE-OBS")), tz)
+
+
+def header_meta(header, tz: str | None = None) -> dict:
+    """Extract common acquisition values from a FITS header (tz: site time zone for DATE-OBS)."""
     if header is None:
         return {}
 
@@ -397,7 +454,7 @@ def header_meta(header) -> dict:
     m = {"exposure_s": exp, "gain": g("GAIN", "ISOSPEED"), "temperature": g("CCD-TEMP", "SET-TEMP"),
          "filter": g("FILTER")}
     out = {k: (v if k == "exposure_s" or v is None else str(v).strip()) for k, v in m.items()}
-    out["date_obs"] = parse_date_obs(g("DATE-OBS", "DATE-LOC"))
+    out["date_obs"] = header_date(g, tz)
     return out
 
 

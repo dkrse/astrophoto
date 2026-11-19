@@ -3,6 +3,59 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] – 2026-11-19
+
+### Added
+- **☰ List / ▦ Images** switch above every file list (session, calibration set): image tiles with preview, name,
+  capture time with the selection checkbox next to it, and the file buttons. Default in Settings → General &
+  appearance; the browser's own choice applies until that default is changed.
+- **Site time zone** (Settings → Files & downloads): FITS `DATE-OBS` (UTC) is converted to local time for capture
+  times and the night a frame belongs to (`DATE-LOC` / EXIF are already local). Changing it recomputes the capture
+  times of all FITS files and the moon illumination of all sessions. Default `UTC` (unchanged behaviour).
+- `FORWARDED_ALLOW_IPS` documented in `.env.example` (login lock-out per real client behind a reverse proxy).
+
+### Changed
+- Project page: the Files section shows **only the session clicked** in the Sessions panel – no other sessions,
+  not even folded; nothing is listed until one is chosen. The setting “Project: sessions in Files” was removed.
+- Moon illumination: Meeus (ch. 48) instead of a mean synodic period (~0.5 % instead of up to ±6 %), at 23:00
+  local time of the site; all sessions recomputed once on start.
+- Plate-solve hint: `OBJCTRA` / `OBJCTDEC` win over a numeric `RA` (some programs write RA in hours); a
+  sexagesimal `RA` string is read as hours.
+- Settings tab “Downloads” renamed to “Files & downloads”.
+- `/api/slides` loads all frames in one query (was one per id), order kept.
+
+### Fixed
+- Malformed JSON bodies (list / string / broken JSON), non-numeric ids and non-string values in the APIs
+  (bulk actions incl. metadata, analysis queue / cancel, uploads, imports, catalogue, archive import) return 400
+  instead of 500.
+- Plate solve and 🔬 Optics refuse a file that is still being imported (409); optics no longer crashes without a
+  pixel FWHM; the calibration-set ZIP skips half-copied files.
+- Uploads: finishing / cancelling waits for a chunk that is being written; a chunk after finish / cancel gets 410
+  and leaves no stray `.part` file.
+- Login: sign-in form token (login CSRF); expired lock-out entries are pruned.
+- Deleting a session re-computes the “suspect” marks of the remaining lights.
+- Viewer of a file without project or calibration set: 404 instead of 500.
+- `/files/{id}/reject` only redirects back inside the app (no open redirect).
+- RA / Dec display: no more “60.0s” / “24h” (rounded before splitting).
+- Long file names keep their extension (were cut to 200 characters incl. `.fits` → no preview / solve).
+- Sky map: the newest *successful* solve of a session is used (a newer failed solve hid the field).
+- Analysis queue: a task whose inputs fail is marked as error instead of blocking the queue forever; finished
+  tasks are also cleaned up by the hourly housekeeping (were only removed at start).
+- FITS header values containing `/` inside quotes (`OBJECT = 'M31/M32'`) and `''` escapes are read correctly;
+  `DATE-OBS` with a time zone suffix (`Z`, `+00:00`, `+0200`) is parsed.
+- Import: a copy whose database commit fails is marked as error (was re-copied endlessly).
+- Transparency reference refreshed right after a new plate solve (was cached up to 60 s), thread-safe.
+- Limiting magnitude: no crash on a degenerate refit; catalogue magnitude 0.0 no longer treated as missing.
+- Plate solve note for an image larger than the sensor (said “smaller”).
+- Session with an invalid date creates nothing; the `admin` account is only seeded into an empty user table
+  (a renamed admin is not re-created).
+- Database: foreign keys for the project cover (`SET NULL`), file → import job (`SET NULL`) and import job →
+  project / calibration set (`CASCADE`); dangling references cleaned up by the migration.
+
+### Tests
+- 364 tests (was 233): new `test_helpers.py` (formatting, passwords, settings, names, specs, nights, FITS values /
+  dates, RA / Dec, geometry) and `test_audit.py` (regressions for all fixes above).
+
 ## [1.4.5] – 2026-11-08
 
 ### Added

@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse, PlainTextResponse, JSONResponse
 from sqlalchemy import select, or_, func, update
 from sqlalchemy.orm import Session, selectinload
 
-from .core import (invalidate_settings, templates, app, page, flash, get_db, current_user, check_pw, hash_pw, load_settings, coerce_setting,
+from .core import (json_body, as_dict, to_int, invalidate_settings, templates, app, page, flash, get_db, current_user, check_pw, hash_pw, load_settings, coerce_setting,
                    SETTINGS, SORT_LABELS, catalog, none_if_empty, parse_dmy, DATA_DIR, exposure_summary,
                    night_of, parse_specs, spec_summary, like_pattern, NAME_MAX)
 from .models import (User, Project, FrameFile, CatalogItem, Setting, ImagingSession,
@@ -19,7 +19,11 @@ from .models import (User, Project, FrameFile, CatalogItem, Setting, ImagingSess
 # ---------- auth ----------
 @app.get("/login")
 def login_page(request: Request):
-    return page(request, "login.html")
+    # pre-session token: a foreign site cannot log the browser into *its* account (login CSRF) – the
+    # session cookie is SameSite=Lax, so a cross-site POST arrives without it and the token check fails
+    tok = request.session.get("login_csrf") or secrets.token_urlsafe(24)
+    request.session["login_csrf"] = tok
+    return page(request, "login.html", login_csrf=tok)
 
 
 _FAILS: dict = {}          # ip -> [count, first_failure_ts]
@@ -27,11 +31,21 @@ MAX_FAILS, LOCK_S = 5, 600
 
 
 @app.post("/login")
-def login(request: Request, username: str = Form(...), password: str = Form(...),
+def login(request: Request, username: str = Form(...), password: str = Form(...), login_csrf: str = Form(""),
           db: Session = Depends(get_db)):
+    import hmac
     import time
+    want = request.session.get("login_csrf") or ""
+    if not want or not hmac.compare_digest(login_csrf, want):
+        flash(request, "The sign-in form expired – please try again", "err")
+        return RedirectResponse("/login", status_code=303)
+    # client IP: behind a reverse proxy set FORWARDED_ALLOW_IPS (uvicorn --proxy-headers) to the proxy's address,
+    # otherwise all users share the proxy's IP and one attacker locks everybody out
     ip = request.client.host if request.client else "?"
-    cnt, first = _FAILS.get(ip, (0, time.time()))
+    now = time.time()
+    for k in [k for k, (_, t0) in _FAILS.items() if now - t0 > LOCK_S]:
+        _FAILS.pop(k, None)                       # expired entries – the dict must not grow forever
+    cnt, first = _FAILS.get(ip, (0, now))
     if time.time() - first > LOCK_S:
         cnt, first = 0, time.time()
     if cnt >= MAX_FAILS:
@@ -310,9 +324,13 @@ def gallery(request: Request, q: str = "", page_no: int = Query(1, alias="page")
 
 @app.get("/api/slides")
 def api_slides(ids: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from sqlalchemy.orm import selectinload
+    order = [int(x) for x in ids.split(",") if x.isdigit()][:2000]
+    rows = {f.id: f for f in db.scalars(select(FrameFile).options(selectinload(FrameFile.project))
+                                        .where(FrameFile.id.in_(order)))} if order else {}
     out = []
-    for i in [int(x) for x in ids.split(",") if x.isdigit()][:2000]:
-        f = db.get(FrameFile, i)
+    for i in order:                                # one query instead of one per id; keep the requested order
+        f = rows.get(i)
         if f and f.thumb_path:
             p = f.project
             out.append({"id": f.id, "title": p.name if p else f.original_name,
@@ -423,6 +441,7 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
         invalidate_settings()
         flash(request, "Settings reset to defaults")
         return RedirectResponse("/settings", status_code=303)
+    old_tz = load_settings(db)["timezone"]
     for k, (default, typ, lim, _) in SETTINGS.items():
         v = ("1" if form.get(k) else "0") if typ is bool else form.get(k)
         if v is None:
@@ -435,6 +454,18 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
             db.add(Setting(key=k, value=str(v)))
     db.commit()
     invalidate_settings()
+    new_tz = load_settings(db)["timezone"]
+    if form.get("timezone") is not None and coerce_setting("timezone", form["timezone"]) != str(form["timezone"]).strip():
+        flash(request, f"Unknown time zone “{form['timezone']}” – kept {new_tz}", "err")
+        return RedirectResponse("/settings", status_code=303)
+    if new_tz != old_tz:
+        from .worker import recompute_capture_times
+        n = recompute_capture_times(db, new_tz)
+        from .core import recompute_moon
+        recompute_moon(db, new_tz)
+        db.commit()
+        flash(request, f"Settings saved – capture time of {n} FITS file{'s' if n != 1 else ''} recomputed for {new_tz}")
+        return RedirectResponse("/settings", status_code=303)
     flash(request, "Settings saved")
     return RedirectResponse("/settings", status_code=303)
 
@@ -596,8 +627,8 @@ def api_catalog(kind: str, user: User = Depends(current_user), db: Session = Dep
 async def api_catalog_add(request: Request, kind: str, user: User = Depends(current_user),
                           db: Session = Depends(get_db)):
     check_kind(kind)
-    data = await request.json()
-    name = (data.get("name") or "").strip()
+    data = await json_body(request)
+    name = str(data.get("name") or "").strip()
     problem = name_problem(db, kind, name)
     if problem:
         return api_err(problem)
@@ -611,8 +642,8 @@ async def api_catalog_add(request: Request, kind: str, user: User = Depends(curr
 async def api_catalog_edit(request: Request, iid: int, user: User = Depends(current_user),
                            db: Session = Depends(get_db)):
     it = get_item(db, iid)
-    data = await request.json()
-    name = (data.get("name") or "").strip()
+    data = await json_body(request)
+    name = str(data.get("name") or "").strip()
     problem = name_problem(db, it.kind, name, it.id)
     if problem:
         return api_err(problem)

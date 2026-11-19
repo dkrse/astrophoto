@@ -114,7 +114,7 @@ def fmt_num(v, digits=1):
 
 def parse_dmy(v):
     """Accepts dd-mm-yyyy (also dd.mm.yyyy, dd/mm/yyyy) or yyyy-mm-dd. Returns date or None."""
-    v = (v or "").strip()
+    v = str(v or "").strip()
     if not v:
         return None
     for fmt in ("%d-%m-%Y", "%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d"):
@@ -187,8 +187,7 @@ def _data_error(request: Request, exc):
     if request.url.path.startswith("/api/"):
         return JSONResponse({"error": msg}, status_code=400)
     flash(request, msg, "err")
-    back = request.headers.get("referer") or "/"
-    return RedirectResponse(back if back.startswith(str(request.base_url)) else "/", status_code=303)
+    return RedirectResponse(safe_referer(request), status_code=303)
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -220,6 +219,9 @@ SETTINGS = {
     "gallery_tile": ("medium", str, ["small", "medium", "large"], "Gallery tile size"),
     "gallery_sort": ("photo_desc", str, ["photo_desc", "photo_asc", "project_asc", "added_desc"], "Gallery sort"),
     "skip_duplicates": (True, bool, None, "Skip duplicate files on upload / import"),
+    "files_view": ("list", str, ["list", "grid"], "File lists: default view"),
+    "timezone": ("UTC", "tz", None, "Time zone of your observing site (FITS DATE-OBS is UTC – converted to this "
+                                    "zone for capture times and the night a frame belongs to)"),
     # default expanded / collapsed state of panels
     "open_summary": (True, bool, None, "Overview: summary shown"),
     "open_filters": (False, bool, None, "Overview: filters expanded"),
@@ -242,6 +244,14 @@ SORT_LABELS = {"date_desc": "Last night (newest)", "date_asc": "First night (old
 templates.env.globals["SORT_LABELS"] = SORT_LABELS
 
 
+def _timezones():
+    from zoneinfo import available_timezones
+    return ["UTC"] + sorted(z for z in available_timezones() if "/" in z and not z.startswith(("Etc/", "SystemV/")))
+
+
+templates.env.globals["TIMEZONES"] = _timezones()
+
+
 def coerce_setting(k, v):
     default, typ, lim, _ = SETTINGS[k]
     try:
@@ -249,6 +259,11 @@ def coerce_setting(k, v):
             return max(lim[0], min(lim[1], int(v)))
         if typ is bool:
             return str(v).lower() in ("1", "true", "on", "yes")
+        if typ == "tz":
+            from zoneinfo import ZoneInfo
+            v = str(v).strip()
+            ZoneInfo(v)                           # unknown zone -> exception -> default
+            return v
         if typ == "color":
             v = str(v).strip()
             return v if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else default
@@ -256,7 +271,7 @@ def coerce_setting(k, v):
         if isinstance(lim, list):
             return v if v in lim else default
         return v or default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError, OSError):
         return default
 
 
@@ -326,6 +341,38 @@ def none_if_empty(v):
     return v or None
 
 
+def to_int(v, default=None):
+    """Lenient int parsing for user / JSON input: '12', 12, ' 12 ' -> 12; anything else -> default."""
+    if isinstance(v, bool):
+        return default
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def as_dict(v) -> dict:
+    """Nested JSON value that must be an object (e.g. "meta") -> dict, anything else -> {}."""
+    return v if isinstance(v, dict) else {}
+
+
+async def json_body(request: Request) -> dict:
+    """Request body as a JSON object; malformed JSON or a non-object (list, string…) -> 400 instead of a 500."""
+    try:
+        data = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "JSON object expected")
+    return data
+
+
+def safe_referer(request: Request, fallback: str = "/") -> str:
+    """Referer for redirect-back, but only when it points into this app (no open redirect)."""
+    back = request.headers.get("referer") or ""
+    return back if back.startswith(str(request.base_url)) else fallback
+
+
 def to_float(v):
     try:
         x = float(str(v).replace(",", ".")) if v not in (None, "") else None
@@ -346,7 +393,12 @@ NAME_MAX = 100        # catalog names are also stored in projects.object_type (V
 def safe_name(name: str) -> str:
     name = os.path.basename(name or "file")
     name = re.sub(r"[^A-Za-z0-9._\-]+", "_", name).strip("._") or "file"
-    return name[:200]
+    if len(name) > 200:                          # shorten the stem, keep the extension (.fits, .cr2 …)
+        stem, dot, ext = name.rpartition(".")
+        if dot and 0 < len(ext) <= 10:
+            return stem[:200 - len(ext) - 1] + "." + ext
+        return name[:200]
+    return name
 
 
 def clean_filename(name: str) -> str:
@@ -475,6 +527,8 @@ def file_owner(f: FrameFile) -> dict:
         return {"kind": "project", "id": f.project_id, "name": f.project.name,
                 "url": f"/projects/{f.project_id}", "files": f.project.files}
     c = f.calib_set
+    if c is None:                                # orphan row (neither project nor set) -> 404, not a 500
+        raise HTTPException(404, "File has no project or calibration set")
     return {"kind": "calib", "id": c.id, "name": c.name, "url": f"/calibration/{c.id}", "files": c.files}
 
 
@@ -516,14 +570,35 @@ def delete_file_storage(f: FrameFile, db=None):
 
 
 # ---------- astronomy helpers ----------
-def moon_illumination(d: date | None) -> float | None:
-    """Approximate moon illumination (%) at local midnight of the given night."""
+def moon_illumination(d: date | None, tz: str | None = None) -> float | None:
+    """Moon illumination (%) at 23:00 local time (site zone, Settings) of the given night.
+    Meeus, Astronomical Algorithms ch. 48 (low precision): phase angle from the mean elongation and
+    anomalies with the main periodic terms – within ~0.5 % instead of up to ±6 % of a plain synodic period."""
     if not d:
         return None
-    ref = datetime(2000, 1, 6, 18, 14)              # known new moon (UTC)
-    t = datetime(d.year, d.month, d.day, 23, 0)
-    age = ((t - ref).total_seconds() / 86400) % 29.530588853
-    return round((1 - math.cos(2 * math.pi * age / 29.530588853)) / 2 * 100, 0)
+    from .preview import local_to_utc
+    if tz is None:
+        try:
+            tz = load_settings()["timezone"]
+        except Exception:
+            tz = "UTC"
+    t = local_to_utc(datetime(d.year, d.month, d.day, 23, 0), tz)
+    jd = (t - datetime(2000, 1, 1, 12)).total_seconds() / 86400 + 2451545.0
+    T = (jd - 2451545.0) / 36525
+    r = math.radians
+    D = r((297.8501921 + 445267.1114034 * T) % 360)          # mean elongation of the moon
+    M = r((357.5291092 + 35999.0502909 * T) % 360)           # sun's mean anomaly
+    Mp = r((134.9633964 + 477198.8675055 * T) % 360)         # moon's mean anomaly
+    i = (180 - math.degrees(D) - 6.289 * math.sin(Mp) + 2.100 * math.sin(M) - 1.274 * math.sin(2 * D - Mp)
+         - 0.658 * math.sin(2 * D) - 0.214 * math.sin(2 * Mp) - 0.110 * math.sin(D))
+    return round((1 + math.cos(r(i))) / 2 * 100, 0)
+
+
+def recompute_moon(db, tz: str | None = None) -> None:
+    """Moon illumination of every session again (better formula / changed site time zone)."""
+    from .models import ImagingSession
+    for s in db.scalars(select(ImagingSession).where(ImagingSession.date.is_not(None))):
+        s.moon_illum = moon_illumination(s.date, tz)
 
 
 def night_of(dt: datetime | None) -> date | None:

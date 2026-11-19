@@ -99,7 +99,15 @@ def session_measured(files, nominal_focal=None, nominal_scale=None, aperture_mm=
 
 
 # ---------- transparency: zero point compared with the best night of the same setup ----------
-_REF = {"at": 0.0, "data": None}
+_REF = {"at": 0.0, "data": None, "gen": 0}
+_REF_LOCK = __import__("threading").Lock()
+
+
+def invalidate_zp_reference() -> None:
+    """A plate solve stored new sky values -> the next zp_reference() recomputes (no stale transparency)."""
+    with _REF_LOCK:
+        _REF["data"] = None
+        _REF["gen"] += 1
 
 
 def norm_gain(g):
@@ -121,8 +129,10 @@ def zp_reference(db, max_age_s: float = 60.0) -> dict:
     import time
     from sqlalchemy import select
     from .models import FrameFile, ImagingSession
-    if _REF["data"] is not None and time.time() - _REF["at"] < max_age_s:
-        return _REF["data"]
+    with _REF_LOCK:
+        if _REF["data"] is not None and time.time() - _REF["at"] < max_age_s:
+            return _REF["data"]
+        gen = _REF["gen"]
     from sqlalchemy import cast, JSON
     sky = cast(FrameFile.solve, JSON)["sky"]        # only the two values – not the whole solve JSON (WCS …)
     rows = db.execute(select(FrameFile.session_id, ImagingSession.telescope, ImagingSession.camera,
@@ -137,7 +147,9 @@ def zp_reference(db, max_age_s: float = 60.0) -> dict:
     for (sid, key), vals in per.items():
         m = median(vals)
         best[key] = max(best.get(key, m), m)
-    _REF.update(at=time.time(), data=best)
+    with _REF_LOCK:
+        if _REF["gen"] == gen:                     # invalidated while computing -> do not cache the old state
+            _REF.update(at=time.time(), data=best)
     return best
 
 

@@ -100,7 +100,8 @@ def project_fields(db) -> list:
     sj = cast(FrameFile.solve, JSON)
     q = (select(FrameFile.project_id, FrameFile.session_id, FrameFile.id, sj["wcs"].label("wcs"),
                 sj["ok"].label("ok"), FrameFile.date_obs)
-         .where(FrameFile.solve.is_not(None), FrameFile.project_id.is_not(None))
+         .where(FrameFile.solve.is_not(None), FrameFile.project_id.is_not(None),
+                sj["ok"].as_boolean().is_(True))       # newest *successful* solve per session
          .distinct(FrameFile.project_id, FrameFile.session_id)
          .order_by(FrameFile.project_id, FrameFile.session_id, FrameFile.id.desc()))
     fields = {}

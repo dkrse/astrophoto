@@ -55,7 +55,7 @@ def find_duplicate(db, sha: str, exclude_id=None):
     return db.scalars(q.limit(1)).first()
 
 
-def compute_preview(stored_path: str, opts: dict, thumbs: bool = True):
+def compute_preview(stored_path: str, opts: dict, thumbs: bool = True, tz: str | None = None):
     """Slow part (no DB access): thumbnail + metadata. Returns dict or None.
     thumbs=False (setting “Generate thumbnails” off): only the metadata is read."""
     src = DATA_DIR / stored_path
@@ -75,12 +75,28 @@ def compute_preview(stored_path: str, opts: dict, thumbs: bool = True):
                 error = str(e) or e.__class__.__name__
     meta = {}
     if header is not None:
-        meta = header_meta(header)
+        meta = header_meta(header, tz)
     elif ext in RAW_EXT or ext in IMAGE_EXT:
         meta = exif_meta(src)
     return {"stored_path": stored_path, "thumb": str(thumb.relative_to(DATA_DIR)) if ok else None, "keep_thumb": not thumbs,
             "header": header_text(header) if header is not None else None, "meta": meta,
             "error": f"Cannot read file: {error}" if error else None}
+
+
+def recompute_capture_times(db, tz: str) -> int:
+    """After the site time zone changed: FITS capture times again from the stored header (DATE-LOC / DATE-OBS).
+    Session assignments are not changed. Returns the number of files whose time changed."""
+    from .platesolve import _hdr
+    from .preview import header_date
+    n = 0
+    for f in db.scalars(select(FrameFile).where(FrameFile.header.is_not(None))):
+        h = _hdr(f.header)
+        d = header_date(h.get, tz)
+        if d and d != f.date_obs:
+            f.date_obs = d
+            n += 1
+    db.commit()
+    return n
 
 
 def apply_preview(ff: FrameFile, res):
@@ -100,7 +116,7 @@ def apply_preview(ff: FrameFile, res):
 
 
 def build_preview(ff: FrameFile):
-    apply_preview(ff, compute_preview(ff.stored_path, get_opts(ff)))
+    apply_preview(ff, compute_preview(ff.stored_path, get_opts(ff), tz=load_settings()["timezone"]))
 
 
 def assign_session(db, ff: FrameFile):
@@ -145,7 +161,7 @@ def process_file(db, ff: FrameFile, with_stats=True):
     db.commit()                                   # end read transaction while we work
     if not sha:
         sha = sha256_file(src)                    # always (duplicates, integrity)
-    res = compute_preview(path, opts, cfg["bg_previews"])
+    res = compute_preview(path, opts, cfg["bg_previews"], cfg["timezone"])
     st = None
     if with_stats and cfg["bg_frame_stats"] and ftype == "light" and src.suffix.lower() in (FITS_EXT | RAW_EXT | IMAGE_EXT):
         try:
@@ -197,11 +213,20 @@ def do_import(db, ff: FrameFile):
         ff.sha256, ff.size, ff.status, ff.source_path = sha, dest.stat().st_size, "pending", None
         if job:
             job.done += 1
+        fid = ff.id
         try:
             db.commit()                           # visible to concurrent uploads before the lock is released
-        except Exception:                         # row/project deleted while copying -> drop the copy
+        except Exception as e:                    # row/project deleted while copying -> drop the copy
             db.rollback()
             dest.unlink(missing_ok=True)
+            row = db.get(FrameFile, fid)          # still there -> other failure: mark it, never re-copy forever
+            if row is not None and row.status == "importing":
+                row.stored_path = f"__failed__/{fid}/{dest.name}"
+                row.status, row.error = "error", f"Import failed: {str(e)[:300]}"
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
 
 def finish_jobs(db):
@@ -342,8 +367,17 @@ def run_analysis(db) -> bool:
         return True
     current.update(file=f"{'Plate solve' if t.kind == 'solve' else 'Optics'}: {f.original_name}", since=time.time())
     t.status = "running"
-    inp = analysis.solve_inputs(db, f) if t.kind == "solve" else analysis.optics_inputs(f, "auto")
     tid, fid = t.id, f.id
+    try:
+        inp = analysis.solve_inputs(db, f) if t.kind == "solve" else analysis.optics_inputs(f, "auto")
+    except Exception as e:                        # would otherwise stay queued and block the queue forever
+        traceback.print_exc()
+        db.rollback()
+        t = db.get(AnalysisTask, tid)
+        if t is not None:
+            t.status, t.error, t.finished_at = "error", str(e)[:500], datetime.now()
+            db.commit()
+        return True
     db.commit()                                   # no open transaction while ASTAP / measuring runs
     try:
         res = analysis.solve_compute(inp) if t.kind == "solve" else analysis.optics_compute(inp)
@@ -368,14 +402,16 @@ def run_analysis(db) -> bool:
     return True
 
 
-def cleanup_tasks():
-    """Finished analysis tasks are only kept for the progress display (1 day)."""
+def cleanup_tasks(requeue: bool = True):
+    """Finished analysis tasks are only kept for the progress display (1 day).
+    requeue=True (startup only): tasks left 'running' by a restart are queued again."""
     from datetime import datetime, timedelta
     with SessionLocal() as db:
         db.query(AnalysisTask).filter(AnalysisTask.status.in_(["done", "error"]),
                                       AnalysisTask.finished_at < datetime.now() - timedelta(days=1)) \
             .delete(synchronize_session=False)
-        db.query(AnalysisTask).filter(AnalysisTask.status == "running").update({"status": "queued"})
+        if requeue:
+            db.query(AnalysisTask).filter(AnalysisTask.status == "running").update({"status": "queued"})
         db.commit()
 
 
@@ -395,7 +431,7 @@ def loop():
         current.update(file=None, since=None)
         if time.time() - last_cleanup > 3600:
             last_cleanup = time.time()
-            for job in (cleanup_uploads, cleanup_cache):
+            for job in (cleanup_uploads, cleanup_cache, lambda: cleanup_tasks(requeue=False)):
                 try:
                     job()
                 except Exception:                 # never let housekeeping kill the worker thread

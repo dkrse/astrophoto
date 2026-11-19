@@ -7,8 +7,8 @@ import logging
 from datetime import date
 import os as _os
 
-from .core import app, DATA_DIR, ARCHIVE_DIR, hash_pw
-from .models import Base, engine, SessionLocal, User, Project, CatalogItem, MIGRATIONS, CATALOG_KINDS
+from .core import app, DATA_DIR, ARCHIVE_DIR, hash_pw, load_settings
+from .models import Base, engine, SessionLocal, User, Project, CatalogItem, Setting, MIGRATIONS, CATALOG_KINDS
 from . import routes_main, routes_projects, routes_files, routes_upload, routes_calib, routes_archive, routes_sky  # noqa: F401  (register routes)
 from . import worker
 
@@ -112,7 +112,11 @@ def startup():
             f.original_name = clean_filename(f.original_name)
         migrate_project_to_sessions(db)
         migrate_software_to_sessions(db)
-        if not db.scalar(select(User).where(User.username == "admin")):
+        if not db.get(Setting, "migr_moon_v2"):          # Meeus formula + site time zone
+            from .core import recompute_moon
+            recompute_moon(db, load_settings(db)["timezone"])
+            db.add(Setting(key="migr_moon_v2", value="1"))
+        if not db.scalar(select(User.id).limit(1)):     # seed only an empty user table (a renamed admin stays renamed)
             db.add(User(username="admin", password_hash=hash_pw("admin")))
         db.commit()
     if os.environ.get("ASTRO_NO_WORKER") != "1":     # tests drive the worker manually

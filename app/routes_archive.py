@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .core import (app, page, get_db, current_user, DATA_DIR, IMPORT_DIR, owner_dir, unique_dest, load_settings,
+from .core import (json_body, as_dict, to_int, app, page, get_db, current_user, DATA_DIR, IMPORT_DIR, owner_dir, unique_dest, load_settings,
                    flash, catalog, night_of, moon_illumination, parse_dmy, fmt_dmy)
 from .models import User, Project, FrameFile, ImagingSession, ImportJob, FRAME_TYPES
 from .preview import KNOWN_EXT, FITS_EXT, RAW_EXT, IMAGE_EXT, detect_frame_type, fits_header, header_meta, exif_meta
@@ -92,7 +92,7 @@ def scan_archive(root: Path) -> list:
             if ext in FITS_EXT:
                 try:
                     header = fits_header(p)
-                    meta = header_meta(header)
+                    meta = header_meta(header, load_settings()["timezone"])
                 except Exception:
                     header = None
             elif ext in RAW_EXT or ext in IMAGE_EXT:
@@ -168,7 +168,7 @@ def archive_page(request: Request, user: User = Depends(current_user), db: Sessi
 
 @app.post("/api/import/archive/scan")
 async def archive_scan(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await request.json()
+    data = await json_body(request)
     root = safe_import_path(data.get("path", ""))
     if not root.is_dir():
         return err("Not a folder", 404)
@@ -180,7 +180,7 @@ async def archive_scan(request: Request, user: User = Depends(current_user), db:
 
 @app.post("/api/import/archive/start")
 async def archive_start(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await request.json()
+    data = await json_body(request)
     root = safe_import_path(data.get("path", ""))
     groups = [g for g in data.get("groups") or [] if isinstance(g, dict) and g.get("files")]
     if not groups:
@@ -290,7 +290,7 @@ def _archive_start(db, root: Path, groups: list, skip: bool):
 @app.post("/api/integrity/start")
 async def integrity_start(request: Request, user: User = Depends(current_user)):
     from . import integrity
-    data = await request.json()
+    data = await json_body(request)
     try:
         if not integrity.start_check(bool(data.get("full"))):
             return err("A check is already running", 409)

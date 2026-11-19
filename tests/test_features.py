@@ -1,5 +1,6 @@
 """Feature coverage: viewer endpoints, odd image files, single-file actions, managed lists,
 calibration set lifecycle, sessions automation, ZIP variants, background cleanup."""
+from conftest import login_token
 import io
 import json
 import os
@@ -391,7 +392,7 @@ def test_csrf_token_required_for_changes(client, project):
     finally:
         client.headers["X-CSRF-Token"] = tok
     with TestClient(app) as anon:                         # login itself needs no token
-        assert anon.post("/login", data={"username": "admin", "password": "x"}, follow_redirects=False).status_code == 303
+        assert anon.post("/login", data={"login_csrf": login_token(anon), "username": "admin", "password": "x"}, follow_redirects=False).status_code == 303
     assert 'name="csrf-token"' in client.get("/").text
 
 
@@ -400,7 +401,7 @@ def test_logout_is_post_only(client):
     from app.main import app
     from conftest import csrf_of
     with TestClient(app) as c:
-        c.post("/login", data={"username": "admin", "password": "admin"})
+        c.post("/login", data={"login_csrf": login_token(c), "username": "admin", "password": "admin"})
         assert c.get("/logout", follow_redirects=False).headers["location"] == "/"   # GET does nothing
         assert c.get("/", follow_redirects=False).status_code == 200
         assert c.post("/logout", follow_redirects=False).status_code == 403          # no token

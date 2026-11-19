@@ -149,7 +149,8 @@ def limiting_magnitude(snr, flux, ra, dec, cat_ra, cat_dec, cat_mag, match_arcse
     b, a = np.polyfit(x, y, 1)
     res = y - (a + b * x)
     keep = np.abs(res) < 3 * (np.median(np.abs(res)) * 1.4826 + 0.05)
-    b, a = np.polyfit(x[keep], y[keep], 1)
+    if keep.sum() >= 8 and np.ptp(x[keep]) >= 0.3:     # refit only on a non-degenerate subset
+        b, a = np.polyfit(x[keep], y[keep], 1)
     lim = float(a + b * math.log10(snr_limit))
     return {"limit_mag": round(lim, 2), "zero_point": round(zp, 2), "matched": int(len(m)),
             "faintest_detected": round(float(m.max()), 2), "band": "Gaia BP", "snr_limit": snr_limit}

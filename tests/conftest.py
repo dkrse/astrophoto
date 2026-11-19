@@ -46,6 +46,12 @@ from app import worker  # noqa: E402
 from app.core import DATA_DIR, IMPORT_DIR  # noqa: E402
 
 
+def login_token(c):
+    """Like the browser: open the sign-in page first (pre-session token against login CSRF)."""
+    import re
+    return re.search(r'name="login_csrf" value="([^"]+)"', c.get("/login").text).group(1)
+
+
 def csrf_of(c):
     import re
     return re.search(r'name="csrf-token" content="([^"]+)"', c.get("/").text).group(1)
@@ -54,7 +60,7 @@ def csrf_of(c):
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:
-        r = c.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
+        r = c.post("/login", data={"login_csrf": login_token(c), "username": "admin", "password": "admin"}, follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"] == "/"
         c.headers["X-CSRF-Token"] = csrf_of(c)           # like the browser: token from the page
         yield c
@@ -137,4 +143,4 @@ def tmpdir_path(tmp_path):
     return tmp_path
 
 
-__all__ = ["csrf_of", "drain", "write_fits", "star_frame", "upload", "DATA_DIR", "IMPORT_DIR"]
+__all__ = ["login_token", "csrf_of", "drain", "write_fits", "star_frame", "upload", "DATA_DIR", "IMPORT_DIR"]

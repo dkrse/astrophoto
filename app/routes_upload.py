@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .core import (clean_filename, app, page, get_db, current_user, DATA_DIR, IMPORT_DIR, none_if_empty, to_float,
+from .core import (json_body, as_dict, to_int, clean_filename, app, page, get_db, current_user, DATA_DIR, IMPORT_DIR, none_if_empty, to_float,
                    owner_dir, unique_dest, get_project, get_calib, load_settings, flash)
 from .models import User, Project, FrameFile, CalibrationSet, ImagingSession, ImportJob, FRAME_TYPES
 from .preview import KNOWN_EXT, FITS_EXT, detect_frame_type, fits_header
@@ -65,7 +65,7 @@ def describe_owner(f: FrameFile) -> str:
 async def upload_check(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """[{name, size}] -> for each: where a file with the same name and size already exists in this target (or null).
     The definitive content (SHA-256) check still runs when an upload finishes."""
-    data = await request.json()
+    data = await json_body(request)
     project, calib = resolve_owner(db, data)
     owner_files = project.files if project else calib.files
     index = {}
@@ -91,7 +91,7 @@ def up_paths(uid: str):
 
 @app.post("/api/uploads")
 async def upload_init(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await request.json()
+    data = await json_body(request)
     project, calib = resolve_owner(db, data)
     ftype = data.get("frame_type")
     if ftype not in FRAME_TYPES:
@@ -126,7 +126,7 @@ async def upload_init(request: Request, user: User = Depends(current_user), db: 
         "project_id": project.id if project else None, "calib_set_id": calib.id if calib else None,
         "filename": name, "size": size, "frame_type": ftype,
         "session_id": sid,
-        "meta": {k: (data.get("meta") or {}).get(k) for k in META_KEYS},
+        "meta": {k: as_dict(data.get("meta")).get(k) for k in META_KEYS},
         "skip_dups": bool(data.get("skip_dups", True)),
     }))
     return {"id": uid, "offset": 0}
@@ -148,6 +148,8 @@ async def upload_chunk(request: Request, uid: str, offset: int, user: User = Dep
         return err("Unknown upload", 404)
     lock = _LOCKS.setdefault(uid, asyncio.Lock())
     async with lock:
+        if uid in _FINISHING or not meta.exists():   # finished / cancelled while this request waited
+            return err("The upload is already finished or was cancelled", 410)
         cur = part.stat().st_size
         if offset != cur:
             return err("Offset mismatch", 409, offset=cur)
@@ -174,16 +176,21 @@ async def upload_chunk(request: Request, uid: str, offset: int, user: User = Dep
             if buf:
                 await run_in_threadpool(flush, fh, bytes(buf))
                 written += len(buf)
-        os.utime(meta)                            # active upload -> not removed by the 48 h cleanup
-        return {"offset": part.stat().st_size}
+        try:
+            os.utime(meta)                        # active upload -> not removed by the 48 h cleanup
+            return {"offset": part.stat().st_size}
+        except FileNotFoundError:
+            return err("The upload was cancelled", 410)
 
 
 @app.delete("/api/uploads/{uid}")
-def upload_cancel(uid: str, user: User = Depends(current_user)):
+async def upload_cancel(uid: str, user: User = Depends(current_user)):
+    import asyncio
     part, meta = up_paths(uid)
-    part.unlink(missing_ok=True)
-    meta.unlink(missing_ok=True)
-    _HASH.pop(uid, None)
+    async with _LOCKS.setdefault(uid, asyncio.Lock()):   # never pull the file away under a running chunk write
+        part.unlink(missing_ok=True)
+        meta.unlink(missing_ok=True)
+        _HASH.pop(uid, None)
     _LOCKS.pop(uid, None)
     return {"ok": True}
 
@@ -197,6 +204,11 @@ async def upload_finish(uid: str, user: User = Depends(current_user), db: Sessio
         return err("Upload is already being finished", 409)
     _FINISHING.add(uid)
     try:
+        import asyncio
+        async with _LOCKS.setdefault(uid, asyncio.Lock()):   # wait for a chunk write still in progress
+            pass
+        if not meta_p.exists():
+            return err("The upload was cancelled", 410)
         return await _finish(uid, part, meta_p, db)
     finally:
         _FINISHING.discard(uid)
@@ -338,7 +350,7 @@ def scan_folder(root: Path, recursive: bool, limit=20000):
 
 @app.post("/api/import/scan")
 async def import_scan(request: Request, user: User = Depends(current_user)):
-    data = await request.json()
+    data = await json_body(request)
     root = safe_import_path(data.get("path", ""))
     if not root.is_dir():
         return err("Not a folder", 404)
@@ -348,7 +360,7 @@ async def import_scan(request: Request, user: User = Depends(current_user)):
 
 @app.post("/api/import/start")
 async def import_start(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await request.json()
+    data = await json_body(request)
     project, calib = resolve_owner(db, data)
     root = safe_import_path(data.get("path", ""))
     items = data.get("files") or []
@@ -357,7 +369,7 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
     sid = session_for(db, project, data.get("session_id"))
     if project and not sid:
         return err("Choose the session (night) the files belong to")
-    mm = data.get("meta") or {}
+    mm = as_dict(data.get("meta"))
     job = ImportJob(project_id=project.id if project else None, calib_set_id=calib.id if calib else None,
                     source_dir=str(root), skip_dups=bool(data.get("skip_dups", True)), total=0)
     db.add(job)

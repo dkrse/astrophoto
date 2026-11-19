@@ -61,6 +61,12 @@
 {% endmacro %}
 
 {% macro file_groups(groups, sizes, types, zip_base, med=None, light_stats=False, show='', limit=100, prefix='') %}
+{% if groups.values()|select|first %}
+<div class="fviewsw" role="group" aria-label="File view">
+  <button type="button" class="btn small fv-list" onclick="setFview('list')" title="List (table)">☰ List</button>
+  <button type="button" class="btn small fv-grid" onclick="setFview('grid')" title="Images (tiles)">▦ Images</button>
+</div>
+{% endif %}
 {% for t in types %}{% if groups[t] %}
 {% set gk = prefix ~ t %}
 {% set fpg = paginate(groups[t]|length, 0 if show in (gk, 'all') else S.files_page_size, request.query_params.get('p_' ~ gk)) %}

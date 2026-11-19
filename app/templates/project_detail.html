@@ -187,7 +187,7 @@
   {% endif %}
   {% if spg.pages > 1 %}<p class="muted small">Sessions {{ spg.start + 1 }}–{{ spg.end }} of {{ spg.total }} – change the page in the Sessions panel or here: {{ pager(spg, 'sp', 'files', 'sessions') }}</p>{% endif %}
   {% for g in sess_groups %}{% set r = g.r %}
-  <details class="sessblock" id="{{ g.key }}" {% if S.open_session_files %}open{% endif %}>
+  <details class="sessblock{% if r %} sesspick{% endif %}" id="{{ g.key }}"{% if r %} hidden{% endif %}>
     <summary class="sesshead">
       {% if r %}{% set s = r.s %}
       <div><b>🌙 {{ s.date|dmy or 'Session #' ~ s.id }}</b>
@@ -220,6 +220,7 @@
     {% if r and not r.count %}<p class="muted small">No files in this session yet – use ⬆ Add files.</p>{% endif %}
   </details>
   {% endfor %}
+  {% if sessions %}<p class="muted" id="sess-hint">Click a session in the Sessions panel to show its files.</p>{% endif %}
   {% if not sessions %}<p class="muted">Add a session (night) first – files are always uploaded into a session.</p>{% endif %}
 </section>
 
@@ -361,6 +362,14 @@ function openHash(){var el=location.hash&&document.getElementById(location.hash.
   for(var d=el&&el.closest('details');d;d=d.parentElement&&d.parentElement.closest('details'))d.open=true;  // incl. parents
   if(el)el.scrollIntoView({block:'start'});}
 openHash();window.addEventListener('hashchange',openHash);
+// Files: only the clicked session is listed – nothing else (no other sessions, not even folded)
+function showSession(){var el=location.hash&&document.getElementById(location.hash.slice(1));
+  var cur=el&&el.closest('details.sesspick'), hint=document.getElementById('sess-hint');
+  document.querySelectorAll('details.sesspick').forEach(function(d){d.hidden=d!==cur;if(d===cur)d.open=true;});
+  document.querySelectorAll('tr.sessrow').forEach(function(tr){tr.classList.toggle('sel',!!cur&&tr.dataset.target===cur.id);});
+  var u=document.getElementById('u_');if(u)u.hidden=!!cur;      // unassigned files only while no session is chosen
+  if(hint)hint.hidden=!!cur;}
+showSession();window.addEventListener('hashchange',showSession);
 // click on a session row (outside its buttons) jumps to that session's files
 document.querySelectorAll('tr.sessrow').forEach(function(tr){tr.addEventListener('click',function(e){
   if(e.target.closest('button,a,form,input,select'))return;

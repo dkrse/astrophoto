@@ -279,13 +279,13 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     s = db.get(ImagingSession, int(sid)) if sid and sid.isdigit() else None
     if s and s.project_id != p.id:
         raise HTTPException(400)
+    d = parse_dmy(form.get("date"))
+    if not d:                                     # validate before a new row exists (no autoflush of a half session)
+        flash(request, "Please enter a valid night date (dd-mm-yyyy)", "err")
+        return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
     if not s:
         s = ImagingSession(project_id=p.id)
         db.add(s)
-    d = parse_dmy(form.get("date"))
-    if not d:
-        flash(request, "Please enter a valid night date (dd-mm-yyyy)", "err")
-        return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
     if s.id and s.date and d != s.date:
         # date changed: frames whose observation date belongs to the old night leave this session
         other = next((x for x in p.sessions if x.id != s.id and x.date == s.date), None)
@@ -325,6 +325,8 @@ def session_delete(request: Request, sid: int, user: User = Depends(current_user
     delete_files(db, files)
     s.calib_sets = []
     db.delete(s)
+    db.commit()
+    worker.reflag_project(db, pid)             # suspect flags were computed against the deleted frames
     db.commit()
     flash(request, f"Session deleted including {len(files)} file{'s' if len(files) != 1 else ''}")
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
@@ -648,7 +650,8 @@ def project_zip(pid: int, types: str = "light,dark,bias,flat,darkflat", rejected
 @app.get("/calibration/{cid}/zip")
 def calib_zip(cid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     c = get_calib(db, cid)
-    entries = [(DATA_DIR / f.stored_path, f"{f.frame_type}/{f.original_name}") for f in c.files]
+    entries = [(DATA_DIR / f.stored_path, f"{f.frame_type}/{f.original_name}") for f in c.files
+               if f.status != "importing"]            # half-copied files would corrupt the ZIP
     if not entries:
         raise HTTPException(404, "No files to download")
     return zip_response(f"{c.name}.zip", entries, None, load_settings(db)["zip_compression"])

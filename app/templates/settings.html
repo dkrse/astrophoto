@@ -5,7 +5,7 @@
   <div class="head"><h1>Settings</h1>
     <span class="row"><a class="btn" href="/password">🔑 Change password</a><a class="btn" href="/manage">☰ Manage lists</a></span></div>
   <nav class="tabs" data-tabs="settings">
-    <a href="#t-general">General &amp; appearance</a><a href="#t-files">Downloads</a><a href="#t-gallery">Gallery</a>
+    <a href="#t-general">General &amp; appearance</a><a href="#t-files">Files &amp; downloads</a><a href="#t-gallery">Gallery</a>
     <a href="#t-processing">Background processing</a><a href="#t-panels">Panels</a></nav>
 
   <div class="tabpane" id="t-general">
@@ -16,6 +16,9 @@
 
   <h3>Appearance</h3>
   <div class="cols">
+    <label>File lists – default view
+      <select name="files_view">{% for v, l in [('list','☰ List (table)'),('grid','▦ Images (tiles)')] %}<option value="{{ v }}" {% if S.files_view == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+      <small class="muted">How files of a session / calibration set are shown. The ☰ / ▦ switch above each list changes it for this browser until this default is changed again.</small></label>
     <label>Accent color
       <span class="colorrow"><input type="color" name="accent_color" value="{{ S.accent_color }}" id="accent">
         <code id="accent-hex">{{ S.accent_color }}</code></span>
@@ -54,6 +57,13 @@
       <select name="zip_compression">{% for v, l in [('none','None – fastest, shows download size (default)'),('fast','Fast'),('best','Best – slow, smallest')] %}<option value="{{ v }}" {% if S.zip_compression == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
       <small class="muted">ZIPs are streamed – download starts immediately. FITS/RAW compress little; “None” is usually best.</small></label>
     <label class="check"><input type="checkbox" name="skip_duplicates" {% if S.skip_duplicates %}checked{% endif %}> Skip duplicate files on upload / import (default)</label>
+  </div>
+  <h3>Time</h3>
+  <div class="cols">
+    <label>Time zone of the observing site
+      <input name="timezone" list="tz-list" value="{{ S.timezone }}" placeholder="e.g. Europe/Bratislava" autocomplete="off">
+      <datalist id="tz-list">{% for z in TIMEZONES %}<option value="{{ z }}">{% endfor %}</datalist>
+      <small class="muted">FITS DATE-OBS is in UTC – it is converted to this zone for capture times and for the night (session) a frame belongs to. Camera EXIF / DATE-LOC are already local. Changing it recomputes the capture times of all FITS files.</small></label>
   </div>
   </div>
 
@@ -94,7 +104,7 @@
   <p class="muted small">How sections look when a page opens. You can still expand / collapse them on the page at any time.</p>
   <div class="cols panels">
     {% for k, label in [('open_summary','Overview: summary (projects, files, total …)'),('open_filters','Overview: filters'),
-                        ('open_sessions','Project: Sessions panel'),('open_session_files','Project: sessions in Files'),
+                        ('open_sessions','Project: Sessions panel'),
                         ('open_file_groups','File lists: type groups (Light, Dark …)'),('open_stats_table','Statistics: monthly table')] %}
     <label class="check"><input type="checkbox" name="{{ k }}" {% if S[k] %}checked{% endif %}> {{ label }}</label>
     {% endfor %}

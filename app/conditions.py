@@ -60,7 +60,8 @@ def _hdr_float(header_text, keys):
         k = line[:8].strip().upper()
         if k in keys and "=" in line[:10]:
             try:
-                return float(line.split("=", 1)[1].split("/")[0].strip().strip("'"))
+                from .preview import fits_value
+                return float(fits_value(line.split("=", 1)[1]))
             except ValueError:
                 pass
     return None

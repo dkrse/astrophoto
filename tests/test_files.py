@@ -304,7 +304,7 @@ def test_upload_precheck_reports_existing(client, project, tmp_path):
     ex = r.json()["existing"]
     assert ex[0] == "session 12-10-2025" and ex[1] is None and ex[2] is None
     t = client.get(f"/projects/{project}").text
-    assert '<details class="sessblock"' in t and 'class="resizable"' in t
+    assert '<details class="sessblock' in t and 'class="resizable"' in t
 
 
 def test_zip_sessions_with_same_date_do_not_collide(client, project, tmp_path):

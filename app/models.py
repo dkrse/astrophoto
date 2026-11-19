@@ -287,4 +287,13 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_tasks_status_id ON analysis_tasks (status, id)",
     "UPDATE projects SET created_at = now() WHERE created_at IS NULL",
     "UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL",
+    # foreign keys added later: drop dangling references first, then add the constraint once
+    "UPDATE projects SET cover_file_id = NULL WHERE cover_file_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM frame_files r WHERE r.id = projects.cover_file_id)",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_projects_cover') THEN ALTER TABLE projects ADD CONSTRAINT fk_projects_cover FOREIGN KEY (cover_file_id) REFERENCES frame_files(id) ON DELETE SET NULL; END IF; END $$",
+    "UPDATE frame_files SET import_job_id = NULL WHERE import_job_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM import_jobs r WHERE r.id = frame_files.import_job_id)",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_frame_files_import_job') THEN ALTER TABLE frame_files ADD CONSTRAINT fk_frame_files_import_job FOREIGN KEY (import_job_id) REFERENCES import_jobs(id) ON DELETE SET NULL; END IF; END $$",
+    "DELETE FROM import_jobs WHERE project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM projects r WHERE r.id = import_jobs.project_id)",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_import_jobs_project') THEN ALTER TABLE import_jobs ADD CONSTRAINT fk_import_jobs_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE; END IF; END $$",
+    "DELETE FROM import_jobs WHERE calib_set_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM calibration_sets r WHERE r.id = import_jobs.calib_set_id)",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_import_jobs_calib_set') THEN ALTER TABLE import_jobs ADD CONSTRAINT fk_import_jobs_calib_set FOREIGN KEY (calib_set_id) REFERENCES calibration_sets(id) ON DELETE CASCADE; END IF; END $$",
 ]

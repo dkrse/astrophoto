@@ -37,9 +37,9 @@ def _hdr(header_text: str | None) -> dict:
     for line in (header_text or "").splitlines():
         if "=" not in line[:10]:
             continue
+        from .preview import fits_value
         k, _, v = line.partition("=")
-        v = v.split("/")[0].strip().strip("'").strip()
-        out[k.strip().upper()] = v
+        out[k.strip().upper()] = fits_value(v)
     return out
 
 
@@ -52,18 +52,32 @@ def _float(v):
 
 
 def _ra_dec_hint(h: dict):
-    """(ra_hours, dec_deg) from common FITS keywords, or (None, None)."""
+    """(ra_hours, dec_deg) from common FITS keywords, or (None, None).
+    OBJCTRA / OBJCTDEC ('05 35 17' / '-05 23 28') are unambiguous (RA in hours) and win. A numeric RA is in
+    degrees by convention, but some capture programs write hours – when OBJCTRA is also there it decides;
+    a sexagesimal RA string ('05:35:17') is hours."""
+    def sexa(v, hours):
+        try:
+            p = [float(x) for x in str(v).replace(":", " ").split()]
+            if len(p) != 3:
+                return None
+            sign = -1 if str(v).strip().startswith("-") else 1
+            return sign * (abs(p[0]) + p[1] / 60 + p[2] / 3600)
+        except (TypeError, ValueError):
+            return None
+    obj_ra, obj_dec = sexa(h.get("OBJCTRA"), True), sexa(h.get("OBJCTDEC"), False)
+    if obj_ra is not None and obj_dec is not None:
+        return obj_ra, obj_dec
     ra, dec = _float(h.get("RA")), _float(h.get("DEC"))
-    if ra is not None and dec is not None:
-        return ra / 15.0, dec
-    ra_s, dec_s = h.get("OBJCTRA"), h.get("OBJCTDEC")     # '05 35 17' / '-05 23 28'
-    try:
-        r = [float(x) for x in ra_s.replace(":", " ").split()]
-        d = [float(x) for x in dec_s.replace(":", " ").split()]
-        sign = -1 if dec_s.strip().startswith("-") else 1
-        return r[0] + r[1] / 60 + r[2] / 3600, sign * (abs(d[0]) + d[1] / 60 + d[2] / 3600)
-    except Exception:
+    if ra is None:
+        ra_h = sexa(h.get("RA"), True)              # 'RA = 05:35:17' -> hours
+        dec = dec if dec is not None else sexa(h.get("DEC"), False)
+        return (ra_h, dec) if ra_h is not None and dec is not None else (None, None)
+    if dec is None:
+        dec = sexa(h.get("DEC"), False)
+    if dec is None:
         return None, None
+    return ra / 15.0, dec
 
 
 def _read_ini(path: Path) -> dict:
@@ -222,8 +236,10 @@ def resize_check(res: dict, sensor_px: tuple, expected_focal: float | None) -> N
                        f"long side) – resized export / drizzle. Focal length corrected to the sensor: "
                        f"{res['focal_mm']:.0f} mm (per image pixel it would be {raw:.0f} mm).")
     else:
-        res["note"] = (f"Image is smaller than the camera sensor ({img_long} × {img_short} vs. {int(cam_long)} × "
-                       f"{int(cam_short)} px) – looks cropped, so the focal length is not changed.")
+        what = ("smaller than the camera sensor", "looks cropped") if k > 1 else \
+               ("larger than the camera sensor", "looks like a mosaic / upscaled image with a different aspect ratio")
+        res["note"] = (f"Image is {what[0]} ({img_long} × {img_short} vs. {int(cam_long)} × "
+                       f"{int(cam_short)} px) – {what[1]}, so the focal length is not changed.")
 
 
 def _orientation(src: Path) -> int:
@@ -307,7 +323,7 @@ def catalogue() -> list:
                 out.append({"name": label, "messier": mess, "type": r["Type"],
                             "type_label": TYPE_LABELS.get(r["Type"], r["Type"]), "ra": ra, "dec": dec,
                             "maj": _float(r["MajAx"]), "min": _float(r["MinAx"]), "pa": _float(r["PosAng"]),
-                            "mag": _float(r["V-Mag"]) or _float(r["B-Mag"]), "common": common[0] if common else None,
+                            "mag": _float(r["V-Mag"]) if _float(r["V-Mag"]) is not None else _float(r["B-Mag"]), "common": common[0] if common else None,
                             "keys": keys})
     _CAT = out
     return out
@@ -448,14 +464,14 @@ def target_check(res: dict, target: str | None) -> dict | None:
 
 
 def fmt_ra(deg: float, short: bool = False) -> str:
+    # round the total first, then split – separate truncation produced "60.0s" / "24h"
     if short:
-        m = round(deg / 15 * 60, 1)
+        m = round((deg % 360) / 15 * 60, 1) % (24 * 60)
         return f"{int(m // 60):02d}h{m % 60:04.1f}m"
-    deg = deg % 360
-    h = deg / 15
-    hh, mm = int(h), int((h % 1) * 60)
-    ss = ((h * 60) % 1) * 60
-    return f"{hh:02d}h {mm:02d}m {ss:04.1f}s"
+    t = round((deg % 360) / 15 * 3600, 1) % (24 * 3600)
+    hh, rest = divmod(t, 3600)
+    mm, ss = divmod(rest, 60)
+    return f"{int(hh):02d}h {int(mm):02d}m {ss:04.1f}s"
 
 
 def fmt_dec(deg: float, short: bool = False) -> str:
@@ -464,7 +480,10 @@ def fmt_dec(deg: float, short: bool = False) -> str:
     if short:
         m = round(d * 60)
         return f"{s}{m // 60}°{m % 60:02d}′"
-    return f"{s}{int(d):02d}° {int((d % 1) * 60):02d}′ {((d * 60) % 1) * 60:04.1f}″"
+    t = round(d * 3600, 1)
+    dd, rest = divmod(t, 3600)
+    mm, ss = divmod(rest, 60)
+    return f"{s}{int(dd):02d}° {int(mm):02d}′ {ss:04.1f}″"
 
 
 def to_json(res: dict) -> str:

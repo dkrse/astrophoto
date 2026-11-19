@@ -1,5 +1,5 @@
 """HTTP-level tests: auth, pages, projects, lookup lists, settings."""
-from conftest import csrf_of
+from conftest import csrf_of, login_token
 from app.routes_main import _FAILS
 
 
@@ -18,11 +18,11 @@ def test_login_required(anon):
 def test_wrong_password_and_lockout(anon):
     _FAILS.clear()
     for _ in range(5):
-        anon.post("/login", data={"username": "admin", "password": "nope"})
-    r = anon.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=True)
+        anon.post("/login", data={"login_csrf": login_token(anon), "username": "admin", "password": "nope"})
+    r = anon.post("/login", data={"login_csrf": login_token(anon), "username": "admin", "password": "admin"}, follow_redirects=True)
     assert "Too many failed attempts" in r.text            # locked even with the right password
     # a spoofed X-Forwarded-For must not bypass the lock
-    r = anon.post("/login", data={"username": "admin", "password": "admin"},
+    r = anon.post("/login", data={"login_csrf": login_token(anon), "username": "admin", "password": "admin"},
                   headers={"X-Forwarded-For": "1.2.3.4"}, follow_redirects=True)
     assert "Too many failed attempts" in r.text
     _FAILS.clear()
@@ -30,7 +30,7 @@ def test_wrong_password_and_lockout(anon):
 
 def test_default_password_banner_and_change(anon):
     _FAILS.clear()
-    anon.post("/login", data={"username": "admin", "password": "admin"})
+    anon.post("/login", data={"login_csrf": login_token(anon), "username": "admin", "password": "admin"})
     anon.headers["X-CSRF-Token"] = csrf_of(anon)
     assert "default password" in anon.get("/").text
     r = anon.post("/password", data={"old": "admin", "new": "secret1", "new2": "secret1"}, follow_redirects=True)
@@ -117,7 +117,7 @@ def test_settings_roundtrip(client):
 def test_sessions(client, project):
     client.post(f"/projects/{project}/sessions", data={"date": "20-10-2025", "seeing": "2.1", "notes": "windy"})
     t = client.get(f"/projects/{project}").text
-    assert "20-10-2025" in t and "windy" in t and "1%" in t           # new moon -> ~1 %
+    assert "20-10-2025" in t and "windy" in t and "0%" in t           # new moon 13 h later -> 0.3 %
 
 
 def test_double_delete_redirects(client):
@@ -191,7 +191,7 @@ def test_panel_defaults_from_settings(client, project):
     assert 'id="sessions" >' in client.get(f"/projects/{project}").text.replace('id="sessions" open', "X")  # default closed
     client.post("/settings", data={"accent_color": "#3b5bdb", "show_stats": "on", "open_sessions": "on", "open_file_groups": "on"})
     t = client.get(f"/projects/{project}").text
-    assert 'id="sessions" open' in t and '<details class="sessblock" id="s' in t and 'class="sessblock" id="s' in t
+    assert 'id="sessions" open' in t and '<details class="sessblock sesspick" id="s' in t
     assert 'id="ovstats" hidden' in client.get("/").text          # summary unchecked -> hidden
     client.post("/settings", data={"reset": "1"})
     assert 'id="ovstats" hidden' not in client.get("/").text
