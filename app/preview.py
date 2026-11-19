@@ -195,11 +195,28 @@ def fits_cfa_pattern(header, opts) -> str | None:
 
 def load_fits_raw(path: Path):
     from astropy.io import fits
-    with fits.open(path, memmap=False) as hdul:
+    # memmap: the native pixels are read once straight into the float32 array (no second full-size copy);
+    # the copy is made inside the with block, so nothing refers to the closed file afterwards
+    # BZERO / BSCALE (16-bit cameras) are applied here in float32 – astropy cannot memory-map scaled data
+    with fits.open(path, memmap=True, do_not_scale_image_data=True) as hdul:
         hdu = next((h for h in hdul if h.data is not None and h.data.ndim >= 2), None)
         if hdu is None:
             return None, hdul[0].header.copy()
-        return planes_first(hdu.data.astype(np.float32)), hdu.header.copy()
+        h = hdu.header
+        raw = planes_first(hdu.data)
+        data = np.array(raw, dtype=np.float32, copy=True)
+        blank = h.get("BLANK") if raw.dtype.kind in "iu" else None
+        if blank is not None:
+            data[raw == blank] = np.nan
+        bscale, bzero = float(h.get("BSCALE", 1) or 1), float(h.get("BZERO", 0) or 0)
+        if bscale != 1:
+            data *= bscale
+        if bzero:
+            data += bzero
+        header = h.copy()
+        for k in ("BZERO", "BSCALE", "BLANK"):        # describes the scaled float data now, like astropy does
+            header.remove(k, ignore_missing=True)
+        return data, header
 
 
 def planes_first(d: np.ndarray) -> np.ndarray:

@@ -3,10 +3,19 @@
   var bar = document.getElementById('bulkbar');
   if (bar) {
     var count = document.getElementById('bulkcount');
-    function selected() { return [...document.querySelectorAll('.selfile:checked')].map(function (c) { return c.value; }); }
+    // only what the user can see: files in hidden blocks (another session) never count
+    function visibleChecked() { return [...document.querySelectorAll('.selfile:checked')].filter(function (c) { return !c.closest('[hidden]'); }); }
+    function selected() { return visibleChecked().map(function (c) { return c.value; }); }
+    function allRejected() {          // one Reject / Restore button: Restore only when every selected file is rejected
+      var rows = visibleChecked().map(function (c) { return c.closest('tr'); });
+      return rows.length > 0 && rows.every(function (r) { return r.classList.contains('rejected'); });
+    }
     function refresh() {
       var n = selected().length;
       count.textContent = n; bar.hidden = n === 0;
+      var ib = bar.querySelector('[data-bulk="info"]'); if (ib) ib.disabled = n !== 1;
+      var rb = bar.querySelector('[data-bulk="rejecttoggle"]');
+      if (rb) { var restore = allRejected(); rb.textContent = restore ? '↺ Restore' : '✗ Reject'; rb.dataset.mode = restore ? 'unreject' : 'reject'; }
       document.querySelectorAll('.selgroup').forEach(function (g) {
         var all = document.querySelectorAll('.selfile[data-group="' + g.dataset.group + '"]');
         var on = [...all].filter(function (c) { return c.checked; }).length;
@@ -14,13 +23,16 @@
       });
       document.querySelectorAll('.selfile').forEach(function (c) { c.closest('tr').classList.toggle('sel', c.checked); });
     }
+    window.bulkRefresh = refresh;
     var last = null;
     document.addEventListener('click', function (e) {
       var c = e.target.closest('.selfile');
       if (!c) return;
       // shift-click selects a range
       if (e.shiftKey && last) {
-        var all = [...document.querySelectorAll('.selfile')], a = all.indexOf(last), b = all.indexOf(c);
+        var all = [...document.querySelectorAll('.selfile')].filter(function (x) { return !x.closest('[hidden]'); }),
+            a = all.indexOf(last), b = all.indexOf(c);
+        if (a < 0) a = b;
         all.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(function (x) { x.checked = c.checked; });
       }
       last = c; refresh();
@@ -49,6 +61,20 @@
       var a = b.dataset.bulk;
       if (a === 'clear') { document.querySelectorAll('.selfile').forEach(function (c) { c.checked = false; }); refresh(); }
       else if (a === 'delete') run('delete', null, 'Delete {n} file(s)? This cannot be undone.');
+      else if (a === 'rejecttoggle') run(b.dataset.mode || 'reject', null);
+      else if (a === 'info') {
+        var one = selected(); if (one.length !== 1) return;
+        var row = document.querySelector('.ftable tr[data-id="' + one[0] + '"]');
+        if (row && window.fileInfo) window.fileInfo(row);
+      }
+      else if (a === 'download') {
+        var ids = selected(); if (!ids.length) return;
+        if (ids.length === 1) { location.href = '/files/' + ids[0] + '/download'; return; }
+        // many ids: POST (a GET URL with thousands of ids would exceed request-line limits)
+        var f = document.createElement('form'); f.method = 'post'; f.action = '/files/zip'; f.hidden = true;
+        var inp = document.createElement('input'); inp.name = 'ids'; inp.value = ids.join(','); f.append(inp);
+        document.body.append(f); f.submit(); f.remove();
+      }
       else if (a === 'meta') document.getElementById('meta-dlg').showModal();
       else if (a === 'optics') { if (window.bulkOptics) window.bulkOptics(selected()); }
       else if (a === 'solve') { if (window.bulkSolve) window.bulkSolve(selected()); }

@@ -245,7 +245,8 @@ def _archive_start(db, root: Path, groups: list, skip: bool):
                     created_p += 1
             night = parse_dmy(g["night"])
             s = db.scalars(select(ImagingSession).where(ImagingSession.project_id == p.id,
-                                                        ImagingSession.date == night)).first()
+                                                        ImagingSession.date == night)
+                          .order_by(ImagingSession.id)).first()
             new = s is None
             if new:
                 tmpl = db.scalars(select(ImagingSession).where(ImagingSession.project_id == p.id)

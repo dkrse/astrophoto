@@ -18,8 +18,9 @@
 </form>
 
 {% if sets %}
-<div class="tablewrap card"><table class="kvt">
-  <thead><tr><th>Set</th><th>Type</th><th>Date</th><th>Camera</th><th>Telescope</th><th>Temp</th><th>Gain</th><th>Offset</th><th>Exp. (s)</th><th>Filter</th><th>Bin</th><th>Files</th><th>Size</th><th>Sessions</th></tr></thead>
+{% from "_sort.html" import sth %}
+<div class="tablewrap card"><table class="kvt" data-sort-param="co" data-page-param="page">
+  <thead><tr>{% for label, key in [('Set','name'),('Type','type'),('Date','date'),('Camera','camera'),('Telescope','telescope'),('Temp','temperature'),('Gain','gain'),('Offset','offset'),('Exp. (s)','exposure'),('Filter','filter'),('Bin','binning'),('Files','files'),('Size','size'),('Sessions','sessions')] %}{{ sth(label, key, ccol, cdir) }}{% endfor %}</tr></thead>
   <tbody>
   {% for c in sets %}
   <tr>

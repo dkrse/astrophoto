@@ -93,8 +93,18 @@ def recompute_capture_times(db, tz: str) -> int:
         h = _hdr(f.header)
         d = header_date(h.get, tz)
         if d and d != f.date_obs:
+            old_night = night_of(f.date_obs) if f.date_obs else None
             f.date_obs = d
             n += 1
+            # the frame now belongs to another night: follow it when it sat in its old night's session
+            # and the project has a session for the new night (manual assignments are left alone)
+            new_night = night_of(d)
+            if f.project_id and new_night != old_night and f.session is not None and f.session.date == old_night:
+                s = db.scalars(select(ImagingSession).where(ImagingSession.project_id == f.project_id,
+                                                            ImagingSession.date == new_night)
+                               .order_by(ImagingSession.id)).first()
+                if s:
+                    f.session_id = s.id
     db.commit()
     return n
 
@@ -124,7 +134,8 @@ def assign_session(db, ff: FrameFile):
         return
     night = night_of(ff.date_obs)
     s = db.scalars(select(ImagingSession).where(ImagingSession.project_id == ff.project_id,
-                                                ImagingSession.date == night)).first()
+                                                ImagingSession.date == night)
+                   .order_by(ImagingSession.id)).first()      # several sessions that night: always the first
     if s:
         ff.session_id = s.id
 
@@ -150,6 +161,27 @@ def reflag_project(db, project_id):
         flag_suspects(g)
 
 
+def _drop_orphan_thumb(db, res):
+    """Thumbnail written for a row that was deleted meanwhile: remove it (and the empty folders that the
+    write re-created after the project / set folder was removed)."""
+    rel = (res or {}).get("thumb")
+    if not rel:
+        return
+    try:
+        db.rollback()
+        if db.scalar(select(func.count()).where(FrameFile.thumb_path == rel)):
+            return
+    except Exception:
+        pass
+    p = DATA_DIR / rel
+    p.unlink(missing_ok=True)
+    for d in (p.parent, p.parent.parent):         # .thumbs, then the owner folder – only when empty
+        try:
+            d.rmdir()
+        except OSError:
+            break
+
+
 def process_file(db, ff: FrameFile, with_stats=True):
     """Heavy work runs on a snapshot; results are applied to a freshly re-read row, so user edits
     made in the meantime (metadata, moves) are not overwritten."""
@@ -168,7 +200,11 @@ def process_file(db, ff: FrameFile, with_stats=True):
             st = frame_stats(src)
         except Exception as e:
             print(f"stats failed for {src}: {e}")
-    db.refresh(ff)                                # raises if the row was deleted meanwhile
+    try:
+        db.refresh(ff)                            # raises if the row was deleted meanwhile
+    except Exception:
+        _drop_orphan_thumb(db, res)               # no row -> the new thumbnail must not stay behind
+        raise
     ff.sha256 = ff.sha256 or sha
     if ff.stored_path == path:
         ff.size = src.stat().st_size if src.exists() else ff.size
@@ -319,11 +355,14 @@ def step() -> bool:
         if not ff:
             return run_analysis(db)
         current.update(file=ff.original_name, since=time.time())
+        fid = ff.id                               # read now: a deleted row cannot be read inside except
+        ff.error = PROCESSING[1] if ff.error == INTERRUPTED else PROCESSING[0]   # committed by process_file
         try:
             if process_file(db, ff) is not False:
                 ff.status = "done"                # error (unreadable preview) is set by apply_preview
+            if ff.error in PROCESSING:            # finished (or moved): the marker must not stay
+                ff.error = None
         except Exception as e:
-            fid = ff.id
             db.rollback()
             ff = db.get(FrameFile, fid)
             if ff is None:            # deleted by the user while being processed
@@ -388,6 +427,10 @@ def run_analysis(db) -> bool:
     t, f = db.get(AnalysisTask, tid), db.get(FrameFile, fid)
     if t is None:                                 # cancelled meanwhile
         return True
+    if res is not None and res.get("busy"):       # an interactive solve held the solver: try again later
+        t.status = "queued"
+        db.commit()
+        return False
     if f is not None and res is not None:
         (analysis.solve_store if t.kind == "solve" else analysis.optics_store)(f, res)
     t.status, t.error, t.finished_at = ("error" if err else "done"), err, datetime.now()
@@ -411,8 +454,30 @@ def cleanup_tasks(requeue: bool = True):
                                       AnalysisTask.finished_at < datetime.now() - timedelta(days=1)) \
             .delete(synchronize_session=False)
         if requeue:
-            db.query(AnalysisTask).filter(AnalysisTask.status == "running").update({"status": "queued"})
+            # a task that was already interrupted once and is interrupted again probably crashes the server
+            # (out of memory, a broken file): do not run it on every restart for ever
+            db.query(AnalysisTask).filter(AnalysisTask.status == "running", AnalysisTask.error == INTERRUPTED) \
+                .update({"status": "error", "finished_at": datetime.now(),
+                         "error": "Interrupted twice – the analysis may crash the server; not retried"},
+                        synchronize_session=False)
+            db.query(AnalysisTask).filter(AnalysisTask.status == "running") \
+                .update({"status": "queued", "error": INTERRUPTED}, synchronize_session=False)
+            recover_interrupted_files(db)
         db.commit()
+
+
+INTERRUPTED = "__interrupted__"
+PROCESSING = ("__processing__", "__processing2__")     # marker while a file's preview / stats are made
+
+
+def recover_interrupted_files(db):
+    """Startup: files whose processing was cut off (restart or crash). First time: simply again;
+    second time in a row: error – such a file may crash the server, ↻ Reprocess retries it on demand."""
+    db.query(FrameFile).filter(FrameFile.status == "pending", FrameFile.error == PROCESSING[1]) \
+        .update({"status": "error", "error": "Processing was interrupted twice – the file may crash the "
+                                             "server. Use ↻ Reprocess to try again."}, synchronize_session=False)
+    db.query(FrameFile).filter(FrameFile.status == "pending", FrameFile.error == PROCESSING[0]) \
+        .update({"error": INTERRUPTED}, synchronize_session=False)
 
 
 def loop():

@@ -1,0 +1,4 @@
+{# Header cell of a server-sorted list: click (static/sorttable.js) reloads the page sorted by this column. #}
+{% macro sth(label, key, col, dir, title='', cls='') -%}
+<th data-key="{{ key }}"{% if title %} title="{{ title }}"{% endif %} class="sortable{{ ' ' ~ cls if cls }}{% if col == key %} {{ 'sort-asc' if dir > 0 else 'sort-desc' }}{% endif %}"{% if col == key %} aria-sort="{{ 'ascending' if dir > 0 else 'descending' }}"{% endif %}>{{ label }}</th>
+{%- endmacro %}

@@ -7,10 +7,10 @@
 var d='{{ S.default_theme }}';if(!t)t=d!=='auto'?d:(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
 document.documentElement.dataset.theme=t;
 /* file lists: list / image tiles. The browser's own choice counts only while the default in Settings is unchanged */
-var fd='{{ S.files_view }}',v=null;try{if(localStorage.getItem('fviewdef')===fd)v=localStorage.getItem('fview')}catch(e){}
+var fd={{ S.files_view|tojson }},v=null;try{if(localStorage.getItem('fviewdef')===fd)v=localStorage.getItem('fview')}catch(e){}
 document.documentElement.dataset.fview=v==='grid'||v==='list'?v:fd;})();
-function setFview(v){document.documentElement.dataset.fview=v;
-  try{localStorage.setItem('fview',v);localStorage.setItem('fviewdef','{{ S.files_view }}')}catch(e){}}</script>
+function setFview(v){document.documentElement.dataset.fview=v;if(window.applyViewSort)applyViewSort();
+  try{localStorage.setItem('fview',v);localStorage.setItem('fviewdef',{{ S.files_view|tojson }})}catch(e){}}</script>
 <meta name="csrf-token" content="{{ csrf }}">
 <script>
 // CSRF: every same-origin fetch() with a body-changing method and every POST form carries the session token
@@ -87,6 +87,7 @@ HTMLFormElement.prototype.submit=function(){tag(this);return os.call(this);};})(
 {% block scripts %}{% endblock %}
 <script src="{{ asset('vendor/flatpickr.min.js') }}"></script>
 <script src="{{ asset('catalog.js') }}"></script>
+<script src="{{ asset('sorttable.js') }}"></script>
 <script>
 function syncFpTheme(){document.getElementById('fp-dark').disabled=document.documentElement.dataset.theme!=='dark';}
 function toggleTheme(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('theme',h.dataset.theme)}catch(e){}syncFpTheme();}

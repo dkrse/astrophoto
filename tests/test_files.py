@@ -279,7 +279,7 @@ def test_file_table_compact_with_info_modal(client, project, tmp_path):
     drain()
     t = client.get(f"/projects/{project}").text
     assert 'name="gain"' not in t.split('id="info-dlg"')[0]          # no inline edit fields in the table
-    assert "12-10-2025 22:15" in t and 'onclick="fileInfo(this)"' in t and 'id="info-dlg"' in t
+    assert "12-10-2025 22:15" in t and 'data-bulk="info"' in t and 'id="info-dlg"' in t
     import html as _h, re as _re
     raw = _h.unescape(_re.search(r"data-info='([^']*)'", t).group(1))
     d = json.loads(raw)

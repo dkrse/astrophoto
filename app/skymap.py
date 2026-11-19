@@ -138,6 +138,8 @@ def skymap_data(db, max_mag: float = 10.0) -> dict:
     stamp = (*db.execute(select(func.count(FrameFile.solve), func.sum(func.length(FrameFile.solve)),
                                 func.sum(FrameFile.id).filter(FrameFile.solve.is_not(None)))).one(),
              db.scalar(select(func.md5(func.string_agg(proj, aggregate_order_by("|", Project.id))))))
+    if len(_CACHE) > 8:                          # key includes the user's magnitude limit -> keep it small
+        _CACHE.clear()
     hit = _CACHE.get(key)
     if hit and hit[0] == stamp and time.time() - hit[1] < 300:
         return hit[2]

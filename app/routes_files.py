@@ -9,10 +9,10 @@ from fastapi.responses import RedirectResponse, FileResponse, PlainTextResponse,
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from .core import (safe_referer, json_body, as_dict, to_int, clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
+from .core import (night_of, safe_referer, json_body, as_dict, to_int, clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
                    DATA_DIR, file_owner, move_file_storage, delete_file_storage, unique_dest, project_dir,
                    load_settings)
-from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, AnalysisTask, FRAME_TYPES
+from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, AnalysisTask, FRAME_TYPES, CALIB_TYPES
 from .preview import (PREVIEW_EXT, FITS_EXT, render, clean_opts, file_info, OPT_CHOICES, DEFAULT_OPTS,
                       RENDER_KEYS, fits_is_mono, histogram)
 from . import worker
@@ -46,6 +46,22 @@ def file_download(fid: int, user: User = Depends(current_user), db: Session = De
     return FileResponse(src, filename=f.original_name)
 
 
+@app.api_route("/files/zip", methods=["GET", "POST"])
+async def files_zip(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Selected files (bulk bar ⬇ Download) as one streamed ZIP, in type folders. POST form field / GET param ids."""
+    ids = request.query_params.get("ids", "")
+    if request.method == "POST":
+        ids = str((await request.form()).get("ids") or "")
+    from .routes_projects import zip_response
+    want = [int(x) for x in ids.split(",") if x.strip().isdigit()][:5000]
+    files = db.scalars(select(FrameFile).where(FrameFile.id.in_(want))).all() if want else []
+    entries = [(DATA_DIR / f.stored_path, f"{f.frame_type}/{f.original_name}") for f in files
+               if f.status != "importing"]
+    if not entries:
+        raise HTTPException(404, "No files to download")
+    return zip_response(f"files_{datetime.now():%Y-%m-%d}.zip", entries, None, load_settings(db)["zip_compression"])
+
+
 @app.get("/files/{fid}/view")
 def file_view(request: Request, fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     f = get_file(db, fid)
@@ -54,16 +70,49 @@ def file_view(request: Request, fid: int, user: User = Depends(current_user), db
     i = siblings.index(f)
     src = DATA_DIR / f.stored_path
     ext = src.suffix.lower()
-    info = file_info(src, f.header) if src.exists() else {"image": [], "header": [], "exif": []}
+    info = cached_file_info(f, src) if src.exists() else {"image": [], "header": [], "exif": []}
+    hdr = {k: str(v) for k, v, _ in info["header"]}    # header read once (mono / ROWORDER come from it)
     cfg = load_settings(db)
+    # same file-details dialog as in the file lists (i): organise / edit selects need the owner's context
+    from .models import CALIB_TYPES
+    med, fi_sessions, fi_types = {}, None, CALIB_TYPES
+    if owner["kind"] == "project":
+        lights = [x for x in owner["files"] if x.frame_type == "light"]
+        for k in ("stat_fwhm", "stat_stars", "stat_bg"):
+            vals = sorted(getattr(x, k) for x in lights if getattr(x, k) is not None)
+            med[k] = vals[len(vals) // 2] if vals else None
+        fi_sessions = [{"s": s} for s in sorted(f.project.sessions, key=lambda s: (s.date is None, s.date))]
+        fi_types = FRAME_TYPES
+    fi_others = db.execute(select(Project.id, Project.name).where(Project.id != (f.project_id or 0))
+                           .order_by(func.lower(Project.name))).all()
+    fi_calib = db.scalars(select(CalibrationSet)).all() if owner["kind"] == "project" else None
     return page(request, "viewer.html", user=user, f=f, owner=owner, opts=worker.get_opts(f),
+                med=med, fi_sessions=fi_sessions, fi_others=fi_others, fi_calib=fi_calib, fi_types=fi_types,
                 choices=OPT_CHOICES, defaults=DEFAULT_OPTS, is_fits=ext in FITS_EXT,
-                fits_mono=ext in FITS_EXT and src.exists() and fits_is_mono(src),
+                fits_mono=ext in FITS_EXT and hdr.get("NAXIS") == "2",
                 can_render=ext in PREVIEW_EXT and src.exists(), info=info,
                 prev_f=siblings[i - 1] if i > 0 else None,
                 next_f=siblings[i + 1] if i + 1 < len(siblings) else None,
                 pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"], solved=solved_view(db, f),
-                rowflip=ext in FITS_EXT and src.exists() and info_rowflip(src) == "BOTTOM-UP")
+                rowflip=ext in FITS_EXT and hdr.get("ROWORDER", "").strip().upper() == "BOTTOM-UP")
+
+
+def cached_file_info(f: FrameFile, src):
+    """file_info() opens RAW files with rawpy (~0.5 s for a 24 MP NEF) – cached per file version."""
+    cache = DATA_DIR / ".cache" / str(f.id) / f"info_{int(src.stat().st_mtime)}.json"
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
+    info = file_info(src, f.header)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(f"{cache.stem}.{threading.get_ident()}.{time.time_ns()}.tmp")
+        tmp.write_text(json.dumps(info, default=str))
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    return info
 
 
 def info_rowflip(src):
@@ -132,7 +181,7 @@ async def file_histogram(request: Request, fid: int, user: User = Depends(curren
         except ValueError:                        # damaged / concurrently written -> recompute
             pass
     try:
-        h = await run_in_threadpool(histogram, src, opts)
+        h = await slotted(histogram, src, opts)   # full decode: same memory guard as renders
     except Exception as e:
         raise HTTPException(500, f"Histogram failed: {e}")
     if not h:
@@ -198,7 +247,7 @@ def small_thumb(fid: int, src, size: str, side: int):
             im.draft("RGB", (side * 2, side * 2))           # fast JPEG decoding at reduced size
             im = im.convert("RGB")
             im.thumbnail((side, side))
-            tmp = dst.with_suffix(f".{os.getpid()}.tmp")
+            tmp = dst.with_suffix(f".{threading.get_ident()}.{time.time_ns()}.tmp")   # unique per thread
             im.save(tmp, "JPEG", quality=82, optimize=True)
         os.replace(tmp, dst)                                # atomic: parallel requests never see half files
         return dst
@@ -254,11 +303,16 @@ def file_delete(request: Request, fid: int, user: User = Depends(current_user), 
 
 
 def delete_files(db, files):
+    """Rows first (committed), files on disk afterwards – a failed commit never leaves rows without their data."""
+    from .core import delete_storage_paths
+    snaps = [(f.id, f.stored_path, f.thumb_path) for f in files]
     for f in files:
         if f.project_id and f.project and f.project.cover_file_id == f.id:
             f.project.cover_file_id = None
-        delete_file_storage(f, db)
         db.delete(f)
+    db.commit()
+    for fid, stored, thumb in snaps:
+        delete_storage_paths(fid, stored, thumb, db)
 
 
 @app.post("/projects/{pid}/rejectsuspects")
@@ -295,6 +349,9 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
     elif action == "type":
         if value not in FRAME_TYPES:
             return JSONResponse({"error": "Invalid type"}, status_code=400)
+        if value not in CALIB_TYPES and any(f.calib_set_id for f in files):
+            return JSONResponse({"error": "Files of a calibration set can only be dark, bias, flat or dark flat – "
+                                          "move them to a project first"}, status_code=400)
         try:
             for f in files:
                 if f.frame_type != value:
@@ -315,6 +372,11 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
             c = db.get(CalibrationSet, int(target[6:])) if target[6:].isdigit() else None
             if not c:
                 return JSONResponse({"error": "Calibration set not found"}, status_code=404)
+            wrong = [f for f in files if f.frame_type not in CALIB_TYPES]
+            if wrong:                             # would be invisible there (the set lists calibration types only)
+                return JSONResponse({"error": f"{len(wrong)} selected file(s) are not calibration frames "
+                                              "(dark, bias, flat, dark flat) – change their type first"},
+                                    status_code=400)
             try:
                 for f in files:
                     if f.project_id and f.project.cover_file_id == f.id:
@@ -337,8 +399,10 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                     if f.project_id and f.project_id != p.id and f.project.cover_file_id == f.id:
                         f.project.cover_file_id = None
                     move_file_storage(f, p.id, None)
-                    if f.project_id != p.id:          # files always live in a session -> latest one of the target
-                        f.session_id = p.sessions[-1].id if p.sessions else None
+                    if f.project_id != p.id:          # session of the frame's night in the target, else the latest
+                        night = night_of(f.date_obs) if f.date_obs else None
+                        same = [s for s in sorted(p.sessions, key=lambda s: s.id) if night and s.date == night]
+                        f.session_id = same[0].id if same else (p.sessions[-1].id if p.sessions else None)
                     f.project_id, f.calib_set_id = p.id, None
                     f.updated_at = datetime.now()
                     db.commit()
@@ -381,6 +445,7 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
         for f in files:
             if f.status != "importing":
                 f.status = "pending"
+                f.error = None                    # also clears "interrupted twice" – an explicit retry
         worker.wake()
         msg = f"{n} files queued for processing"
     else:
@@ -408,7 +473,13 @@ async def file_solve(fid: int, user: User = Depends(current_user), db: Session =
         return JSONResponse({"ok": False, "error": "File missing on disk"}, status_code=404)
     if f.status == "importing":
         return JSONResponse({"ok": False, "error": "File is still being imported"}, status_code=409)
-    res = await run_in_threadpool(analysis.solve_compute, analysis.solve_inputs(db, f))
+    from . import platesolve
+    inp = {**analysis.solve_inputs(db, f), "lock_wait": platesolve.LOCK_WAIT_INTERACTIVE_S}
+    db.commit()                                   # no open transaction while ASTAP runs
+    res = await run_in_threadpool(analysis.solve_compute, inp)
+    if res.get("busy"):                           # solver busy: keep the stored result, the user retries
+        return JSONResponse(res, status_code=503)
+    f = get_file(db, fid)
     analysis.solve_store(f, res)
     db.commit()
     return with_target(f, res)
@@ -484,15 +555,34 @@ async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User =
     if f.status == "importing":
         return JSONResponse({"ok": False, "error": "File is still being imported"}, status_code=409)
     inp = analysis.optics_inputs(f, flip)
-    res = await slotted(analysis.optics_compute, inp, bool(tiles))
-    analysis.optics_store(f, res)              # summary for the session / trend views
-    db.commit()
+    src = DATA_DIR / f.stored_path
+    # the analysis takes ~0.5 s and ~1 MB: cached per file version, flip, tiles and solve (scale / orientation)
+    tag = f"{flip}_{int(bool(tiles))}_{int(src.stat().st_mtime)}_{inp.get('scale')}_{inp.get('orient')}"
+    cache = DATA_DIR / ".cache" / str(f.id) / f"optics_{''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in tag)}.json"
+    res = None
+    if cache.exists():
+        try:
+            res = json.loads(cache.read_text())
+        except ValueError:
+            res = None
+    if res is None:
+        res = await slotted(analysis.optics_compute, inp, bool(tiles))
+        analysis.optics_store(f, res)          # summary for the session / trend views (only when computed)
+        db.commit()
+        if res.get("ok"):
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_name(f"{cache.stem}.{threading.get_ident()}.{time.time_ns()}.tmp")
+            tmp.write_text(json.dumps(res))
+            os.replace(tmp, cache)
     if res.get("ok") and res.get("fwhm_arcsec") and res.get("fwhm_px") and len(res.get("regions") or []) == 9:
         from .conditions import seeing, seeing_label
-        from .core import catalog
+        from .models import CatalogItem
         c = res["regions"][4]
         per_px = res["fwhm_arcsec"] / res["fwhm_px"]
-        tel = next((it.spec for it in catalog(db)["telescope"] if f.session and it.name == f.session.telescope), {})
+        it = db.scalars(select(CatalogItem).where(CatalogItem.kind == "telescope",
+                                                  CatalogItem.name == f.session.telescope)).first() \
+            if f.session and f.session.telescope else None
+        tel = it.spec if it else {}
         se = seeing((c.get("fwhm_px") or res["fwhm_px"]) * per_px, tel.get("aperture_mm"),
                     per_px * (res.get("bin") or 1))
         if se:

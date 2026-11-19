@@ -35,7 +35,7 @@
   {{ file_groups(groups, sizes, CALIB_TYPES, None, None, False, show) }}
   {% if not c.files %}<p class="muted">No frames yet – add them above.</p>{% endif %}
 </section>
-{{ bulk_bar(None, others, None, 'calib', CALIB_TYPES) }}
+{{ bulk_bar(None, others, other_sets, 'calib', CALIB_TYPES) }}
 {% endblock %}
 {% block scripts %}
 <script src="{{ asset('files.js') }}"></script>

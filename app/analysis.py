@@ -59,7 +59,8 @@ def solve_compute(inp: dict) -> dict:
     from . import platesolve
     if not inp["src"].exists():
         return {"ok": False, "error": "File missing on disk"}
-    res = platesolve.solve(inp["src"], inp["header"], inp["pixel_um"], inp["focal"], inp["sensor"])
+    res = platesolve.solve(inp["src"], inp["header"], inp["pixel_um"], inp["focal"], inp["sensor"],
+                           inp.get("lock_wait", platesolve.LOCK_WAIT_S))
     if inp["telescope"] or inp["camera"]:
         res["camera"], res["telescope"] = inp["camera"], inp["telescope"]
     if res.get("ok") and inp["sensor"] and inp["pixel_um"]:

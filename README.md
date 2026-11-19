@@ -118,14 +118,15 @@ FWHM, limiting magnitude, tilt and elongation
 - Bulk operations: type, move, session, metadata, reject / restore, reprocess, delete, 🎯 Solve, 🔬 Optics
 - Frame quality statistics for lights (FWHM, stars, background, noise) with automatic “suspect” flags
 - Unreadable / corrupt files are marked with the reason
-- File lists as **☰ list** (table) or **▦ image tiles** – switch above every list, default in Settings
+- File lists as **☰ list** (table) or **▦ image tiles** – switch above every list, default in Settings; actions
+  for the checked files in the bottom bar (i details, ⬇ download / ZIP, reject, delete, type, move, …)
 
 ### Viewer
 - FITS (mono, OSC / Bayer, RGB cubes), camera RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2 …), JPEG / PNG / TIFF
   incl. 16-bit
 - Fit / 1:1 / zoom / pan, fullscreen, Bayer pattern, flip, channels, linked / unlinked auto stretch, histogram
-  levels with live preview, brightness; settings saved per file or per frame type
-- FITS header and EXIF side panel; back to the frame's session (🌙)
+  levels with live preview, brightness (display only – the original is never modified)
+- FITS header and EXIF side panel, **i** file-details dialog (same as in the lists); back to the frame's session (🌙)
 - **✨ Objects** overlay, **⬆ North up**, **🎯 Solve** and **🔬 Optics** right in the viewer
 
 ### Plate solving and sky (ASTAP, local)
@@ -185,7 +186,9 @@ FWHM, limiting magnitude, tilt and elongation
 
 ### Overview, search and gallery
 - Search across projects, sessions, equipment, file names, descriptions and FITS headers with highlighted matches
-- Filters on nights and equipment, sorting, grid / list view, summary strip
+- Filters on nights and equipment, sorting, grid (cards) / list (table) view, summary strip
+- Every table can be sorted by clicking a column header (remembered per page, also on phones); paginated lists are
+  sorted on the server – the whole list, then the pages; image views keep the sort select
 - Gallery of final images with capture date, sorting, tile sizes and a fullscreen slideshow
 
 ### Settings, security and administration
@@ -314,7 +317,7 @@ tests/               pytest suite
 ## Tests
 
 ```bash
-./run-tests.sh            # all tests (364, ≈ 60 s, no warnings)
+./run-tests.sh            # all tests (418, ≈ 60 s, no warnings)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
@@ -331,12 +334,13 @@ needed – plate solving is simulated where required.
 | `test_conditions.py` | seeing / transparency / sky brightness, offsets, session values, manual and automatic measuring / filling, tabs |
 | `test_coverage.py` | full plate-solve flow with a simulated ASTAP, star database search across RA 0/360, upload edge cases, import / worker error paths |
 | `test_review.py`, `test_audit.py` | regression tests for the bugs found in the code reviews (malformed API input → 400, busy files, upload races, login CSRF, time zone, foreign keys, moon phase, session-only file list, list / image view) |
+| `test_gaps.py` | paths found untested by the coverage report and the speed / stability work: cache / upload housekeeping, crash-loop protection, solver lock and time budget, optics / viewer / histogram caches, FITS BZERO/BSCALE/BLANK, integrity check, archive helpers, ZIP names |
 | `test_helpers.py` | small pure helpers: formatting, passwords, settings, file names, equipment specs, nights, FITS header values / dates, RA / Dec, geometry, view options |
 | `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
 | `test_skymap.py` | sky map: TAN outlines vs. astropy, catalogue, ecliptic / galactic centre, constellations, API |
 | `test_perf.py` | small cached thumbnails, render slots never blocking the server, star-tile cache budget, settings cache, deferred FITS headers (query counts), large uploads |
 
-Coverage report (optional, ≈ 88 %):
+Coverage report (optional, ≈ 91 %):
 
 ```bash
 docker run --rm --env-file .env -v "$PWD/tests:/srv/tests:ro" -v "$PWD/pytest.ini:/srv/pytest.ini:ro" \

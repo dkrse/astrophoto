@@ -3,15 +3,23 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.5.0] – 2026-11-19
+## [1.5.1] – 2026-11-19
 
 ### Added
 - **☰ List / ▦ Images** switch above every file list (session, calibration set): image tiles with preview, name,
   capture time with the selection checkbox next to it, and the file buttons. Default in Settings → General &
   appearance; the browser's own choice applies until that default is changed.
+- **Sorting by column in every table** (projects list, sessions, file lists, calibration library, equipment
+  lists, import lists, sky map …): click a header, again to reverse (▲ / ▼). Dates, sizes, durations, numbers
+  and names (NGC 224 before NGC 3031) sort naturally, empty values last; the choice is remembered per page.
+  Paginated lists (projects, sessions, file groups, calibration library) are sorted **on the server – the whole
+  list first, then the pages**; short lists sort in the browser. Works on phones too (headers stay visible).
+  Image views (project cards, file tiles, gallery) keep the standard order / the sort select.
 - **Site time zone** (Settings → Files & downloads): FITS `DATE-OBS` (UTC) is converted to local time for capture
   times and the night a frame belongs to (`DATE-LOC` / EXIF are already local). Changing it recomputes the capture
   times of all FITS files and the moon illumination of all sessions. Default `UTC` (unchanged behaviour).
+- Viewer: the **i** button opens the same file-details dialog as in the file lists (metadata, quality, organise,
+  edit).
 - `FORWARDED_ALLOW_IPS` documented in `.env.example` (login lock-out per real client behind a reverse proxy).
 
 ### Changed
@@ -21,8 +29,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   local time of the site; all sessions recomputed once on start.
 - Plate-solve hint: `OBJCTRA` / `OBJCTDEC` win over a numeric `RA` (some programs write RA in hours); a
   sexagesimal `RA` string is read as hours.
+- Projects overview, ☰ list view: the standard table of the app (same as the calibration library) – project,
+  object, object type, nights, first / last night, lights, files, size, integration – instead of stretched cards.
+- File lists (list and image tiles): no per-file buttons any more – select files with the checkbox and use the
+  bottom bar: **i** (details, one file), **⬇ Download** (one file directly, several as a ZIP – new
+  `/files/zip?ids=…`), ✗ Reject / ↺ Restore, 🗑 Delete and the other bulk actions.
+- Viewer: the “💾 this” / “💾 all …” buttons were removed (saved view settings of older versions still apply).
+- File groups: “Show all” / “Show in pages” removed – sorting covers the whole group, pages follow.
 - Settings tab “Downloads” renamed to “Files & downloads”.
 - `/api/slides` loads all frames in one query (was one per id), order kept.
+
+### Performance & stability
+- 🔬 Optics results cached per file version / flip / tiles / solve: reopening a frame 1.8 s → 15 ms (no DB write
+  on a cache hit; one-row telescope lookup instead of the whole equipment catalogue).
+- Viewer of camera RAW files: image info cached (rawpy no longer unpacks the whole RAW on every view) –
+  NEF view 575 ms → 20 ms; the FITS header is read once per view instead of three times.
+- Search: header matches in one query, backed by **pg_trgm indexes** on FITS headers and file names
+  (search page 400 ms → 100 ms); the overview counts / size / integration / cover come from SQL aggregates
+  instead of loading every file of every project (17 ms instead of 38 ms).
+- FITS decoding reads the pixels memory-mapped straight into float32 (BZERO / BSCALE / BLANK applied by the
+  app) – one full-size copy less per render, histogram and thumbnail.
+- Histogram computation runs under the render slots (memory guard) like renders.
+- Plate solver: the solver lock is taken before the image is loaded (waiting requests hold no image memory),
+  a click in the browser waits at most 15 s (“busy”, the stored solve is kept), background tasks are re-queued
+  instead of storing “busy”, and one solve stops retrying after 300 s.
+- Crash-loop protection: a file or analysis task interrupted twice in a row (e.g. a file that crashes the
+  server) is marked as error instead of being retried on every restart; ↻ Reprocess retries it on demand.
+- Sky-map cache bounded; cached small list thumbnails are deleted with their file; parallel small-thumbnail
+  writes use unique temporary names.
 
 ### Fixed
 - Malformed JSON bodies (list / string / broken JSON), non-numeric ids and non-string values in the APIs
@@ -49,11 +83,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Plate solve note for an image larger than the sensor (said “smaller”).
 - Session with an invalid date creates nothing; the `admin` account is only seeded into an empty user table
   (a renamed admin is not re-created).
+- Bulk “Move” into a calibration set refuses lights / stacks / other (they were invisible there); calibration
+  sets accept only calibration types (type change, upload); a calibration set can move files to another set.
+- Bulk “Move” to a project puts each frame into the session of its own night (was always the latest session).
+- Deleting files: database rows are committed first, data removed from disk afterwards (a failed commit no
+  longer leaves rows pointing to deleted files).
+- Worker: a file deleted while being processed no longer crashes the worker step, and its freshly written
+  thumbnail (and re-created empty folders) are removed.
+- Time zone change: frames whose night changes follow to the session of the new night (when one exists).
+- Several sessions on the same night: always the first one is chosen (upload, auto sessions, archive import).
+- Overview size filter `inf` / `1e400` no longer gives a 500.
+- Project page: switching to another session clears the selection of the hidden one (bulk actions only touch
+  visible files); hint text updated; ⬇ Download of many files posts the ids (no over-long URL).
+- Viewer shortcuts are ignored while a dialog is open; bulk bar has ARIA labels; image tiles without a preview
+  show a placeholder.
+- Performance: calibration library paginated in SQL, optics trend without N+1 queries, session table grouped
+  once (was sessions × files), gallery slideshow ids without loading full rows.
 - Database: foreign keys for the project cover (`SET NULL`), file → import job (`SET NULL`) and import job →
   project / calibration set (`CASCADE`); dangling references cleaned up by the migration.
 
 ### Tests
-- 364 tests (was 233): new `test_helpers.py` (formatting, passwords, settings, names, specs, nights, FITS values /
+- 418 tests (was 233), coverage 91 %: new `test_gaps.py` (worker housekeeping, crash-loop protection, solver
+  lock, caches, FITS scaling, integrity check, archive helpers, upload validation, ZIP names, search, manage): new `test_helpers.py` (formatting, passwords, settings, names, specs, nights, FITS values /
   dates, RA / Dec, geometry) and `test_audit.py` (regressions for all fixes above).
 
 ## [1.4.5] – 2026-11-08

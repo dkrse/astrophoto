@@ -88,8 +88,11 @@ def session_rows(p: Project, cat=None, ref=None):
     spec_of = (lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {}) if name else {}) \
         if cat else (lambda kind, name: {})
     out = []
+    by_sid = {}                                   # group once (was: every session scanned all project files)
+    for f in p.files:
+        by_sid.setdefault(f.session_id, []).append(f)
     for s in p.sessions:
-        files = [f for f in p.files if f.session_id == s.id]
+        files = by_sid.get(s.id, [])
         out.append({"s": s, "files": files, "count": len(files),
                     "measured": session_values(cat, s, files, ref),
                     "lights": sum(1 for f in files if f.frame_type == "light"),
@@ -116,6 +119,9 @@ def calib_library(db) -> list:
             for c in db.scalars(select(CalibrationSet).order_by(CalibrationSet.capture_date.desc().nulls_last()))]
 
 
+SESSION_COLS = ("night", "equipment", "scale", "moon", "measured", "files")
+
+
 @app.get("/projects/{pid}")
 def project_detail(request: Request, pid: int, show: str = "", user: User = Depends(current_user),
                    db: Session = Depends(get_db)):
@@ -132,6 +138,18 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
     cat = catalog(db)
     from .measured import zp_reference
     rows = session_rows(p, cat, zp_reference(db))
+    from .core import sort_param, sort_items, nat_key
+    scol, sdir = sort_param(request, "so", SESSION_COLS)
+    if scol:                                      # sort all sessions, then page (table + file blocks follow)
+        m_of = lambda r: (r["measured"] or {})
+        rows = sort_items(rows, {
+            "night": lambda r: r["s"].date,
+            "equipment": lambda r: nat_key(" · ".join(x for x in (r["s"].telescope, r["s"].camera, r["s"].mount) if x)) or None,
+            "scale": lambda r: r["optic"]["scale"] if r["optic"] else None,
+            "moon": lambda r: r["s"].moon_illum,
+            "measured": lambda r: m_of(r).get("seeing") or m_of(r).get("fwhm_arcsec"),
+            "files": lambda r: r["count"],
+        }[scol], sdir)
     unassigned = [f for f in p.files if not f.session_id]
     sess_groups = [{"key": f"s{r['s'].id}_", "r": r, "groups": {t: [f for f in r["files"] if f.frame_type == t]
                                                                for t in FRAME_TYPES}} for r in rows]
@@ -159,7 +177,7 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                 calib_lib=calib_library(db), all_calib=db.scalars(select(CalibrationSet)).all(), status=worker.queue_status(db, project_id=p.id),
                 suspects=sum(1 for f in lights if f.suspect and not f.rejected),
                 rejected=sum(1 for f in lights if f.rejected), med=med, others=others,
-                settings=load_settings(db), show=show)
+                settings=load_settings(db), show=show, scol=scol, sdir=sdir)
 
 
 @app.get("/api/stats/optics")
@@ -168,7 +186,9 @@ def optics_trend(user: User = Depends(current_user), db: Session = Depends(get_d
     from .measured import zp_reference
     cat = catalog(db)
     ref = zp_reference(db)
-    files = db.scalars(select(FrameFile).where(FrameFile.session_id.is_not(None),
+    from sqlalchemy.orm import selectinload
+    files = db.scalars(select(FrameFile).options(selectinload(FrameFile.session).selectinload(ImagingSession.project))
+                       .where(FrameFile.session_id.is_not(None),
                                                FrameFile.frame_type.in_(("light", "stack")),
                                                (FrameFile.solve.is_not(None)) | (FrameFile.optics.is_not(None)))).all()
     by_s = defaultdict(list)
@@ -336,7 +356,10 @@ def session_delete(request: Request, sid: int, user: User = Depends(current_user
 def sessions_auto(request: Request, pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Create one session per night found in DATE-OBS / EXIF dates and assign files."""
     p = get_project(db, pid)
-    existing = {s.date: s for s in p.sessions if s.date}
+    existing = {}
+    for s in sorted(p.sessions, key=lambda s: s.id):         # several sessions on one night: the first one
+        if s.date:
+            existing.setdefault(s.date, s)
     tmpl = p.sessions[-1] if p.sessions else None        # new nights inherit equipment of the latest session
     nights = defaultdict(list)
     for f in p.files:

@@ -14,10 +14,14 @@ from . import worker
 CALIB_FIELDS = ["name", "camera", "telescope", "temperature", "gain", "offset", "filter", "binning", "notes"]
 
 
+CALIB_COLS = ("name", "type", "date", "camera", "telescope", "temperature", "gain", "offset", "exposure", "filter",
+              "binning", "files", "size", "sessions")
+
+
 @app.get("/calibration")
 def calib_list(request: Request, type: str = "", camera: str = "", q: str = "",
                user: User = Depends(current_user), db: Session = Depends(get_db)):
-    stmt = select(CalibrationSet).options(selectinload(CalibrationSet.files), selectinload(CalibrationSet.sessions))
+    stmt = select(CalibrationSet)
     if type in CALIB_TYPES:
         stmt = stmt.where(CalibrationSet.frame_type == type)
     if camera:
@@ -26,11 +30,37 @@ def calib_list(request: Request, type: str = "", camera: str = "", q: str = "",
         like = like_pattern(q)
         stmt = stmt.where(or_(CalibrationSet.name.ilike(like), CalibrationSet.notes.ilike(like),
                               CalibrationSet.filter.ilike(like)))
-    sets = db.scalars(stmt.order_by(CalibrationSet.capture_date.desc().nulls_last(), CalibrationSet.id.desc())).all()
     cameras = sorted({c for c in db.scalars(select(CalibrationSet.camera).distinct()) if c})
-    from .core import paginate, load_settings
-    pg = paginate(len(sets), load_settings(db)["calib_page_size"], request.query_params.get("page"))
-    return page(request, "calib_list.html", user=user, sets=sets[pg["start"]:pg["end"]], pg=pg, ftype=type,
+    from .core import paginate, load_settings, sort_param, order_sql, natural, numeric_text
+    from .models import session_calibration
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    col, cdir = sort_param(request, "co", CALIB_COLS)
+    order = [CalibrationSet.capture_date.desc().nulls_last(), CalibrationSet.id.desc()]
+    if col:                                       # column header: the whole library sorted, then paged
+        C = CalibrationSet
+        if col in ("files", "size"):
+            fa = (select(FrameFile.calib_set_id, func.count().label("n"), func.sum(FrameFile.size).label("size"))
+                  .where(FrameFile.calib_set_id.is_not(None)).group_by(FrameFile.calib_set_id).subquery())
+            stmt = stmt.outerjoin(fa, fa.c.calib_set_id == C.id)
+            order = order_sql(func.coalesce(fa.c.n if col == "files" else fa.c.size, 0), cdir, C.id)
+        elif col == "sessions":
+            sc = (select(session_calibration.c.calib_set_id, func.count().label("n"))
+                  .group_by(session_calibration.c.calib_set_id).subquery())
+            stmt = stmt.outerjoin(sc, sc.c.calib_set_id == C.id)
+            order = order_sql(func.coalesce(sc.c.n, 0), cdir, C.id)
+        elif col in ("temperature", "gain", "offset", "binning"):
+            c_ = getattr(C, col)
+            order = order_sql(numeric_text(c_), cdir) + order_sql(natural(c_), cdir, C.id)
+        else:
+            e = {"name": natural(C.name), "type": C.frame_type, "date": C.capture_date, "camera": natural(C.camera),
+                 "telescope": natural(C.telescope), "exposure": C.exposure_s, "filter": natural(C.filter)}[col]
+            order = order_sql(e, cdir, C.id)
+    pg = paginate(total, load_settings(db)["calib_page_size"], request.query_params.get("page"))
+    # only this page's sets (with their files / sessions) are loaded – not the whole library
+    sets = db.scalars(stmt.options(selectinload(CalibrationSet.files), selectinload(CalibrationSet.sessions))
+                      .order_by(*order)
+                      .offset(pg["start"]).limit(max(pg["end"] - pg["start"], 0))).all()
+    return page(request, "calib_list.html", user=user, sets=sets, pg=pg, ftype=type, ccol=col, cdir=cdir,
                 camera=camera, cq=q, cameras=cameras)
 
 
@@ -76,6 +106,8 @@ def calib_detail(request: Request, cid: int, show: str = "", user: User = Depend
     return page(request, "calib_detail.html", user=user, c=c, groups=groups,
                 sizes={t: sum(f.size for f in fs) for t, fs in groups.items()},
                 status=worker.queue_status(db, calib_set_id=c.id), others=others,
+                other_sets=db.scalars(select(CalibrationSet).where(CalibrationSet.id != c.id)
+                                      .order_by(func.lower(CalibrationSet.name))).all(),
                 settings=load_settings(db), show=show)
 
 

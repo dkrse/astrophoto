@@ -63,8 +63,16 @@ def test_sessions_and_files_are_paged(client, small_pages):
     assert html.count('/view">pg_0') == 3 and "1–3 of 7" in html and key in html
     p3 = client.get(f"/projects/{pid}?{key}=3").text
     assert "pg_06" in p3 and "pg_00" not in p3
-    allf = client.get(f"/projects/{pid}?show=s{sids[0]}_light").text
-    assert all(f"pg_{i:02d}" in allf for i in range(7)) and "Show in pages" in allf
+    assert "Show all" not in html                                            # sorting + pages instead
+    # sorted by name descending over the WHOLE group, then paged: page 1 = pg_06, pg_05, pg_04
+    o = f"o_s{sids[0]}_light"
+    d1 = client.get(f"/projects/{pid}?{o}=name&{o}_dir=desc").text
+    assert [n for n in ("pg_06", "pg_05", "pg_04", "pg_00") if f'/view">{n}' in d1] == ["pg_06", "pg_05", "pg_04"]
+    d3 = client.get(f"/projects/{pid}?{o}=name&{o}_dir=desc&{key}=3").text
+    assert '/view">pg_00' in d3 and '/view">pg_06' not in d3
+    # sessions sorted by night descending: newest night on page 1
+    s1 = client.get(f"/projects/{pid}?so=night&so_dir=desc").text
+    assert f'data-target="s{sids[4]}_"' in s1 and f'data-target="s{sids[0]}_"' not in s1
     client.post(f"/projects/{pid}/delete")
 
 

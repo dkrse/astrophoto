@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_files.html" import info_button, file_info_dialog with context %}
 {% block title %}{{ f.original_name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
 <script>document.body.classList.add('viewer-page');document.documentElement.style.setProperty('--hh',document.querySelector('header.top').offsetHeight+'px');</script>
@@ -38,8 +39,6 @@
         <span id="bval" class="bval">{{ opts.brightness }}</span></label>
       <button class="btn small" id="levelsbtn" title="Histogram &amp; levels (black / midtones / white point)">📊 Levels</button>
       <button class="btn small" id="resetbtn" title="Reset to default values (auto bayer, auto flip, RGB, unlinked stretch, brightness 0, fit). Not saved.">↺ Reset</button>
-      <button class="btn small" data-save="" title="Save view settings for this file. The original is never modified.">💾 this</button>
-      <button class="btn small" data-save="1" title="Save view settings for all files of this type. Originals are never modified.">💾 all {{ FRAME_LABELS[f.frame_type] }}</button>
     </span>
     {% endif %}
     <span class="seg right">
@@ -50,6 +49,7 @@
       <button class="btn small" id="skybtn" title="Show objects in the field, RA/Dec grid and north / east (from the plate solve) (O)" {% if not (can_render and solved and solved.ok and solved.wcs) %}hidden{% endif %}>✨ Objects</button>
       {% if can_render %}<button class="btn small" id="opticsbtn" title="Optics inspector: star size / shape across the field – tilt, curvature, coma, spacing, guiding">🔬 Optics</button>{% endif %}
       <button class="btn small" id="solvebtn" title="Plate solve: measure image scale → focal length, field of view, centre (ASTAP, local)">🎯 Solve</button>
+      {{ info_button(f, med) }}
       <button class="btn small" id="infobtn" title="Info panel (I)">ⓘ Info</button>
     </span>
   </div>
@@ -180,9 +180,7 @@
   </div>
 </dialog>
 
-<form method="post" action="/files/{{ f.id }}/opts" id="saveform" hidden>
-  <input name="bayer"><input name="stretch"><input name="flip"><input name="channels"><input name="brightness"><input name="bp"><input name="mp"><input name="wp"><input name="view"><input name="north"><input name="all">
-</form>
+{{ file_info_dialog(fi_sessions, fi_others, fi_calib, fi_types) }}
 
 <script>
 function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelectorAll('#'+id+' tr').forEach(function(r){r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';});}
@@ -193,6 +191,7 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
   setInfo((function(){try{return localStorage.getItem('vinfo')!=='0'}catch(e){return true}})());
   info.onclick=function(){setInfo(V.classList.contains('noinfo'));};
   document.addEventListener('keydown',function(e){
+    if(document.querySelector('dialog[open]'))return;      // keys belong to an open dialog
     if(e.target.matches('input,select,textarea')||e.ctrlKey||e.metaKey||e.altKey)return;
     if(e.key==='i'||e.key==='I')info.click();
     if(e.key==='ArrowLeft'&&document.getElementById('prev'))location=document.getElementById('prev').href;
@@ -299,6 +298,7 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
       tx=px-(px-tx)*fullScale/s;ty=py-(py-ty)*fullScale/s;s=fullScale;mode='one';apply();} else fit();});
   var rz=0;window.addEventListener('resize',function(){clearTimeout(rz);rz=setTimeout(function(){if(mode==='fit')fit();},60);});
   document.addEventListener('keydown',function(e){
+    if(document.querySelector('dialog[open]'))return;      // keys belong to an open dialog
     if(e.target.matches('input,select,textarea')||e.ctrlKey||e.metaKey||e.altKey)return;
     if((e.key==='f'&&!e.shiftKey)||e.key==='0')setMode('fit');
     if(e.key==='1')setMode('one');
@@ -403,7 +403,7 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
   function toggleFs(){if(document.fullscreenElement)document.exitFullscreen();else if(V.requestFullscreen)V.requestFullscreen();}
   document.getElementById('fsbtn').onclick=toggleFs;
   document.addEventListener('fullscreenchange',function(){setTimeout(function(){if(mode==='fit')fit();},60);});
-  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&e.key==='F'&&e.shiftKey)toggleFs();});
+  document.addEventListener('keydown',function(e){if(!document.querySelector('dialog[open]')&&!e.target.matches('input,select,textarea')&&e.key==='F'&&e.shiftKey)toggleFs();});
   // reset to defaults – display only, nothing is saved
   var DEFAULTS={{ defaults|tojson }};
   // brightness: instant CSS filter in the browser (server applies it only to saved thumbnails)
@@ -428,11 +428,6 @@ function filterRows(inp, id){var q=inp.value.toLowerCase();document.querySelecto
     mode='fit';fit();
   };
 
-  document.querySelectorAll('[data-save]').forEach(function(btn){btn.onclick=function(){
-    var fm=document.getElementById('saveform'), o=opts(true);
-    fm.bayer.value=o.bayer||'auto'; fm.stretch.value=o.stretch||'unlinked'; fm.flip.value=o.flip||'auto'; fm.channels.value=o.channels||'rgb'; fm.brightness.value=bri.value; fm.bp.value=LV.bp.toFixed(4); fm.mp.value=LV.mp.toFixed(4); fm.wp.value=LV.wp.toFixed(4); fm.view.value=(mode==='one')?'one':'fit'; fm.north.value=NUP.on?'1':'0'; fm.all.value=btn.dataset.save;
-    btn.textContent='⏳'; fm.submit();
-  };});
 })();
 {% endif %}
 var SOLVED={{ solved|tojson }};
@@ -657,7 +652,7 @@ window.setNorth=function(on,keep){var N=window.NUP,b=document.getElementById('no
     if(window._refitNow)window._refitNow();});};
 (function(){var b=document.getElementById('northbtn');if(!b||!window.NUP)return;
   b.onclick=function(){setNorth(!NUP.on);};
-  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&(e.key==='n'||e.key==='N')&&!b.hidden)b.click();});
+  document.addEventListener('keydown',function(e){if(!document.querySelector('dialog[open]')&&!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&(e.key==='n'||e.key==='N')&&!b.hidden)b.click();});
   var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){if(NUP.on)setTimeout(function(){setNorth(true);},0);});
   var want={{ 'true' if opts.north == '1' else 'false' }};
   {% if not f.view_opts %}try{if(localStorage.getItem('northup')==='1')want=true;}catch(e){}{% endif %}   // saved view settings win
@@ -668,7 +663,7 @@ window.setNorth=function(on,keep){var N=window.NUP,b=document.getElementById('no
   b.onclick=function(){setSky(!SKY.on);};b.classList.toggle('primary',SKY.on);
   document.getElementById('fi-ovl-toggle').onchange=function(){setSky(this.checked);};
   var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){setTimeout(drawSky,0);});
-  document.addEventListener('keydown',function(e){if(!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&(e.key==='o'||e.key==='O')&&!b.hidden)b.click();});
+  document.addEventListener('keydown',function(e){if(!document.querySelector('dialog[open]')&&!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&(e.key==='o'||e.key==='O')&&!b.hidden)b.click();});
   if(SKY.on&&!b.hidden)loadSky().then(drawSky);})();
 function useFocal(){var b=document.getElementById('fi-usefocal');
   if(!confirm('Set the focal length of “'+b.dataset.tel+'” to '+Math.round(b.dataset.focal)+' mm in the equipment list?'))return;

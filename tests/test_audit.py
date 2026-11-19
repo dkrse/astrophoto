@@ -486,7 +486,7 @@ def test_files_view_switch(client, project, tmp_path):
     try:
         client.post("/settings", data={"files_view": "grid"})
         t = client.get(f"/projects/{project}").text
-        assert "var fd='grid'" in t and 'value="grid" selected' in client.get("/settings").text
+        assert 'var fd="grid"' in t and 'value="grid" selected' in client.get("/settings").text
     finally:
         client.post("/settings", data={"reset": "1"})
 
@@ -531,3 +531,324 @@ def test_ra_dec_hint_variants(h, out):
         assert (ra, dec) == out
     else:
         assert ra == pytest.approx(out[0]) and dec == pytest.approx(out[1])
+
+
+# ---------- viewer file-details dialog, no save buttons; projects list table ----------
+def test_viewer_has_file_info_dialog_and_no_save_buttons(client, project, tmp_path):
+    upload(client, write_fits(tmp_path / "vi.fits", FILTER="Ha"), project_id=project)
+    drain()
+    f = files_of(project)[0]
+    t = client.get(f"/files/{f.id}/view").text
+    assert 'id="info-dlg"' in t and 'onclick="fileInfo(this)"' in t and "function fileInfo" in t
+    assert f'"id": {f.id}' in t and '"filter": "Ha"' in t                  # same data as in the file list
+    assert 'data-fi="session"' in t and 'data-fi="type"' in t
+    assert "data-save" not in t and "💾" not in t and 'id="saveform"' not in t
+    lst = client.get(f"/projects/{project}").text
+    assert lst.count('id="info-dlg"') == 1 and 'data-bulk="info"' in lst
+
+
+def test_calibration_viewer_info_dialog(client, tmp_path):
+    r = client.post("/calibration/new", data={"frame_type": "dark", "capture_date": "10-10-2025"},
+                    follow_redirects=False)
+    cid = int(r.headers["location"].rsplit("/", 1)[1])
+    upload(client, write_fits(tmp_path / "cd.fits", star_frame(seed=90), IMAGETYP="Dark"), frame_type="dark",
+           calib_set_id=cid)
+    drain()
+    with SessionLocal() as db:
+        fid = db.scalars(select(FrameFile.id).where(FrameFile.calib_set_id == cid)).first()
+    t = client.get(f"/files/{fid}/view").text
+    assert 'id="info-dlg"' in t and 'data-fi="session"' not in t
+    client.post(f"/calibration/{cid}/delete")
+
+
+def test_projects_overview_list_is_a_table(client, project):
+    t = client.get("/").text
+    tbl = t.split('id="plist"', 1)[1].split("</table>", 1)[0]
+    assert '<table class="kvt"' in tbl and ">Project</th>" in tbl and f'href="/projects/{project}"' in tbl
+    assert 'class="tablewrap card" id="plist"' in t and "<img" not in tbl          # same as the other lists
+
+
+def test_file_rows_have_no_action_buttons_bulk_bar_has_them(client, project, tmp_path):
+    import io
+    import re
+    import zipfile
+    for i in range(2):
+        upload(client, write_fits(tmp_path / f"ab{i}.fits", star_frame(seed=60 + i)), project_id=project)
+    drain()
+    a, b = files_of(project)
+    t = client.get(f"/projects/{project}").text
+    rows = re.findall(r'<tr class="[^"]*" data-id="\d+".*?</tr>', t, re.S)
+    assert len(rows) == 2
+    for r in rows:                                  # info lives on the row, buttons only in the bulk bar
+        assert "data-info=" in r and "/download" not in r and "/reject" not in r and "/delete" not in r
+        assert 'class="btn' not in r
+    for act in ("info", "download", "rejecttoggle", "delete"):
+        assert f'data-bulk="{act}"' in t
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/files/zip?ids={a.id},{b.id},abc").content))
+    assert sorted(z.namelist()) == ["light/ab0.fits", "light/ab1.fits"]
+    assert client.get("/files/zip?ids=").status_code == 404
+
+
+# ---------- third review: moves, deletes, nights, pages ----------
+def _calib_set(client, ftype="dark"):
+    r = client.post("/calibration/new", data={"frame_type": ftype, "capture_date": "10-10-2025"}, follow_redirects=False)
+    return int(r.headers["location"].rsplit("/", 1)[1])
+
+
+def test_move_lights_to_calibration_set_refused(client, project, tmp_path):
+    upload(client, write_fits(tmp_path / "ml.fits", star_frame(seed=101)), project_id=project)
+    drain()
+    f = files_of(project)[0]
+    cid = _calib_set(client)
+    try:
+        r = client.post("/api/files/bulk", json={"ids": [f.id], "action": "move", "value": f"calib:{cid}"})
+        assert r.status_code == 400 and "not calibration frames" in r.json()["error"]
+        assert files_of(project)[0].project_id == project
+        # a dark may move there
+        client.post("/api/files/bulk", json={"ids": [f.id], "action": "type", "value": "dark"})
+        assert client.post("/api/files/bulk", json={"ids": [f.id], "action": "move",
+                                                    "value": f"calib:{cid}"}).status_code == 200
+        # inside a calibration set only calibration types
+        r = client.post("/api/files/bulk", json={"ids": [f.id], "action": "type", "value": "light"})
+        assert r.status_code == 400
+    finally:
+        client.post(f"/calibration/{cid}/delete")
+
+
+def test_upload_of_light_into_calibration_set_refused(client):
+    cid = _calib_set(client)
+    try:
+        r = client.post("/api/uploads", json={"calib_set_id": cid, "filename": "l.fits", "size": 10,
+                                              "frame_type": "light"})
+        assert r.status_code == 400
+    finally:
+        client.post(f"/calibration/{cid}/delete")
+
+
+def test_move_to_project_uses_the_frames_night(client, project, tmp_path):
+    from app.models import ImagingSession
+    r = client.post("/projects/new", data={"name": "Move target", "target": "M45"}, follow_redirects=False)
+    target = int(r.headers["location"].rsplit("/", 1)[1])
+    try:
+        with SessionLocal() as db:
+            s_old = ImagingSession(project_id=target, date=date(2025, 3, 1))
+            s_new = ImagingSession(project_id=target, date=date(2025, 10, 10))
+            db.add_all([s_old, s_new])
+            db.commit()
+            old_id, new_id = s_old.id, s_new.id
+        upload(client, write_fits(tmp_path / "mv1.fits", star_frame(seed=111), DATE_OBS="2025-03-01T22:00:00"),
+               project_id=project)
+        upload(client, write_fits(tmp_path / "mv2.fits", star_frame(seed=112), DATE_OBS="2024-01-01T22:00:00"),
+               project_id=project)
+        drain()
+        a, b = files_of(project)
+        assert client.post("/api/files/bulk", json={"ids": [a.id, b.id], "action": "move",
+                                                    "value": str(target)}).status_code == 200
+        with SessionLocal() as db:
+            assert db.get(FrameFile, a.id).session_id == old_id          # its own night
+            assert db.get(FrameFile, b.id).session_id == new_id          # no such night -> the latest session
+    finally:
+        client.post(f"/projects/{target}/delete")
+
+
+def test_delete_files_removes_disk_data_only_after_commit(client, project, tmp_path, monkeypatch):
+    from app.core import DATA_DIR
+    upload(client, write_fits(tmp_path / "dc.fits", star_frame(seed=121)), project_id=project)
+    drain()
+    f = files_of(project)[0]
+    path = DATA_DIR / f.stored_path
+    assert path.exists()
+    from sqlalchemy.orm import Session as _S
+    orig = _S.commit
+
+    def failing(self):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(_S, "commit", failing)
+    with pytest.raises(RuntimeError):
+        from app.routes_files import delete_files
+        with SessionLocal() as db:
+            delete_files(db, [db.get(FrameFile, f.id)])
+    monkeypatch.setattr(_S, "commit", orig)
+    assert path.exists()                                     # commit failed -> data still on disk
+    with SessionLocal() as db:
+        assert db.get(FrameFile, f.id) is not None
+
+
+def test_overview_size_filter_overflow(client):
+    for v in ("inf", "1e400", "-inf", "nan", "abc"):
+        assert client.get(f"/?size_from={v}&size_to={v}").status_code == 200
+
+
+def test_orphan_thumbnail_removed_when_row_deleted_while_processing(client, project, tmp_path, monkeypatch):
+    from app.core import DATA_DIR
+    upload(client, write_fits(tmp_path / "ot.fits", star_frame(seed=131)), project_id=project)
+    with SessionLocal() as db:                               # not processed yet
+        fid = db.scalars(select(FrameFile.id).where(FrameFile.project_id == project)).one()
+    real = worker.compute_preview
+    made = {}
+
+    def compute_then_delete(*a, **k):
+        res = real(*a, **k)
+        made["thumb"] = res and res.get("thumb")
+        with SessionLocal() as db2:                          # the user deletes the file meanwhile
+            db2.delete(db2.get(FrameFile, fid))
+            db2.commit()
+        return res
+    monkeypatch.setattr(worker, "compute_preview", compute_then_delete)
+    drain()
+    assert made.get("thumb") and not (DATA_DIR / made["thumb"]).exists()
+
+
+def test_timezone_change_moves_frame_to_its_new_night(client, project, tmp_path):
+    from app.models import ImagingSession
+    with SessionLocal() as db:
+        s1 = ImagingSession(project_id=project, date=date(2025, 7, 12))
+        s2 = ImagingSession(project_id=project, date=date(2025, 7, 13))
+        db.add_all([s1, s2])
+        db.commit()
+        s1_id, s2_id = s1.id, s2.id
+    # DATE-OBS 13-07 11:30 UTC: in UTC before noon -> night of 12-07; in Tokyo 20:30 -> night of 13-07
+    upload(client, write_fits(tmp_path / "tzn.fits", star_frame(seed=141), DATE_OBS="2025-07-13T11:30:00"),
+           project_id=project, session_id=s1_id)
+    drain()
+    fid = files_of(project)[0].id
+    with SessionLocal() as db:
+        db.get(FrameFile, fid).session_id = s1_id
+        db.commit()
+    try:
+        client.post("/settings", data={"timezone": "Asia/Tokyo"})   # 20:30 local on 13-07 -> night of 13-07
+        with SessionLocal() as db:
+            f = db.get(FrameFile, fid)
+            assert f.date_obs == datetime(2025, 7, 13, 20, 30) and f.session_id == s2_id
+    finally:
+        client.post("/settings", data={"timezone": "UTC"})
+        client.post("/settings", data={"reset": "1"})
+
+
+def test_session_order_is_stable_for_duplicate_nights(client, project, tmp_path):
+    from app.models import ImagingSession
+    with SessionLocal() as db:
+        first = ImagingSession(project_id=project, date=date(2025, 5, 5))
+        db.add(first)
+        db.commit()
+        second = ImagingSession(project_id=project, date=date(2025, 5, 5))
+        db.add(second)
+        db.commit()
+        first_id = first.id
+    upload(client, write_fits(tmp_path / "dn.fits", star_frame(seed=151), DATE_OBS="2025-05-05T22:00:00"),
+           project_id=project)
+    with SessionLocal() as db:
+        f = db.scalars(select(FrameFile).where(FrameFile.project_id == project)).one()
+        f.session_id = None
+        db.commit()
+    drain()
+    assert files_of(project)[0].session_id == first_id
+
+
+def test_calibration_list_paginates_in_sql(client):
+    ids = [_calib_set(client) for _ in range(3)]
+    try:
+        client.post("/settings", data={"calib_page_size": "2"})
+        t1 = client.get("/calibration").text
+        t2 = client.get("/calibration?page=2").text
+        found = lambda t: {i for i in ids if f'href="/calibration/{i}"' in t}
+        assert len(found(t1)) + len(found(t2)) >= 3 and not (found(t1) & found(t2))
+    finally:
+        client.post("/settings", data={"reset": "1"})
+        for i in ids:
+            client.post(f"/calibration/{i}/delete")
+
+
+def test_files_zip_post_and_calib_move_targets(client, project, tmp_path):
+    import io
+    import zipfile
+    for i in range(2):
+        upload(client, write_fits(tmp_path / f"zp{i}.fits", star_frame(seed=160 + i)), project_id=project)
+    drain()
+    ids = ",".join(str(f.id) for f in files_of(project))
+    z = zipfile.ZipFile(io.BytesIO(client.post("/files/zip", data={"ids": ids}).content))
+    assert len(z.namelist()) == 2
+    a, b = _calib_set(client), _calib_set(client, "flat")
+    try:
+        t = client.get(f"/calibration/{a}").text
+        assert f'value="calib:{b}"' in t and f'value="calib:{a}"' not in t      # other sets as move targets
+    finally:
+        client.post(f"/calibration/{a}/delete")
+        client.post(f"/calibration/{b}/delete")
+
+
+def test_project_page_hidden_sessions_lose_selection_and_hint_text(client, project):
+    default_session(project)
+    t = client.get(f"/projects/{project}").text
+    assert "window.bulkRefresh" in t and ".selfile:checked,.selgroup:checked" in t
+    assert "a file’s <b>i</b>" not in t
+
+
+def test_tables_sortable_script_on_every_page(client, project):
+    for url in ("/", "/calibration", f"/projects/{project}", "/manage", "/skymap"):
+        t = client.get(url).text
+        assert "sorttable.js" in t, url
+    js = client.get("/static/sorttable.js").text
+    assert "Intl.Collator" in js and "applyViewSort" in js and "localStorage" in js
+
+
+# ---------- server-side column sorting (whole list, then pages) ----------
+def test_projects_sorted_by_column_before_paging(client):
+    from app.models import Setting
+    names = ["Sort NGC 3031", "Sort NGC 224", "Sort NGC 7000"]
+    pids = []
+    for n in names:
+        r = client.post("/projects/new", data={"name": n, "confirm_dup": "1"}, follow_redirects=False)
+        pids.append(int(r.headers["location"].rsplit("/", 1)[1]))
+    try:
+        with SessionLocal() as db:
+            db.merge(Setting(key="page_size", value="1"))
+            db.commit()
+        from app.core import invalidate_settings
+        invalidate_settings()
+        first = lambda url: [n for n in names if n in client.get(url).text.split('id="plist"')[1]]
+        assert first("/?q=Sort+NGC&ps=name") == ["Sort NGC 224"]                 # natural: 224 < 3031 < 7000
+        assert first("/?q=Sort+NGC&ps=name&page=3") == ["Sort NGC 7000"]
+        assert first("/?q=Sort+NGC&ps=name&ps_dir=desc") == ["Sort NGC 7000"]
+        t = client.get("/?q=Sort+NGC&ps=name&ps_dir=desc").text
+        assert 'data-key="name"' in t and "sort-desc" in t and 'name="ps"' not in t     # select resets column sort
+        for col in ("target", "object_type", "nights", "first", "last", "lights", "files", "size", "integration"):
+            assert client.get(f"/?ps={col}&ps_dir=desc").status_code == 200, col
+        assert client.get("/?ps=bogus").status_code == 200
+    finally:
+        client.post("/settings", data={"reset": "1"})
+        for p in pids:
+            client.post(f"/projects/{p}/delete")
+
+
+def test_calibration_library_sorted_by_column(client):
+    from app.models import CalibrationSet
+    ids = []
+    with SessionLocal() as db:
+        for name, temp in (("Sort A", "-5"), ("Sort B", "-10"), ("Sort C", "0")):
+            c = CalibrationSet(name=name, frame_type="dark", temperature=temp)
+            db.add(c)
+            db.flush()
+            ids.append(c.id)
+        db.commit()
+    try:
+        t = client.get("/calibration?q=Sort&co=temperature").text
+        order = sorted(("Sort A", "Sort B", "Sort C"), key=t.index)
+        assert order == ["Sort B", "Sort A", "Sort C"]                            # -10 < -5 < 0 (numeric)
+        for col in ("name", "type", "date", "camera", "telescope", "gain", "offset", "exposure", "filter",
+                    "binning", "files", "size", "sessions"):
+            assert client.get(f"/calibration?co={col}&co_dir=desc").status_code == 200, col
+    finally:
+        for i in ids:
+            client.post(f"/calibration/{i}/delete")
+
+
+def test_session_table_sort_columns(client, project):
+    default_session(project)
+    for col in ("night", "equipment", "scale", "moon", "measured", "files"):
+        for d in ("asc", "desc"):
+            assert client.get(f"/projects/{project}?so={col}&so_dir={d}").status_code == 200
+    t = client.get(f"/projects/{project}").text
+    assert 'data-sort-param="so"' in t and "Show all" not in t
+    js = client.get("/static/sorttable.js").text
+    assert "syncServerSort" in js and "location.replace" in js

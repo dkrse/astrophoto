@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_sort.html" import sth %}
 {% from "_files.html" import file_groups, bulk_bar, uploader, status_box, analysis_dialog, pager with context %}
 {% block title %}{{ p.name }} – {{ S.app_title }}{% endblock %}
 {% block content %}
@@ -58,8 +59,8 @@
     <button type="button" class="btn small primary" onclick="openSession()">+ Add session</button>
   </div>
   {% if sessions %}
-  <div class="tablewrap"><table class="kvt">
-    <thead><tr><th>Night</th><th>Equipment</th><th title="Image scale · field of view (from equipment parameters)">Scale / FOV</th><th title="Moon illumination">Moon</th><th title="From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude">Measured</th><th>Files</th><th></th></tr></thead>
+  <div class="tablewrap"><table class="kvt" data-sort-param="so" data-page-param="sp" data-anchor="sessions">
+    <thead><tr>{{ sth('Night', 'night', scol, sdir) }}{{ sth('Equipment', 'equipment', scol, sdir) }}{{ sth('Scale / FOV', 'scale', scol, sdir, 'Image scale · field of view (from equipment parameters)') }}{{ sth('Moon', 'moon', scol, sdir, 'Moon illumination') }}{{ sth('Measured', 'measured', scol, sdir, 'From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude – sorted by seeing / FWHM') }}{{ sth('Files', 'files', scol, sdir) }}<th></th></tr></thead>
     <tbody>
     {% for r in page_rows %}{% set s = r.s %}
     <tr class="sessrow" data-target="s{{ s.id }}_" title="Show files of this session">
@@ -202,7 +203,7 @@
       </div>
       {% else %}
       <div><b>{{ 'Not assigned to a session' if sessions else 'Files' }}</b>
-        {% if sessions %}<div class="muted small">Select files and use “Session” in the action bar (or a file’s <b>i</b>), or ⚡ Auto from dates.</div>{% endif %}</div>
+        {% if sessions %}<div class="muted small">Check files and use “Session” in the action bar below (or <b>i</b> there for one file), or ⚡ Auto from dates.</div>{% endif %}</div>
       {% endif %}
     </summary>
     {% if r %}{% set s = r.s %}
@@ -365,10 +366,14 @@ openHash();window.addEventListener('hashchange',openHash);
 // Files: only the clicked session is listed – nothing else (no other sessions, not even folded)
 function showSession(){var el=location.hash&&document.getElementById(location.hash.slice(1));
   var cur=el&&el.closest('details.sesspick'), hint=document.getElementById('sess-hint');
-  document.querySelectorAll('details.sesspick').forEach(function(d){d.hidden=d!==cur;if(d===cur)d.open=true;});
+  document.querySelectorAll('details.sesspick').forEach(function(d){d.hidden=d!==cur;if(d===cur)d.open=true;
+    // a hidden session keeps no selection – bulk actions must only touch files that can be seen
+    if(d!==cur)d.querySelectorAll('.selfile:checked,.selgroup:checked').forEach(function(c){c.checked=false;});});
   document.querySelectorAll('tr.sessrow').forEach(function(tr){tr.classList.toggle('sel',!!cur&&tr.dataset.target===cur.id);});
   var u=document.getElementById('u_');if(u)u.hidden=!!cur;      // unassigned files only while no session is chosen
-  if(hint)hint.hidden=!!cur;}
+  if(u&&cur)u.querySelectorAll('.selfile:checked,.selgroup:checked').forEach(function(c){c.checked=false;});
+  if(hint)hint.hidden=!!cur;
+  if(window.bulkRefresh)window.bulkRefresh();}
 showSession();window.addEventListener('hashchange',showSession);
 // click on a session row (outside its buttons) jumps to that session's files
 document.querySelectorAll('tr.sessrow').forEach(function(tr){tr.addEventListener('click',function(e){

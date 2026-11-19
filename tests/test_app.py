@@ -174,7 +174,7 @@ def test_session_table_compact_with_info_dialog(client, project):
                                                        "notes": "clear sky"})
     t = client.get(f"/projects/{project}").text
     head = t.split('id="sessions"')[1].split("</thead>")[0]
-    assert "<th>Seeing</th>" not in head and "<th>Night</th>" in head and "<th>Files</th>" in head
+    assert ">Seeing</th>" not in head and ">Night</th>" in head and ">Files</th>" in head
     assert 'id="sinfo-' in t and "21.1" in t and "clear sky" in t
 
 

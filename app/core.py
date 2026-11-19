@@ -226,7 +226,6 @@ SETTINGS = {
     "open_summary": (True, bool, None, "Overview: summary shown"),
     "open_filters": (False, bool, None, "Overview: filters expanded"),
     "open_sessions": (False, bool, None, "Project: Sessions panel expanded"),
-    "open_session_files": (True, bool, None, "Project: session blocks in Files expanded"),
     "open_file_groups": (True, bool, None, "File lists: type groups (Light, Dark …) expanded"),
     "open_stats_table": (False, bool, None, "Statistics: monthly table expanded"),
     # background processing (worker / background threads) – each can be switched off
@@ -560,13 +559,19 @@ def move_file_storage(f: FrameFile, project_id=None, calib_set_id=None, frame_ty
 
 def delete_file_storage(f: FrameFile, db=None):
     """Remove a file's data + thumbnail – but never a path another row still points to."""
-    for col, rel in ((FrameFile.stored_path, f.stored_path), (FrameFile.thumb_path, f.thumb_path)):
+    delete_storage_paths(f.id, f.stored_path, f.thumb_path, db)
+
+
+def delete_storage_paths(fid: int, stored_path: str | None, thumb_path: str | None, db=None):
+    for col, rel in ((FrameFile.stored_path, stored_path), (FrameFile.thumb_path, thumb_path)):
         if not rel or rel.startswith("__"):
             continue
-        if db is not None and db.scalar(select(func.count()).where(col == rel, FrameFile.id != f.id)):
+        if db is not None and db.scalar(select(func.count()).where(col == rel, FrameFile.id != fid)):
             continue
         (DATA_DIR / rel).unlink(missing_ok=True)
-    shutil.rmtree(DATA_DIR / ".cache" / str(f.id), ignore_errors=True)
+    shutil.rmtree(DATA_DIR / ".cache" / str(fid), ignore_errors=True)
+    for p in (DATA_DIR / ".cache" / "thumbs").glob(f"{fid}_*"):      # cached small list thumbnails
+        p.unlink(missing_ok=True)
 
 
 # ---------- astronomy helpers ----------
@@ -687,3 +692,67 @@ def _sqm_label(v):
 
 
 templates.env.globals["sqm_label"] = _sqm_label
+
+
+# ---------- column sorting of paginated lists (server side: sort everything, then page) ----------
+_NATURAL = {"ok": None}
+
+
+def natural(col):
+    """ORDER BY expression for names: ICU numeric collation when available, else case-insensitive."""
+    if _NATURAL["ok"] is None:
+        from sqlalchemy import text
+        try:
+            with SessionLocal() as db:
+                _NATURAL["ok"] = bool(db.scalar(text("SELECT count(*) FROM pg_collation WHERE collname = 'natsort'")))
+        except Exception:
+            _NATURAL["ok"] = False
+    return col.collate("natsort") if _NATURAL["ok"] else func.lower(col)
+
+
+def sort_param(request, param: str, allowed) -> tuple:
+    """(column key, +1 / -1) from ?<param>=key&<param>_dir=asc|desc, or (None, 1) for the default order."""
+    key = request.query_params.get(param) or ""
+    if key not in allowed:
+        return None, 1
+    return key, (-1 if request.query_params.get(param + "_dir") == "desc" else 1)
+
+
+def order_sql(expr, direction: int, *tiebreak):
+    """SQL ORDER BY list: empty values always last, then a stable tie-breaker."""
+    return [(expr.desc() if direction < 0 else expr.asc()).nulls_last(), *tiebreak]
+
+
+def nat_key(v):
+    """Python natural sort key: 'NGC 224' < 'NGC 3031', case-insensitive."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(v).lower())]
+
+
+def sort_items(items: list, keyfn, direction: int) -> list:
+    """Sort Python objects by keyfn (None = empty -> always last), stable."""
+    have = [x for x in items if keyfn(x) is not None]
+    none = [x for x in items if keyfn(x) is None]
+    return sorted(have, key=keyfn, reverse=direction < 0) + none
+
+
+templates.env.globals.update(sort_param=sort_param)
+
+
+FILE_COLS = {"name": lambda f: nat_key(f.original_name), "size": lambda f: f.size,
+             "added": lambda f: f.uploaded_at, "captured": lambda f: f.date_obs}
+
+
+def sort_files(files: list, request, param: str) -> tuple:
+    """A file group sorted by its column header (?o_<group>=name|size|added|captured), before paging."""
+    col, d = sort_param(request, param, FILE_COLS)
+    return (sort_items(files, FILE_COLS[col], d) if col else files), col, d
+
+
+templates.env.globals.update(sort_files=sort_files)
+
+
+def numeric_text(col):
+    """'-10' / '120' / '2,5' stored as text -> number for ORDER BY (other text -> NULL, then sorted naturally)."""
+    from sqlalchemy import case, cast, Float
+    return case((col.op("~")(r"^\s*[-+]?\d+([.,]\d+)?\s*$"),
+                 cast(func.replace(func.trim(col), ",", "."), Float)), else_=None)

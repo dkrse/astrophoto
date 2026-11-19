@@ -18,7 +18,9 @@ from .framestats import _luminance
 ASTAP_BIN = os.environ.get("ASTAP_BIN", "/opt/astap/astap_cli")
 ASTAP_DB = os.environ.get("ASTAP_DB", "/data/astap")
 TIMEOUT_S = 180
-LOCK_WAIT_S = 600                 # a request waits at most this long for a running solve
+LOCK_WAIT_S = 600                 # the background worker waits at most this long for a running solve
+LOCK_WAIT_INTERACTIVE_S = 15      # a click in the browser does not park a server thread for minutes
+SOLVE_BUDGET_S = 300              # no further ASTAP retries once a solve has taken this long
 _LOCK = threading.Lock()          # one solve at a time (CPU + RAM)
 
 
@@ -107,12 +109,23 @@ def _run(fits_path: Path, fov_deg: float | None, ra_h, dec):
 
 
 def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint_mm: float | None,
-          sensor_px: tuple | None = None) -> dict:
-    """Returns a result dict (always contains 'ok'); never raises for solve failures."""
-    from astropy.io import fits
+          sensor_px: tuple | None = None, lock_wait: float = LOCK_WAIT_S) -> dict:
+    """Returns a result dict (always contains 'ok'); never raises for solve failures.
+    One solve at a time (CPU + RAM): the lock is taken before the image is loaded, so waiting requests hold
+    no image memory."""
     reason = available()
     if reason:
         return {"ok": False, "error": reason}
+    if not _LOCK.acquire(timeout=lock_wait):
+        return {"ok": False, "busy": True,
+                "error": "The plate solver is busy with another frame – try again in a moment"}
+    try:
+        return _prepare_and_solve(src, header_text, pixel_um, focal_hint_mm, sensor_px)
+    finally:
+        _LOCK.release()
+
+
+def _prepare_and_solve(src, header_text, pixel_um, focal_hint_mm, sensor_px) -> dict:
     lum, binf = _luminance(src)
     if lum is None:
         return {"ok": False, "error": "Unsupported or unreadable file"}
@@ -138,13 +151,8 @@ def solve(src: Path, header_text: str | None, pixel_um: float | None, focal_hint
                 (h_px * binf / short_img if short_img else 1)
         else:
             fov_hint = h_px * binf * pixel_um / focal_hint_mm * 206.265 / 3600
-    if not _LOCK.acquire(timeout=LOCK_WAIT_S):          # one solve at a time; do not park threads for ever
-        return {"ok": False, "error": "The plate solver is busy with another frame – try again in a moment"}
-    try:
-        return _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra_h, dec, fov_hint,
-                             focal_hint_mm, sky_adu)
-    finally:
-        _LOCK.release()
+    return _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra_h, dec, fov_hint,
+                         focal_hint_mm, sky_adu)
 
 
 def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra_h, dec, fov_hint, focal_hint_mm,
@@ -156,10 +164,13 @@ def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra
         fits.PrimaryHDU(lum).writeto(tmp)
         ini, attempts = {}, ([fov_hint, None] if fov_hint else [None])
         for fov in attempts:
+            if ini and (datetime.now() - started).total_seconds() > SOLVE_BUDGET_S:
+                break                                # time budget used up: report the last failure
             ini = _run(tmp, fov, ra_h, dec)
             if ini.get("PLTSOLVD") == "T":
                 break
-            if ra_h is not None:                     # hint position may be wrong: retry blind
+            if ra_h is not None and (datetime.now() - started).total_seconds() <= SOLVE_BUDGET_S:
+                # hint position may be wrong: retry blind
                 ini = _run(tmp, fov, None, None)
                 if ini.get("PLTSOLVD") == "T":
                     break

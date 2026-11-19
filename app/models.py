@@ -287,6 +287,17 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_tasks_status_id ON analysis_tasks (status, id)",
     "UPDATE projects SET created_at = now() WHERE created_at IS NULL",
     "UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL",
+    # search (ILIKE '%q%') over FITS headers / file names: trigram indexes instead of a full scan per search;
+    # skipped silently when the database user may not create the extension
+    "DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_trgm; EXCEPTION WHEN OTHERS THEN NULL; END $$",
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN "
+    "CREATE INDEX IF NOT EXISTS ix_ff_header_trgm ON frame_files USING gin (header gin_trgm_ops); "
+    "CREATE INDEX IF NOT EXISTS ix_ff_name_trgm ON frame_files USING gin (original_name gin_trgm_ops); "
+    "END IF; END $$",
+    # natural order for names in column sorting (NGC 224 < NGC 3031); skipped when PostgreSQL has no ICU
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'natsort') THEN "
+    "CREATE COLLATION natsort (provider = icu, locale = 'und-u-kn-true'); END IF; "
+    "EXCEPTION WHEN OTHERS THEN NULL; END $$",
     # foreign keys added later: drop dangling references first, then add the constraint once
     "UPDATE projects SET cover_file_id = NULL WHERE cover_file_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM frame_files r WHERE r.id = projects.cover_file_id)",
     "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_projects_cover') THEN ALTER TABLE projects ADD CONSTRAINT fk_projects_cover FOREIGN KEY (cover_file_id) REFERENCES frame_files(id) ON DELETE SET NULL; END IF; END $$",

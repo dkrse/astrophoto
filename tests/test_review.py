@@ -96,7 +96,7 @@ def test_missing_astap_binary_is_a_failed_solve(monkeypatch, tmp_path):
 
 def test_binned_frame_is_not_taken_for_a_resized_export(monkeypatch, tmp_path):
     """bin 2: 1920 px wide frame of a 3840 px camera -> pixel 2×, no 'resized' correction of the focal length."""
-    def fake(src, header, pixel_um, focal, sensor_px):
+    def fake(src, header, pixel_um, focal, sensor_px, lock_wait=None):
         return {"ok": True, "image_px": [1920, 1080], "scale_arcsec_px": 4.5, "binning": 2,
                 "focal_mm": round(206.265 * pixel_um * 2 / 4.5, 1), "pixel_um": pixel_um * 2,
                 "ra_deg": 10.0, "dec_deg": 20.0}

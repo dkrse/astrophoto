@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .core import (json_body, as_dict, to_int, clean_filename, app, page, get_db, current_user, DATA_DIR, IMPORT_DIR, none_if_empty, to_float,
                    owner_dir, unique_dest, get_project, get_calib, load_settings, flash)
-from .models import User, Project, FrameFile, CalibrationSet, ImagingSession, ImportJob, FRAME_TYPES
+from .models import User, Project, FrameFile, CalibrationSet, ImagingSession, ImportJob, FRAME_TYPES, CALIB_TYPES
 from .preview import KNOWN_EXT, FITS_EXT, detect_frame_type, fits_header
 from . import worker
 
@@ -96,6 +96,8 @@ async def upload_init(request: Request, user: User = Depends(current_user), db: 
     ftype = data.get("frame_type")
     if ftype not in FRAME_TYPES:
         return err("Invalid frame type")
+    if calib and ftype not in CALIB_TYPES:
+        return err("A calibration set takes only dark, bias, flat and dark flat frames")
     name = clean_filename(data.get("filename") or "") if (data.get("filename") or "").strip() else ""
     if not name:
         return err("Missing filename")

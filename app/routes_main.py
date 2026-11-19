@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .core import (json_body, as_dict, to_int, invalidate_settings, templates, app, page, flash, get_db, current_user, check_pw, hash_pw, load_settings, coerce_setting,
                    SETTINGS, SORT_LABELS, catalog, none_if_empty, parse_dmy, DATA_DIR, exposure_summary,
-                   night_of, parse_specs, spec_summary, like_pattern, NAME_MAX)
+                   night_of, parse_specs, spec_summary, like_pattern, NAME_MAX, natural, sort_param, order_sql)
 from .models import (User, Project, FrameFile, CatalogItem, Setting, ImagingSession,
                      CATALOG_KINDS, CATALOG_SINGULAR, FRAME_TYPES)
 
@@ -104,10 +104,13 @@ def password_change(request: Request, old: str = Form(...), new: str = Form(...)
 FILTER_KEYS = ["date_from", "date_to", "size_from", "size_to", *CATALOG_KINDS]
 
 
+PROJECT_COLS = ("name", "target", "object_type", "nights", "first", "last", "lights", "files", "size", "integration")
+
+
 def to_bytes_gb(v):
     try:
         return int(float(str(v).replace(",", ".")) * 1024 ** 3) if str(v).strip() else None
-    except ValueError:
+    except (ValueError, OverflowError):           # 'inf' / '1e400' -> no filter instead of a 500
         return None
 
 
@@ -132,6 +135,28 @@ def project_cover(p: Project):
         if f.thumb_path and (auto is None or f.frame_type == "stack" and auto.frame_type != "stack"):
             auto = f
     return auto
+
+
+def page_covers(db, projects) -> dict:
+    """{project id: file (id) shown as cover} with the same rule as project_cover(), without loading the files:
+    chosen cover with a thumbnail, else the first stack, else the first file with a thumbnail (by name)."""
+    from types import SimpleNamespace
+    ids = [p.id for p in projects]
+    if not ids:
+        return {}
+    chosen = {p.id: p.cover_file_id for p in projects}
+    out, auto = {}, {}
+    for fid, pid, ftype in db.execute(select(FrameFile.id, FrameFile.project_id, FrameFile.frame_type)
+                                      .where(FrameFile.project_id.in_(ids), FrameFile.thumb_path.is_not(None))
+                                      .order_by(FrameFile.original_name, FrameFile.id)):
+        if fid == chosen.get(pid):
+            out[pid] = SimpleNamespace(id=fid)
+        a = auto.get(pid)
+        if a is None or ftype == "stack" and a[1] != "stack":
+            auto[pid] = (fid, ftype)
+    for pid, (fid, _) in auto.items():
+        out.setdefault(pid, SimpleNamespace(id=fid))
+    return out
 
 
 @app.get("/")
@@ -181,7 +206,25 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
             stmt = stmt.where(col.is_(None) if flt[kind] == "__none__" else col == flt[kind])
     active = sum(1 for v in flt.values() if v)
 
-    if sort == "size_desc":
+    col, cdir = sort_param(request, "ps", PROJECT_COLS)
+    if col:                                       # column header of the list view: whole result, then pages
+        fa = (select(FrameFile.project_id, func.count().label("files"),
+                     func.count().filter(FrameFile.frame_type == "light").label("lights"),
+                     func.sum(FrameFile.size).label("size"),
+                     func.sum(FrameFile.exposure_s).filter(FrameFile.frame_type == "light",
+                                                           FrameFile.rejected.is_not(True)).label("integ"))
+              .where(FrameFile.project_id.is_not(None)).group_by(FrameFile.project_id).subquery("fa_sort"))
+        se = (select(ImagingSession.project_id, func.count().label("n"), func.min(ImagingSession.date).label("first"),
+                     func.max(ImagingSession.date).label("last"))
+              .group_by(ImagingSession.project_id).subquery("se_sort"))
+        stmt = stmt.outerjoin(fa, fa.c.project_id == Project.id).outerjoin(se, se.c.project_id == Project.id)
+        expr = {"name": natural(Project.name), "target": natural(Project.target),
+                "object_type": natural(Project.object_type), "nights": func.coalesce(se.c.n, 0),
+                "first": se.c.first, "last": se.c.last, "lights": func.coalesce(fa.c.lights, 0),
+                "files": func.coalesce(fa.c.files, 0), "size": func.coalesce(fa.c.size, 0),
+                "integration": fa.c.integ}[col]
+        stmt = stmt.order_by(*order_sql(expr, cdir, Project.id))
+    elif sort == "size_desc":
         sz = (select(FrameFile.project_id, func.sum(FrameFile.size).label("total"))
               .group_by(FrameFile.project_id).subquery("sz_sort"))
         stmt = stmt.outerjoin(sz, sz.c.project_id == Project.id).order_by(
@@ -203,8 +246,10 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
     per = cfg["page_size"]
     total_found = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
     pager = make_pager(request, total_found, per, page_no)
-    projects = db.scalars(stmt.options(selectinload(Project.files), selectinload(Project.sessions)).limit(per)
-                          .offset((pager["page"] - 1) * per)).all()
+    opts = [selectinload(Project.sessions)]
+    if q.strip():
+        opts.append(selectinload(Project.files))  # search hits look into every file of the page's projects
+    projects = db.scalars(stmt.options(*opts).limit(per).offset((pager["page"] - 1) * per)).all()
 
     counts = dict(db.execute(select(FrameFile.frame_type, func.count()).group_by(FrameFile.frame_type)).all())
     total_size = db.scalar(select(func.coalesce(func.sum(FrameFile.size), 0)))
@@ -213,19 +258,30 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
     stats = {"projects": db.scalar(select(func.count(Project.id))), "files": sum(counts.values()),
              "size": total_size, "counts": counts, "integration": lights_s}
 
+    # counts / size / integration / cover of the page's projects from two small SQL queries
+    # (loading every FrameFile row of every project grew with the archive)
+    ids = [p.id for p in projects]
+    agg = {i: {"counts": {}, "size": 0, "integration": 0.0} for i in ids}
+    if ids:
+        for pid_, ftype, n, size, integ in db.execute(
+                select(FrameFile.project_id, FrameFile.frame_type, func.count(), func.coalesce(func.sum(FrameFile.size), 0),
+                       func.coalesce(func.sum(FrameFile.exposure_s).filter(FrameFile.frame_type == "light",
+                                                                            FrameFile.rejected.is_not(True)), 0))
+                .where(FrameFile.project_id.in_(ids)).group_by(FrameFile.project_id, FrameFile.frame_type)):
+            a = agg[pid_]
+            a["counts"][ftype] = n
+            a["size"] += size or 0
+            a["integration"] += integ or 0
+    covers = page_covers(db, projects)
+    hdr_hits = header_matches(db, ids, q)
     summary = {}
     for p in projects:
-        c = {}
-        for f in p.files:
-            c[f.frame_type] = c.get(f.frame_type, 0) + 1
         dates = [s.date for s in p.sessions if s.date]
-        summary[p.id] = {"counts": c, "cover": project_cover(p), "size": sum(f.size for f in p.files),
+        summary[p.id] = {**agg[p.id], "cover": covers.get(p.id),
                          "first": min(dates) if dates else None, "last": max(dates) if dates else None,
-                         "nights": len(p.sessions),
-                         "integration": exposure_summary(p.files)["total"],
-                         "hits": search_hits(p, q)}
+                         "nights": len(p.sessions), "hits": search_hits(p, q, hdr_hits.get(p.id, []))}
     return page(request, "index.html", user=user, projects=projects, q=q, stats=stats, summary=summary,
-                flt=flt, active=active, cat=catalog(db), pager=pager, sort=sort)
+                flt=flt, active=active, cat=catalog(db), pager=pager, sort=sort, pcol=col, pdir=cdir)
 
 
 # ---------- search hits ("found in" snippets) ----------
@@ -247,7 +303,22 @@ def _snippet(text: str, q: str, width: int = 60):
     return out + escape(part[pos:]) + escape("…" if b < len(text) else "")
 
 
-def search_hits(p: Project, q: str) -> list:
+def header_matches(db, project_ids: list, q: str) -> dict:
+    """{project id: [(file name, header text)]} of files whose FITS header contains q – one query (uses the
+    trigram index) instead of loading every file's deferred header separately."""
+    q = " ".join(q.split())
+    if not q or not project_ids:
+        return {}
+    out = {}
+    for pid, name, hdr in db.execute(select(FrameFile.project_id, FrameFile.original_name, FrameFile.header)
+                                     .where(FrameFile.project_id.in_(project_ids),
+                                            FrameFile.header.ilike(like_pattern(q)))
+                                     .order_by(FrameFile.original_name)):
+        out.setdefault(pid, []).append((name, hdr))
+    return out
+
+
+def search_hits(p: Project, q: str, headers: list | None = None) -> list:
     """Every place in a project where q occurs: [{'where': label, 'snip': Markup}] – project first."""
     q = " ".join(q.split())
     if not q:
@@ -273,11 +344,13 @@ def search_hits(p: Project, q: str) -> list:
         add(f"File {f.original_name}", f.original_name if q.lower() in (f.original_name or "").lower() else None)
         add(f"File {f.original_name} · description", f.description)
         add(f"File {f.original_name} · filter", f.filter)
-        if f.header and q.lower() in f.header.lower():
+    for name, text in (headers if headers is not None else
+                       [(f.original_name, f.header) for f in p.files if f.header]):
+        if text and q.lower() in text.lower():
             hdr += 1
             if hdr <= 1:
-                line = next((ln for ln in f.header.splitlines() if q.lower() in ln.lower()), "")
-                add(f"FITS header · {f.original_name}", line)
+                line = next((ln for ln in text.splitlines() if q.lower() in ln.lower()), "")
+                add(f"FITS header · {name}", line)
     if hdr > 1:
         from markupsafe import Markup
         hits.append({"where": "FITS headers", "snip": Markup(f"match in {hdr} files")})
@@ -317,7 +390,7 @@ def gallery(request: Request, q: str = "", page_no: int = Query(1, alias="page")
     pager = make_pager(request, total, per, page_no, "/gallery")
     items = db.scalars(stmt.limit(per).offset((pager["page"] - 1) * per)).all()
     # ids for slideshow (all matches, not only this page)
-    all_ids = [f.id for f in db.scalars(stmt.limit(2000))]
+    all_ids = list(db.scalars(stmt.with_only_columns(FrameFile.id).limit(2000)))
     return page(request, "gallery.html", user=user, items=items, pager=pager, gq=q, all_ids=all_ids,
                 gsort=sort, per=per, GALLERY_SORTS=GALLERY_SORTS)
 
