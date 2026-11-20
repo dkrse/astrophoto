@@ -106,7 +106,7 @@ def calib_detail(request: Request, cid: int, show: str = "", user: User = Depend
     return page(request, "calib_detail.html", user=user, c=c, groups=groups,
                 sizes={t: sum(f.size for f in fs) for t, fs in groups.items()},
                 status=worker.queue_status(db, calib_set_id=c.id), others=others,
-                other_sets=db.scalars(select(CalibrationSet).where(CalibrationSet.id != c.id)
+                other_sets=db.execute(select(CalibrationSet.id, CalibrationSet.name).where(CalibrationSet.id != c.id)
                                       .order_by(func.lower(CalibrationSet.name))).all(),
                 settings=load_settings(db), show=show)
 

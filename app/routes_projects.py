@@ -17,6 +17,8 @@ from .models import (User, Project, FrameFile, ImagingSession, CalibrationSet, F
                      FRAME_LABELS)
 from .routes_main import project_cover
 from . import worker
+from .sessets import (SET_FIELDS, place_light, other_lights, waiting_lights, norm_exposure, norm_gain, norm_filter,
+                      parse_temp, set_label)
 
 PROJECT_FIELDS = ["name", "target", "object_type", "tags", "description", "notes"]
 EQUIP_KINDS = ("location", "telescope", "camera", "mount", "software")
@@ -119,14 +121,17 @@ def calib_library(db) -> list:
             for c in db.scalars(select(CalibrationSet).order_by(CalibrationSet.capture_date.desc().nulls_last()))]
 
 
-SESSION_COLS = ("night", "equipment", "scale", "moon", "measured", "files")
+SESSION_COLS = ("night", "set", "equipment", "scale", "moon", "measured", "files")
 
 
 @app.get("/projects/{pid}")
 def project_detail(request: Request, pid: int, show: str = "", user: User = Depends(current_user),
                    db: Session = Depends(get_db)):
     p = get_project(db, pid)
-    groups = {t: [f for f in p.files if f.frame_type == t] for t in FRAME_TYPES}
+    cfg = load_settings(db)
+    groups = {t: [] for t in FRAME_TYPES}
+    for f in p.files:                             # one pass instead of one per type
+        groups.setdefault(f.frame_type, []).append(f)
     sizes = {t: sum(f.size for f in fs) for t, fs in groups.items()}
     lights = groups["light"]
     med = {}
@@ -144,6 +149,7 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
         m_of = lambda r: (r["measured"] or {})
         rows = sort_items(rows, {
             "night": lambda r: r["s"].date,
+            "set": lambda r: (r["s"].exposure_s, nat_key(set_label(r["s"]))) if set_label(r["s"]) else None,
             "equipment": lambda r: nat_key(" · ".join(x for x in (r["s"].telescope, r["s"].camera, r["s"].mount) if x)) or None,
             "scale": lambda r: r["optic"]["scale"] if r["optic"] else None,
             "moon": lambda r: r["s"].moon_illum,
@@ -155,8 +161,8 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                                                                for t in FRAME_TYPES}} for r in rows]
     # pagination of the sessions (table + their file blocks); a link to a session on another page finds it
     from .core import paginate
-    spg = paginate(len(sess_groups), load_settings(db)["sessions_page_size"], request.query_params.get("sp"))
-    per = load_settings(db)["sessions_page_size"] or 0
+    spg = paginate(len(sess_groups), cfg["sessions_page_size"], request.query_params.get("sp"))
+    per = cfg["sessions_page_size"] or 0
     session_page = {g["r"]["s"].id: (i // per + 1 if per else 1) for i, g in enumerate(sess_groups)}
     sess_groups = sess_groups[spg["start"]:spg["end"]]
     if unassigned or not rows:
@@ -177,7 +183,7 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                 calib_lib=calib_library(db), all_calib=db.scalars(select(CalibrationSet)).all(), status=worker.queue_status(db, project_id=p.id),
                 suspects=sum(1 for f in lights if f.suspect and not f.rejected),
                 rejected=sum(1 for f in lights if f.rejected), med=med, others=others,
-                settings=load_settings(db), show=show, scol=scol, sdir=sdir)
+                settings=cfg, show=show, scol=scol, sdir=sdir)
 
 
 @app.get("/api/stats/optics")
@@ -306,25 +312,45 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     if not s:
         s = ImagingSession(project_id=p.id)
         db.add(s)
+    moved_out = []
     if s.id and s.date and d != s.date:
         # date changed: frames whose observation date belongs to the old night leave this session
         other = next((x for x in p.sessions if x.id != s.id and x.date == s.date), None)
         for f in s.files:
             if f.date_obs and night_of(f.date_obs) == s.date:
                 f.session_id = other.id if other else None     # to another session of that night, else unassigned
+                moved_out.append(f)
     s.date = d
     for f in SESSION_FIELDS:
         v = none_if_empty(form.get(f))
         setattr(s, f, None if v == "__new__" else v)
     s.moon_illum = moon_illumination(s.date)
+    # the acquisition set can be chosen while the session holds no light frames (afterwards it is fixed –
+    # it is what the lights in it have; a different set goes to its own session)
+    set_note = ""
+    new_set = {"exposure_s": norm_exposure(form.get("exposure_s")), "gain": norm_gain(form.get("gain")),
+               "filter": norm_filter(form.get("filter")), "cam_temp": parse_temp(form.get("cam_temp"))}
+    if new_set["cam_temp"] is not None:
+        new_set["cam_temp"] = float(round(new_set["cam_temp"]))
+    if "exposure_s" in form:
+        if not s.id or not (other_lights(db, s) or waiting_lights(db, s)):   # same rule as the dialog
+            for k, v in new_set.items():
+                setattr(s, k, v)
+        elif any(new_set[k] != getattr(s, k) for k in SET_FIELDS):
+            set_note = " – exposure / gain / filter / camera temperature unchanged: the session already holds lights"
     db.flush()
-    # attach unassigned frames taken that night
+    # frames that left for another night's session keep one set per session there too
+    for f in moved_out:
+        if f.session_id:
+            place_light(db, f)
+    # attach unassigned frames taken that night (each to the session of its set)
     if s.date:
         for f in p.files:
             if not f.session_id and f.date_obs and night_of(f.date_obs) == s.date:
                 f.session_id = s.id
+                place_light(db, f, s)
     db.commit()
-    flash(request, "Session saved")
+    flash(request, "Session saved" + set_note)
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
 
 
@@ -365,7 +391,9 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
     for f in p.files:
         if f.date_obs and not f.session_id:
             nights[night_of(f.date_obs)].append(f)
-    created = assigned = 0
+    count_s = lambda: db.scalar(select(func.count(ImagingSession.id)).where(ImagingSession.project_id == p.id)) or 0
+    before = count_s()
+    assigned = 0
     for night, files in sorted(nights.items()):
         s = existing.get(night)
         if not s:
@@ -374,10 +402,14 @@ def sessions_auto(request: Request, pid: int, user: User = Depends(current_user)
             db.add(s)
             db.flush()
             existing[night] = s
-            created += 1
         for f in files:
             f.session_id = s.id
+        db.flush()
+        for f in files:
+            if f.frame_type == "light":           # one set per session: others go to (new) sibling sessions
+                place_light(db, f, s)
             assigned += 1
+    created = count_s() - before
     db.commit()
     if not nights:
         flash(request, "No unassigned files with an observation date (DATE-OBS / EXIF) found", "err")
@@ -402,6 +434,13 @@ async def calib_link(request: Request, sid: int, user: User = Depends(current_us
 
 
 # ---------- streaming ZIP ----------
+def content_disposition(name: str) -> str:
+    """attachment header safe for any file name (ASCII fallback + RFC 5987 UTF-8 name; Latin-1 only bytes)."""
+    name = download_name(name)
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"
+
+
 def zip_response(name: str, entries: list, info_text: str | None, comp: str, extra: list | None = None):
     """entries: [(Path, arcname)]. Streams directly – nothing is written to disk."""
     from zipstream import ZipStream, ZIP_STORED, ZIP_DEFLATED
@@ -431,9 +470,7 @@ def zip_response(name: str, entries: list, info_text: str | None, comp: str, ext
             n += 1
         used.add(arc)
         zs.add(data, arc)
-    name = download_name(name)
-    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
-    headers = {"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"}
+    headers = {"Content-Disposition": content_disposition(name)}
     if sized:
         headers["Content-Length"] = str(len(zs))
     return StreamingResponse(zs, media_type="application/zip", headers=headers)
@@ -496,22 +533,23 @@ def parse_header_text(text: str | None) -> list:
 
 
 def file_exif(f: FrameFile) -> dict:
-    from .preview import IMAGE_EXT, RAW_EXT
+    """EXIF tags – stored with the file after the first read (exports no longer open every RAW / JPEG)."""
+    from .preview import read_exif
+    if f.exif is not None:
+        try:
+            return json.loads(f.exif)
+        except ValueError:
+            pass
     src = DATA_DIR / f.stored_path
-    if src.suffix.lower() not in (IMAGE_EXT | RAW_EXT) or not src.is_file():
+    if not src.is_file() or f.status == "importing":
         return {}
-    try:
-        import exifread
-        with open(src, "rb") as fh:
-            tags = exifread.process_file(fh, details=False)
-        return {k: str(v) for k, v in sorted(tags.items())
-                if "Thumbnail" not in k and not k.startswith("MakerNote") and len(str(v)) <= 500}
-    except Exception:
-        return {}
+    d = read_exif(src)
+    f.exif = json.dumps(d, ensure_ascii=False)     # saved with the request's commit
+    return d
 
 
 FILE_FIELDS = ["id", "frame_type", "original_name", "stored_path", "size", "sha256", "status", "exposure_s", "gain",
-               "temperature", "filter", "date_obs", "description", "uploaded_at", "updated_at", "rejected", "suspect",
+               "temperature", "filter", "date_obs", "description", "note", "uploaded_at", "updated_at", "rejected", "suspect",
                "session_id", "calib_set_id"]
 
 
@@ -552,12 +590,9 @@ def project_metadata(p: Project, only=None) -> dict:
                         "by_filter": [{"filter": r["filter"], "frames": r["count"], "seconds": r["seconds"],
                                        "exposures": r["detail"]} for r in ex["rows"]]},
         "sessions": [{**{k: _iso(getattr(s, k)) for k in ["id", "date", *SESSION_FIELDS, "moon_illum",
-                                                          "created_at", "updated_at"]},
+                                                          *SET_FIELDS, "created_at", "updated_at"]},
                       "calibration_set_ids": [c.id for c in s.calib_sets]} for s in sessions],
-        "calibration_sets": [{**{k: _iso(getattr(c, k)) for k in ["id", "name", "frame_type", "capture_date", "camera",
-                                                                   "telescope", "temperature", "gain", "offset",
-                                                                   "exposure_s", "filter", "binning", "notes",
-                                                                   "created_at", "updated_at"]},
+        "calibration_sets": [{**{k: _iso(getattr(c, k)) for k in CALIB_FIELDS},
                               "files": [file_record(f) for f in c.files]} for c in sets.values()],
         "files": [file_record(f) for f in files],
     }
@@ -572,8 +607,12 @@ def preload_headers(db, project_ids=None, calib_ids=None):
         conds.append(FrameFile.project_id.in_(list(project_ids)))
     if calib_ids:
         conds.append(FrameFile.calib_set_id.in_(list(calib_ids)))
-    if conds:
-        db.scalars(select(FrameFile).where(or_(*conds)).options(undefer(FrameFile.header))).all()
+    if not conds:
+        return []
+    # the caller must keep the returned list: the session's identity map holds rows only weakly, an unreferenced
+    # result is dropped at once and every file would load its header / EXIF again one query at a time
+    return db.scalars(select(FrameFile).where(or_(*conds))
+                      .options(undefer(FrameFile.header), undefer(FrameFile.exif))).all()
 
 
 def metadata_json_bytes(p: Project, only=None) -> bytes:
@@ -584,8 +623,9 @@ def metadata_json_bytes(p: Project, only=None) -> bytes:
 def project_export(pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """ZIP with metadata.json (everything incl. FITS headers / EXIF) + raw header text files."""
     p = get_project(db, pid)
-    preload_headers(db, [p.id], [c.id for c in linked_sets(p)])
+    _keep = preload_headers(db, [p.id], [c.id for c in linked_sets(p)])
     extra = [("metadata.json", metadata_json_bytes(p))]
+    db.commit()                                  # EXIF read for the first time is kept
     for f in p.files:                        # one folder per session, like the ZIP (names repeat between nights)
         if f.header:
             pre = session_label(f.session) if f.session else "unassigned"
@@ -598,35 +638,94 @@ def project_export(pid: int, user: User = Depends(current_user), db: Session = D
     return zip_response(f"{p.name}_metadata.zip", [], project_info_text(p), "best", extra)
 
 
+CALIB_FIELDS = ["id", "name", "frame_type", "capture_date", "camera", "telescope", "temperature", "gain", "offset",
+                "exposure_s", "filter", "binning", "notes", "created_at", "updated_at"]
+
+
+def _dumps(obj) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, indent=2, default=str).encode()
+
+
 @app.get("/export/projects")
 def projects_export_all(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """ZIP of every project's full metadata: all_projects.json + per-project folders (metadata.json, raw headers)."""
+    """ZIP of every project's full metadata: all_projects.json + per-project folders (metadata.json, raw headers).
+    Streamed: every entry is generated while the ZIP is being sent, project by project with its own database
+    session – memory stays at about one project, the download starts immediately."""
     from datetime import datetime as _dt
-    projects = db.scalars(select(Project).order_by(func.lower(Project.name))).all()
-    preload_headers(db, [p.id for p in projects], [c.id for c in db.scalars(select(CalibrationSet))])
-    extra, allp = [], []
-    for p in projects:
-        md = project_metadata(p)
-        allp.append(md)
-        folder = f"{p.id:04d}_{safe_name(p.name) or 'project'}"
-        extra.append((f"projects/{folder}/metadata.json",
-                      json.dumps(md, ensure_ascii=False, indent=2, default=str).encode()))
-        extra.append((f"projects/{folder}/INFO.txt", project_info_text(p).encode()))
-        for f in p.files:
-            if f.header:
-                pre = session_label(f.session) if f.session else "unassigned"
-                extra.append((f"projects/{folder}/headers/{pre}/{f.frame_type}/{clean_filename(f.original_name)}.txt",
-                              f.header.encode()))
-    lib = db.scalars(select(CalibrationSet)).all()
-    summary = {"format": "astrophoto-metadata-all", "version": 1,
-               "exported_at": _dt.now().isoformat(timespec="seconds"), "project_count": len(projects),
-               "projects": allp,
-               "calibration_library": [{**{k: _iso(getattr(c, k)) for k in [
-                   "id", "name", "frame_type", "capture_date", "camera", "telescope", "temperature", "gain", "offset",
-                   "exposure_s", "filter", "binning", "notes", "created_at", "updated_at"]},
-                   "files": [file_record(f) for f in c.files]} for c in lib]}
-    extra.insert(0, ("all_projects.json", json.dumps(summary, ensure_ascii=False, indent=2, default=str).encode()))
+    from .models import SessionLocal
+    projects = db.execute(select(Project.id, Project.name).order_by(func.lower(Project.name))).all()
+    # header files: names known up front from a light query (no header text loaded here)
+    labels = {}
+    for pid, rows in _group(db.execute(select(ImagingSession.project_id, ImagingSession.id)
+                                       .order_by(ImagingSession.project_id, ImagingSession.date.asc().nulls_last(),
+                                                 ImagingSession.id)).all()):
+        for nr, (_, sid) in enumerate(rows, 1):
+            labels[sid] = nr
+    dates = dict(db.execute(select(ImagingSession.id, ImagingSession.date)).all())
+    hdr_rows = db.execute(select(FrameFile.id, FrameFile.project_id, FrameFile.session_id, FrameFile.frame_type,
+                                 FrameFile.original_name)
+                          .where(FrameFile.project_id.is_not(None), FrameFile.header.is_not(None))
+                          .order_by(FrameFile.project_id, FrameFile.id)).all()
+    by_project = dict(_group(hdr_rows, key=lambda r: r[1]))
+
+    def one_project(pid):
+        with SessionLocal() as s:
+            p = s.get(Project, pid)
+            if p is None:
+                return None, None
+            _keep = preload_headers(s, [p.id], [c.id for c in linked_sets(p)])
+            md = project_metadata(p)
+            s.commit()                               # EXIF read for the first time is kept
+            return md, None
+
+    def md_gen(pid):
+        md, _ = one_project(pid)
+        yield _dumps(md) if md is not None else b"null"
+
+    def info_gen(pid):                               # no headers / EXIF needed for the text summary
+        with SessionLocal() as s:
+            p = s.get(Project, pid)
+            yield project_info_text(p).encode() if p else b""
+
+    def header_gen(fid):
+        with SessionLocal() as s:
+            yield (s.scalar(select(FrameFile.header).where(FrameFile.id == fid)) or "").encode()
+
+    def all_gen():
+        yield (f'{{"format": "astrophoto-metadata-all", "version": 1, '
+               f'"exported_at": "{_dt.now().isoformat(timespec="seconds")}", '
+               f'"project_count": {len(projects)},\n"projects": [\n').encode()
+        for i, (pid, _) in enumerate(projects):
+            md, _ = one_project(pid)
+            yield (b",\n" if i else b"") + (_dumps(md) if md is not None else b"null")
+        yield b'\n],\n"calibration_library": [\n'
+        with SessionLocal() as s:
+            for i, cid in enumerate(s.scalars(select(CalibrationSet.id).order_by(CalibrationSet.id)).all()):
+                c = s.get(CalibrationSet, cid)            # ids first: expunge_all() below detaches loaded rows
+                _keep = preload_headers(s, None, [c.id])
+                rec = {**{k: _iso(getattr(c, k)) for k in CALIB_FIELDS}, "files": [file_record(f) for f in c.files]}
+                yield (b",\n" if i else b"") + _dumps(rec)
+                s.commit()
+                s.expunge_all()
+        yield b"\n]}\n"
+
+    extra = [("all_projects.json", all_gen())]
+    for pid, name in projects:
+        folder = f"{pid:04d}_{safe_name(name) or 'project'}"
+        extra.append((f"projects/{folder}/metadata.json", md_gen(pid)))
+        extra.append((f"projects/{folder}/INFO.txt", info_gen(pid)))
+        for fid, _, sid, ftype, oname in by_project.get(pid, []):
+            pre = f"{labels.get(sid, 0):02d}_{dates[sid].isoformat() if dates.get(sid) else 'nodate'}" \
+                if sid else "unassigned"
+            extra.append((f"projects/{folder}/headers/{pre}/{ftype}/{clean_filename(oname)}.txt", header_gen(fid)))
     return zip_response(f"astrophoto_metadata_{_dt.now():%Y-%m-%d}.zip", [], None, "best", extra)
+
+
+def _group(rows, key=lambda r: r[0]):
+    out = {}
+    for r in rows:
+        out.setdefault(key(r), []).append(r)
+    return out.items()
 
 
 def linked_sets(p: Project) -> list:
@@ -665,9 +764,11 @@ def project_zip(pid: int, types: str = "light,dark,bias,flat,darkflat", rejected
     if session:
         suffix = f"{session_label(sel[0])}_{suffix}"
     only = sel[0] if session else None
-    preload_headers(db, [p.id], {c.id for s in sel for c in s.calib_sets})
+    _keep = preload_headers(db, [p.id], {c.id for s in sel for c in s.calib_sets})
+    meta = metadata_json_bytes(p, only)
+    db.commit()                                  # EXIF read for the first time is kept
     return zip_response(f"{p.name}_{suffix}.zip", entries, project_info_text(p, only),
-                        load_settings(db)["zip_compression"], [("metadata.json", metadata_json_bytes(p, only))])
+                        load_settings(db)["zip_compression"], [("metadata.json", meta)])
 
 
 @app.get("/calibration/{cid}/zip")

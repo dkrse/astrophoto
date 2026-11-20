@@ -188,6 +188,9 @@ def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra
     det = abs(cd11 * cd22 - cd12 * cd21)
     scale_bin = math.sqrt(det) * 3600 if det else abs(_float(ini.get("CDELT2")) or 0) * 3600
     scale = scale_bin / binf                        # arcsec per original (sensor) pixel
+    if not scale > 0:                               # PLTSOLVD without a usable CD matrix / CDELT
+        return {"ok": False, "error": "Solver returned no image scale", "seconds": secs,
+                "solved_at": started.isoformat(timespec="seconds")}
     res = {"ok": True, "seconds": secs, "solved_at": started.isoformat(timespec="seconds"),
            "scale_arcsec_px": round(scale, 4),
            "ra_deg": round(_float(ini.get("CRVAL1")) or 0, 5), "dec_deg": round(_float(ini.get("CRVAL2")) or 0, 5),

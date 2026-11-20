@@ -54,14 +54,17 @@ def _stars(img: np.ndarray, noise: float) -> list:
     if not n:
         return []
     idx = np.arange(1, n + 1)
-    sizes = ndimage.sum_labels(np.ones_like(img), labels, idx)
+    sizes = np.bincount(labels.ravel(), minlength=n + 1)[1:]     # no full-size float array
     peaks = ndimage.maximum(img, labels, idx)
     sat = float(img.max()) * 0.9
     objs = ndimage.find_objects(labels)
     H, W = img.shape
     out = []
-    for i in np.argsort(-peaks):
-        if not (5 <= sizes[i] <= 1500) or peaks[i] >= sat or objs[i] is None:
+    # vectorised pre-filter, brightest first, bounded: noisy frames can carry 10^5+ labels
+    cand = np.flatnonzero((sizes >= 5) & (sizes <= 1500) & (peaks < sat))
+    cand = cand[np.argsort(-peaks[cand])][:MAX_STARS * 20]
+    for i in cand:
+        if objs[i] is None:
             continue
         sl = objs[i]
         cy0 = (sl[0].start + sl[0].stop) / 2

@@ -6,12 +6,13 @@ from datetime import datetime
 from fastapi import Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, FileResponse, PlainTextResponse, JSONResponse
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
 from .core import (night_of, safe_referer, json_body, as_dict, to_int, clean_filename, app, page, flash, get_db, current_user, none_if_empty, to_float, get_file, get_project,
                    DATA_DIR, file_owner, move_file_storage, delete_file_storage, unique_dest, project_dir,
                    load_settings)
+from .sessets import place_light, accepts
 from .models import User, Project, FrameFile, ImagingSession, CalibrationSet, AnalysisTask, FRAME_TYPES, CALIB_TYPES
 from .preview import (PREVIEW_EXT, FITS_EXT, render, clean_opts, file_info, OPT_CHOICES, DEFAULT_OPTS,
                       RENDER_KEYS, fits_is_mono, histogram)
@@ -66,8 +67,18 @@ async def files_zip(request: Request, user: User = Depends(current_user), db: Se
 def file_view(request: Request, fid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     f = get_file(db, fid)
     owner = file_owner(f)
-    siblings = [x for x in owner["files"] if x.frame_type == f.frame_type]
-    i = siblings.index(f)
+    # prev / next / position by SQL (name order, id as tie-break) – no loading of every frame of the owner
+    same = (owner["col"] == owner["id"], FrameFile.frame_type == f.frame_type)
+    before = or_(FrameFile.original_name < f.original_name,
+                 and_(FrameFile.original_name == f.original_name, FrameFile.id < f.id))
+    after = or_(FrameFile.original_name > f.original_name,
+                and_(FrameFile.original_name == f.original_name, FrameFile.id > f.id))
+    prev_f = db.scalars(select(FrameFile).where(*same, before)
+                        .order_by(FrameFile.original_name.desc(), FrameFile.id.desc()).limit(1)).first()
+    next_f = db.scalars(select(FrameFile).where(*same, after)
+                        .order_by(FrameFile.original_name, FrameFile.id).limit(1)).first()
+    i = db.scalar(select(func.count(FrameFile.id)).where(*same, before)) or 0
+    total = db.scalar(select(func.count(FrameFile.id)).where(*same)) or 1
     src = DATA_DIR / f.stored_path
     ext = src.suffix.lower()
     info = cached_file_info(f, src) if src.exists() else {"image": [], "header": [], "exif": []}
@@ -77,9 +88,10 @@ def file_view(request: Request, fid: int, user: User = Depends(current_user), db
     from .models import CALIB_TYPES
     med, fi_sessions, fi_types = {}, None, CALIB_TYPES
     if owner["kind"] == "project":
-        lights = [x for x in owner["files"] if x.frame_type == "light"]
-        for k in ("stat_fwhm", "stat_stars", "stat_bg"):
-            vals = sorted(getattr(x, k) for x in lights if getattr(x, k) is not None)
+        rows = db.execute(select(FrameFile.stat_fwhm, FrameFile.stat_stars, FrameFile.stat_bg)
+                          .where(FrameFile.project_id == f.project_id, FrameFile.frame_type == "light")).all()
+        for j, k in enumerate(("stat_fwhm", "stat_stars", "stat_bg")):
+            vals = sorted(r[j] for r in rows if r[j] is not None)
             med[k] = vals[len(vals) // 2] if vals else None
         fi_sessions = [{"s": s} for s in sorted(f.project.sessions, key=lambda s: (s.date is None, s.date))]
         fi_types = FRAME_TYPES
@@ -91,9 +103,7 @@ def file_view(request: Request, fid: int, user: User = Depends(current_user), db
                 choices=OPT_CHOICES, defaults=DEFAULT_OPTS, is_fits=ext in FITS_EXT,
                 fits_mono=ext in FITS_EXT and hdr.get("NAXIS") == "2",
                 can_render=ext in PREVIEW_EXT and src.exists(), info=info,
-                prev_f=siblings[i - 1] if i > 0 else None,
-                next_f=siblings[i + 1] if i + 1 < len(siblings) else None,
-                pos=i + 1, total=len(siblings), slideshow_s=cfg["slideshow_seconds"], solved=solved_view(db, f),
+                prev_f=prev_f, next_f=next_f, pos=i + 1, total=total, slideshow_s=cfg["slideshow_seconds"], solved=solved_view(db, f),
                 rowflip=ext in FITS_EXT and hdr.get("ROWORDER", "").strip().upper() == "BOTTOM-UP")
 
 
@@ -200,7 +210,9 @@ async def file_save_opts(request: Request, fid: int, user: User = Depends(curren
     f = get_file(db, fid)
     form = await request.form()
     opts = clean_opts(dict(form))
-    targets = [x for x in file_owner(f)["files"] if x.frame_type == f.frame_type] if form.get("all") else [f]
+    own = file_owner(f)
+    targets = db.scalars(select(FrameFile).where(own["col"] == own["id"], FrameFile.frame_type == f.frame_type)
+                         ).all() if form.get("all") else [f]
     for x in targets:
         x.view_opts = json.dumps(opts)
     if len(targets) == 1:
@@ -261,13 +273,12 @@ def file_header(fid: int, user: User = Depends(current_user), db: Session = Depe
 
 
 @app.post("/files/{fid}/edit")
-def file_edit(request: Request, fid: int, description: str = Form(""), exposure_s: str = Form(""),
-              gain: str = Form(""), temperature: str = Form(""), filter: str = Form(""),
+def file_edit(request: Request, fid: int, description: str = Form(""), note: str = Form(""),
               user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Only the user's own texts – exposure, gain, temperature and filter come from the file and its session."""
     f = get_file(db, fid)
     f.description = none_if_empty(description)
-    f.exposure_s = to_float(exposure_s)
-    f.gain, f.temperature, f.filter = none_if_empty(gain), none_if_empty(temperature), none_if_empty(filter)
+    f.note = none_if_empty(note)
     f.updated_at = datetime.now()
     db.commit()
     flash(request, "File updated")
@@ -334,6 +345,8 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
     data = await json_body(request)
     ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
     files = db.scalars(select(FrameFile).where(FrameFile.id.in_(ids))).all() if ids else []
+    order = {x: i for i, x in enumerate(ids)}     # the client's order (deterministic; first light sets an open session)
+    files = sorted(files, key=lambda f: order.get(f.id, 0))
     if not files:
         return JSONResponse({"error": "No files selected"}, status_code=400)
     action, value = data.get("action"), data.get("value")
@@ -359,6 +372,8 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                     f.frame_type = value
                     if value == "light" and f.status == "done" and f.stat_stars is None:
                         f.status = "pending"
+                    if value == "light" and f.status == "done":
+                        place_light(db, f)        # (pending ones are placed by the worker)
                     f.updated_at = datetime.now()
                     db.commit()
         except OSError as e:
@@ -404,6 +419,8 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
                         same = [s for s in sorted(p.sessions, key=lambda s: s.id) if night and s.date == night]
                         f.session_id = same[0].id if same else (p.sessions[-1].id if p.sessions else None)
                     f.project_id, f.calib_set_id = p.id, None
+                    db.flush()
+                    place_light(db, f)            # one set per session
                     f.updated_at = datetime.now()
                     db.commit()
             except OSError as e:
@@ -418,25 +435,30 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
             s = db.get(ImagingSession, int(value)) if str(value).isdigit() else None
             if not s:
                 return JSONResponse({"error": "Session not found"}, status_code=404)
-        done = 0
+        done = mismatch = 0
         for f in files:
             if not f.project_id or (s and f.project_id != s.project_id):
                 continue                          # library files / other projects are not touched
-            f.session_id = s.id if s else None
+            if s and f.frame_type == "light" and f.session_id != s.id:
+                if not accepts(db, s, f):         # one set per session: a different set stays where it is
+                    mismatch += 1
+                    continue
+                f.session_id = s.id
+                place_light(db, f, s)             # an open session takes over the set of the first light
+            else:
+                f.session_id = s.id if s else None
+            db.flush()
             done += 1
         if not done:
+            if mismatch:
+                return JSONResponse({"error": f"{mismatch} light frame(s) have another exposure / gain / filter / "
+                                              "camera temperature than this session – a session holds one set only"},
+                                    status_code=400)
             return JSONResponse({"error": "None of the selected files belong to this session's project"}, status_code=400)
         msg = f"Session updated for {done} file{'s' if done != 1 else ''}"
+        if mismatch:
+            msg += f" · {mismatch} light(s) with another exposure / gain / filter / temperature left where they were"
         n = done
-    elif action == "meta":
-        vals = as_dict(value)
-        for f in files:
-            for k in ("description", "filter", "gain", "temperature"):
-                if none_if_empty(vals.get(k)):
-                    setattr(f, k, none_if_empty(vals[k]))
-            if to_float(vals.get("exposure_s")) is not None:
-                f.exposure_s = to_float(vals["exposure_s"])
-        msg = f"Metadata updated for {n} files"
     elif action in ("reject", "unreject"):
         for f in files:
             f.rejected = action == "reject"
@@ -620,6 +642,8 @@ async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str
     if not res or not res.get("ok") or not res.get("wcs"):
         raise HTTPException(409, "Plate-solve the file first")
     src = DATA_DIR / f.stored_path
+    if not src.is_file() or f.status == "importing":
+        raise HTTPException(409, "The file is not available (still importing or missing)")
     opts = dict(worker.get_opts(f))
     if flip != "auto":
         opts["flip"] = flip if flip in ("none", "v", "h", "vh") else "none"
@@ -630,7 +654,8 @@ async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str
     if data is None:
         raise HTTPException(422, "Cannot render this file")
     name = os.path.splitext(clean_filename(f.original_name))[0] + "_annotated.jpg"
-    return Response(data, media_type="image/jpeg", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    from .routes_projects import content_disposition
+    return Response(data, media_type="image/jpeg", headers={"Content-Disposition": content_disposition(name)})
 
 
 # ---------- background analysis queue (plate solve / optics) ----------

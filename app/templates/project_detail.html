@@ -60,11 +60,12 @@
   </div>
   {% if sessions %}
   <div class="tablewrap"><table class="kvt" data-sort-param="so" data-page-param="sp" data-anchor="sessions">
-    <thead><tr>{{ sth('Night', 'night', scol, sdir) }}{{ sth('Equipment', 'equipment', scol, sdir) }}{{ sth('Scale / FOV', 'scale', scol, sdir, 'Image scale · field of view (from equipment parameters)') }}{{ sth('Moon', 'moon', scol, sdir, 'Moon illumination') }}{{ sth('Measured', 'measured', scol, sdir, 'From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude – sorted by seeing / FWHM') }}{{ sth('Files', 'files', scol, sdir) }}<th></th></tr></thead>
+    <thead><tr>{{ sth('Night', 'night', scol, sdir) }}{{ sth('Set', 'set', scol, sdir, 'Exposure · gain / ISO · filter · camera temperature – a session holds one set') }}{{ sth('Equipment', 'equipment', scol, sdir) }}{{ sth('Scale / FOV', 'scale', scol, sdir, 'Image scale · field of view (from equipment parameters)') }}{{ sth('Moon', 'moon', scol, sdir, 'Moon illumination') }}{{ sth('Measured', 'measured', scol, sdir, 'From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude – sorted by seeing / FWHM') }}{{ sth('Files', 'files', scol, sdir) }}<th></th></tr></thead>
     <tbody>
     {% for r in page_rows %}{% set s = r.s %}
     <tr class="sessrow" data-target="s{{ s.id }}_" title="Show files of this session">
       <td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>
+      <td class="small nowrap">{{ set_label(s) or '—' }}</td>
       <td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>
       <td class="small nowrap">{% if r.optic %}{{ '%.2f″/px'|format(r.optic.scale) }}{% if r.optic.fov %} <span class="muted">· {{ '%.0f′×%.0f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</span>{% endif %}{% endif %}</td>
       <td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>
@@ -79,7 +80,7 @@
       <td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>
       <td class="nowrap acts">
         <button type="button" class="btn small ibtn" title="Session details" onclick="document.getElementById('sinfo-{{ s.id }}').showModal()">i</button>
-        <button type="button" class="btn small" title="Edit" onclick='openSession({{ {"sid": s.id, "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "software": s.software or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or ""}|tojson }})'>✎</button>
+        <button type="button" class="btn small" title="Edit" onclick='openSession({{ {"sid": s.id, "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "software": s.software or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or "", "exposure_s": '%g'|format(s.exposure_s) if s.exposure_s is not none else "", "gain": s.gain or "", "filter": s.filter or "", "cam_temp": '%g'|format(s.cam_temp) if s.cam_temp is not none else "", "set_locked": r.lights > 0}|tojson }})'>✎</button>
         <form method="post" action="/sessions/{{ s.id }}/delete" class="inl" onsubmit="return confirm({{ ('Delete session ' ~ (s.date|dmy) ~ ' including all its ' ~ r.count ~ ' file(s)? This cannot be undone. Linked calibration library sets are only unlinked.')|tojson|forceescape }})"><button class="btn small danger" title="Delete">🗑</button></form>
       </td>
     </tr>
@@ -100,6 +101,7 @@
           <h3 class="mt0">Night &amp; place</h3>
           <dl class="meta-dl">
             <dt>Date</dt><dd>{{ s.date|dmy or '—' }}</dd>
+            {% if set_label(s) %}<dt>Set</dt><dd>{{ set_label(s) }}</dd>{% endif %}
             {% if s.location %}<dt>Location</dt><dd>{{ s.location }}</dd>{% endif %}
             {% if s.moon_illum is not none %}<dt>Moon</dt><dd>{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}% illuminated</dd>{% endif %}
             {% if s.seeing %}<dt>Seeing</dt><dd>{{ s.seeing }}</dd>{% endif %}
@@ -177,11 +179,6 @@
 <section class="card" id="files">
   <div class="head"><h2>Files</h2>
     <a class="btn primary" href="/projects/{{ p.id }}/zip?types={{ FRAME_TYPES|join(',') }}" title="Every file of every session (01_date, 02_date, …) incl. linked calibration library sets">⬇ ZIP all sessions</a></div>
-  <form class="row zipsel" onsubmit="var t=[...this.querySelectorAll('[name=t]:checked')].map(e=>e.value).join(',');if(t)location='/projects/{{ p.id }}/zip?types='+t+(this.rej.checked?'&rejected=1':'');return false;">
-    {% for t in FRAME_TYPES %}{% if groups[t] or t in CALIB_TYPES %}<label class="inline"><input type="checkbox" name="t" value="{{ t }}" {% if t not in ('stack','other') %}checked{% endif %}> {{ FRAME_LABELS[t] }}</label>{% endif %}{% endfor %}
-    <label class="inline muted"><input type="checkbox" name="rej"> include rejected</label>
-    <button class="btn" title="Only the checked types from all sessions – e.g. frames for stacking">⬇ ZIP selected types</button>
-  </form>
   {% if suspects %}
   <div class="flash warnbox">⚠ {{ suspects }} light frame(s) look clearly worse than the rest (FWHM, star count or background).
     <form method="post" action="/projects/{{ p.id }}/rejectsuspects" class="inl"><button class="btn small">Reject all suspicious</button></form></div>
@@ -191,15 +188,16 @@
   <details class="sessblock{% if r %} sesspick{% endif %}" id="{{ g.key }}"{% if r %} hidden{% endif %}>
     <summary class="sesshead">
       {% if r %}{% set s = r.s %}
-      <div><b>🌙 {{ s.date|dmy or 'Session #' ~ s.id }}</b>
+      <div><b>🌙 {{ s.date|dmy or 'Session #' ~ s.id }}</b>{% if set_label(s) %} <span class="chip" title="Exposure · gain / ISO · filter · camera temperature of this session">{{ set_label(s) }}</span>{% endif %}
         <span class="muted small">{{ [s.location, s.telescope, s.camera, s.mount]|select|join(' · ') }}</span>
         <div class="muted small">{{ r.count }} files{% if r.lights %} · {{ r.lights }} lights{% endif %}{% if r.exposure %} · {{ r.exposure|dur }}{% endif %}
           {% for c in s.calib_sets %} <a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}" title="Linked calibration library set">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ c.files|length }})</a>{% endfor %}</div></div>
       <div class="row">
-        <button type="button" class="btn small primary" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}" onclick="uploadTo(this.dataset.sid, this.dataset.label)" title="Upload lights / calibration frames of this night">⬆ Add files</button>
+        <button type="button" class="btn small primary" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}" onclick="uploadTo(this.dataset.sid, this.dataset.label)" title="Upload lights / calibration frames of this night">⬆ Add files</button>
         <a class="btn small" href="/import?project={{ p.id }}&session={{ s.id }}" title="Import a folder already on the server into this session">📁 Import</a>
         <button type="button" class="btn small" onclick="openCalib({{ s.id }})" title="Link darks / flats / bias from the calibration library">🔗 Calibration library…</button>
-        {% if r.count or s.calib_sets %}<a class="btn small" href="/projects/{{ p.id }}/zip?session={{ s.id }}&types={{ FRAME_TYPES|join(',') }}" title="All files of this session">⬇ ZIP session</a>{% endif %}
+        {% if r.count or s.calib_sets %}{% set zc = {} %}{% for t in FRAME_TYPES %}{% set _ = zc.update({t: g.groups[t]|length + (s.calib_sets|selectattr('frame_type', 'equalto', t)|map(attribute='files')|map('length')|sum)}) %}{% endfor %}
+        <button type="button" class="btn small" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}" data-counts="{{ zc|tojson|forceescape }}" onclick="openZip(this)" title="Download the files of this session as a ZIP – choose the frame types">⬇ ZIP session…</button>{% endif %}
       </div>
       {% else %}
       <div><b>{{ 'Not assigned to a session' if sessions else 'Files' }}</b>
@@ -227,8 +225,22 @@
 
 {{ bulk_bar(sessions, others, all_calib) }}
 
+<!-- ZIP of one session: choose the frame types -->
+<dialog id="zip-dlg" class="cat-dialog">
+  <form method="dialog" class="cat-head"><h2>⬇ ZIP session <span class="muted small" id="zip-label"></span></h2><button class="btn small" aria-label="Close">✕</button></form>
+  <form class="dlg-body" id="zip-form" onsubmit="return zipGo(this)">
+    <input type="hidden" name="sid">
+    <div class="zip-types">
+    {% for t in FRAME_TYPES %}<label class="inline"><input type="checkbox" name="t" value="{{ t }}"> {{ FRAME_LABELS[t] }} <span class="muted small" data-zc="{{ t }}"></span></label>{% endfor %}
+    </div>
+    <label class="inline muted"><input type="checkbox" name="rej"> include rejected lights</label>
+    <p class="muted small">Linked calibration library sets of the session are included with their type.</p>
+    <div class="row"><button class="btn primary" id="zip-go">⬇ Download ZIP</button></div>
+  </form>
+</dialog>
+
 <!-- session dialog -->
-<dialog id="session-dlg" class="cat-dialog">
+<dialog id="session-dlg" class="cat-dialog wide sess-dlg">
   <form method="dialog" class="cat-head"><h2 id="session-title">Session</h2><button class="btn small">✕</button></form>
   <form method="post" action="/projects/{{ p.id }}/sessions" class="dlg-body" id="session-form">
     <input type="hidden" name="sid">
@@ -244,7 +256,17 @@
       <label>Temperature<input name="temperature" placeholder="e.g. -3 °C"></label>
       <label>Humidity<input name="humidity" placeholder="e.g. 80 %"></label>
     </div>
-    <label>Notes<textarea name="notes" rows="3" class="resizable"></textarea></label>
+    <fieldset class="sess-set"><legend>Set <span class="muted small">– one per session</span></legend>
+      <div class="cols">
+        <label>Exposure (s)<input name="exposure_s" inputmode="decimal" placeholder="e.g. 120"></label>
+        <label>Gain / ISO<input name="gain" placeholder="e.g. 101 or ISO 800"></label>
+        <label>Filter<input name="filter" placeholder="e.g. L, Ha"></label>
+        <label>Camera temp. (°C)<input name="cam_temp" inputmode="decimal" placeholder="e.g. -10"></label>
+      </div>
+      <p class="muted small" id="set-hint">Taken from the first light frame when left empty. Light frames with another
+        exposure / gain / filter / camera temperature go to their own session of the same night automatically.</p>
+    </fieldset>
+    <label>Notes<textarea name="notes" rows="2" class="resizable"></textarea></label>
     <p class="muted small">Moon illumination is computed from the date. Frames taken that night are assigned automatically.</p>
     <div class="row"><button class="btn primary">Save</button></div>
   </form>
@@ -329,17 +351,33 @@ function uploadTo(sid, label){
   var blk=slot.closest('details.sessblock'); if(blk)blk.open=true;
   slot.appendChild(up); up.hidden=false; up.open=true; up.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
+function openZip(b){
+  var dlg=document.getElementById('zip-dlg'),f=document.getElementById('zip-form'),c=JSON.parse(b.dataset.counts||'{}');
+  f.sid.value=b.dataset.sid;document.getElementById('zip-label').textContent=b.dataset.label;
+  f.querySelectorAll('[name=t]').forEach(function(x){var n=c[x.value]||0;
+    x.disabled=!n;x.checked=n>0&&x.value!=='stack'&&x.value!=='other';
+    x.closest('label').classList.toggle('muted',!n);f.querySelector('[data-zc="'+x.value+'"]').textContent='('+n+')';});
+  f.rej.checked=false;zipCheck();dlg.showModal();}
+function zipCheck(){var f=document.getElementById('zip-form');
+  document.getElementById('zip-go').disabled=!f.querySelector('[name=t]:checked');}
+document.getElementById('zip-form').addEventListener('change',zipCheck);
+function zipGo(f){var t=[].map.call(f.querySelectorAll('[name=t]:checked'),function(e){return e.value;}).join(',');
+  if(!t)return false;
+  location='/projects/{{ p.id }}/zip?session='+f.sid.value+'&types='+t+(f.rej.checked?'&rejected=1':'');
+  document.getElementById('zip-dlg').close();return false;}
 function openSession(d){
   var dlg=document.getElementById('session-dlg'), f=document.getElementById('session-form');
   // new session: equipment pre-filled from the latest session
   d=d||{sid:'',date:{{ (today|dmy)|tojson }},location:{{ ((last_s.location if last_s else '') or '')|tojson }},
         telescope:{{ ((last_s.telescope if last_s else '') or '')|tojson }},camera:{{ ((last_s.camera if last_s else '') or '')|tojson }},
-        mount:{{ ((last_s.mount if last_s else '') or '')|tojson }},software:{{ ((last_s.software if last_s else '') or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:''};
+        mount:{{ ((last_s.mount if last_s else '') or '')|tojson }},software:{{ ((last_s.software if last_s else '') or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:'',exposure_s:'',gain:'',filter:'',cam_temp:'',set_locked:false};
   document.getElementById('session-title').textContent=d.sid?'Edit session':'New session';
   Object.keys(d).forEach(function(k){var el=f.elements[k];if(!el)return;
     if(el.tagName==='SELECT'&&d[k]&&![...el.options].some(function(o){return o.value===d[k];})){var o=new Option(d[k],d[k]);o.dataset.item='1';el.add(o);}
     el.value=d[k];});
   if(f.date._flatpickr)f.date._flatpickr.setDate(d.date||null,false,'d-m-Y');
+  ['exposure_s','gain','filter','cam_temp'].forEach(function(k){f.elements[k].readOnly=!!d.set_locked;});
+  document.getElementById('set-hint').textContent=d.set_locked?'Fixed – it is the set of the light frames in this session. Frames with another set go to their own session of the night.':'Taken from the first light frame when left empty. Light frames with another exposure / gain / filter / camera temperature go to their own session of the same night automatically.';
   dlg.showModal();
 }
 function measureConditions(b){var m=document.getElementById('cond-msg-'+b.dataset.sid);b.disabled=true;

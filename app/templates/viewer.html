@@ -111,6 +111,7 @@
       </dl>
       {% endif %}
       {% if f.description %}<h3>Description</h3><p class="pre">{{ f.description }}</p>{% endif %}
+      {% if f.note %}<h3>Note</h3><p class="pre">{{ f.note }}</p>{% endif %}
 
       {% if info.header %}
       <h3>FITS header <small class="muted">({{ info.header|length }})</small></h3>

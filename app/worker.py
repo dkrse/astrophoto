@@ -13,9 +13,10 @@ from pathlib import Path
 from sqlalchemy import select, func
 
 from .core import DATA_DIR, night_of, thumb_rel, load_settings
+from .sessets import place_light
 from .framestats import frame_stats, flag_suspects
 from .models import SessionLocal, FrameFile, ImportJob, ImagingSession, AnalysisTask
-from .preview import (PREVIEW_EXT, FITS_EXT, RAW_EXT, IMAGE_EXT, make_preview, header_text, header_meta,
+from .preview import (read_exif, PREVIEW_EXT, FITS_EXT, RAW_EXT, IMAGE_EXT, make_preview, header_text, header_meta,
                       exif_meta, clean_opts)
 
 CHUNK = 8 * 1024 * 1024
@@ -105,6 +106,7 @@ def recompute_capture_times(db, tz: str) -> int:
                                .order_by(ImagingSession.id)).first()
                 if s:
                     f.session_id = s.id
+                    place_light(db, f, s)             # one set per session: that night's session with its set
     db.commit()
     return n
 
@@ -138,6 +140,13 @@ def assign_session(db, ff: FrameFile):
                    .order_by(ImagingSession.id)).first()      # several sessions that night: always the first
     if s:
         ff.session_id = s.id
+
+
+def place_frame(db, ff: FrameFile):
+    """After the metadata is known: night's session (unassigned frames), then the session of its set."""
+    assign_session(db, ff)
+    if ff.session_id and ff.frame_type == "light":
+        place_light(db, ff, processed_only=False)     # still "pending" here, but its metadata is known now
 
 
 def reflag_project(db, project_id):
@@ -209,12 +218,14 @@ def process_file(db, ff: FrameFile, with_stats=True):
     if ff.stored_path == path:
         ff.size = src.stat().st_size if src.exists() else ff.size
         apply_preview(ff, res)
+        if ff.exif is None and src.suffix.lower() in (RAW_EXT | IMAGE_EXT):
+            ff.exif = json.dumps(read_exif(src), ensure_ascii=False)     # exports read it from the DB
         if st and ff.frame_type == "light":
             ff.stat_bg, ff.stat_noise, ff.stat_stars, ff.stat_fwhm = st["bg"], st["noise"], st["stars"], st["fwhm"]
     else:
         ff.status = "pending"                     # moved while processing -> redo with the new path
         return False
-    assign_session(db, ff)
+    place_frame(db, ff)
     return True
 
 

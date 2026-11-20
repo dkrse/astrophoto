@@ -3,6 +3,72 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] – 2026-11-20
+
+### Changed
+- **One session = one night with one set**: exposure, gain / ISO, filter and camera temperature are stored with
+  the session (new “Set” column, chip in the file list, fields in the session dialog). Light frames with another
+  set go to a sibling session of the same night (created automatically, equipment / conditions / linked
+  calibration copied) – on upload / import, moving to another project and ⚡ Auto.
+  Tolerances: exposure to 0.1 s, gain “101.0” = “101”, filter case-insensitive, camera temperature ±1.5 °C
+  (only for cooled sensors: “Cooled” in the equipment list, or – camera not described there – a `SET-TEMP` in
+  the header). An open session takes the **majority** set once all its lights are processed. Calibration frames
+  and stacks are not split. The set can be set in advance on an empty session; once it holds lights it is fixed.
+  Assigning a light with another set to a session is refused. Existing sessions were sorted once on start (the
+  largest set stays in the original session); sessions table sortable by set, set shown in every session select
+  and in the metadata export.
+- **Files: only description and a new note are edited per file**, in the file's **i** dialog (shown in the
+  viewer, searched, exported). Exposure, gain / ISO, temperature and filter are read from the file and defined by
+  its session – they are shown, no longer edited. The bulk “✎ Metadata…” action was removed.
+- Upload and 📁 Import: the “Filter (if not in header)” and “Description” fields were removed – the filter comes
+  only from the file, description / note are written per file in its **i** dialog.
+- Files: **⬇ ZIP session…** opens a dialog with the frame types of that session (with counts; light, dark,
+  bias, flat … – stacks and “other” unchecked by default, empty types disabled) and “include rejected lights”;
+  the separate “ZIP selected types” form above the files was removed (⬇ ZIP all sessions stays).
+- Session dialog: wide 4-column layout, so it no longer spills out of its frame (the set block, notes and Save
+  were drawn outside the dialog); on low screens it scrolls inside the frame, the calendar still opens.
+- **No flashing between pages / after actions:** the first paint waits until the page and its scripts are
+  parsed (`blocking="render"`), so the chosen session, open panels and tabs are there from the first frame (no
+  intermediate “click a session” / unassigned files / closed panels); page changes and reloads keep the old page
+  visible until the new one is ready (cross-document view transition, header stays put); links are prefetched
+  on hover (speculation rules; downloads, ZIPs, exports, API and deletes excluded). Browsers without these
+  features behave as before.
+
+### Fixed
+- Bulk “Session”, “Type” …: files are processed in the order they were selected.
+- Export of all projects with several calibration sets no longer breaks off mid-download.
+- Annotated JPEG download: file names with non-Latin characters no longer fail (500); missing / still importing
+  file → 409 instead of an error.
+- Plate solve: a solution without an image scale is reported as an error instead of crashing.
+- Archive scan picks the first session of a night deterministically (one query for all groups instead of one
+  per project × night).
+- Lights still being processed (set not known yet) are no longer sorted into an empty-set session or refused by
+  “Session” as “another set” – the worker places them once their header is read; the session set stays locked
+  while such lights are in it (same rule as the dialog).
+- Settings: an unknown time zone keeps the current zone (was silently reset to UTC without recomputing).
+- Gallery search: `%` and `_` are literal characters (as in the other searches).
+- Slideshow: sessions loaded in one query (was one per frame without a capture date).
+- Calibration set page: move targets loaded as id / name only (not every set with its files).
+- Prefetch on hover skips the viewer (opening a RAW frame costs up to 0.5 s).
+
+### Performance & stability
+- Star detection (frame statistics, 🔬 optics): vectorised pre-filter and a bounded candidate list – noisy or
+  mis-typed frames with 10^5+ detections no longer run for minutes; no full-size float array for label sizes.
+- JPEG / PNG / TIFF files are closed right after reading (no file handle per render).
+- Upload duplicate check: one query instead of loading every file and its session.
+- ⚡ Auto from dates: no per-file count queries.
+- **Metadata export / ZIPs:** FITS headers and EXIF are really loaded in one query now (the bulk preload was
+  dropped immediately and every file was read again with 2 queries); EXIF is stored with the file at processing
+  (older files: on first export) instead of opening every RAW / JPEG on each download. Project export with
+  731 DSLR frames: 7 500 → 19 queries.
+- **Export of all projects is streamed:** generated project by project while it downloads (own DB session per
+  project) instead of building every JSON and header file in memory first – first byte after 0.07 s, constant
+  memory.
+- **Viewer:** previous / next / position via SQL instead of loading every frame of the project or calibration
+  set on each step; medians from three columns only.
+- **FITS previews / thumbnails** are decimated on the memory map before the float32 copy (CFA: whole 2×2 cells,
+  colours intact) – a 60 MP frame no longer needs a 240 MB array just to make a thumbnail.
+
 ## [1.5.1] – 2026-11-19
 
 ### Added

@@ -23,7 +23,8 @@ UP_DIR = DATA_DIR / ".uploads"
 _FINISHING: set = set()   # upload ids whose finish is in progress
 _LOCKS: dict = {}  # upload id -> asyncio.Lock (serialises chunk writes of one upload)
 _HASH: dict = {}   # upload id -> running sha256 (in-memory; after a restart the hash is computed at finish)
-META_KEYS = ("description", "exposure_s", "gain", "temperature", "filter")
+META_KEYS = ("exposure_s", "gain", "temperature")   # hints for files without them; filter only from the header,
+#                                                    description / note are written per file in its i dialog
 
 
 def err(msg, code=400, **extra):
@@ -67,12 +68,15 @@ async def upload_check(request: Request, user: User = Depends(current_user), db:
     The definitive content (SHA-256) check still runs when an upload finishes."""
     data = await json_body(request)
     project, calib = resolve_owner(db, data)
-    owner_files = project.files if project else calib.files
+    # one query (names, sizes, session night) instead of loading every row and its session one by one
+    q = (select(FrameFile.original_name, FrameFile.size, ImagingSession.date)
+         .outerjoin(ImagingSession, ImagingSession.id == FrameFile.session_id)
+         .where(FrameFile.project_id == project.id if project else FrameFile.calib_set_id == calib.id))
     index = {}
-    for f in owner_files:
-        where = (f"session {f.session.date.strftime('%d-%m-%Y')}" if f.session and f.session.date
+    for name, size, night in db.execute(q):
+        where = (f"session {night.strftime('%d-%m-%Y')}" if night
                  else ("not assigned to a session" if project else "this set"))
-        index.setdefault((clean_filename(f.original_name), f.size), where)
+        index.setdefault((clean_filename(name), size), where)
     out = []
     for it in (data.get("files") or [])[:20000]:
         try:
@@ -264,9 +268,8 @@ def _store_locked(part, meta_p, m, size, sha, db):
     ff = FrameFile(project_id=m["project_id"], calib_set_id=m["calib_set_id"], session_id=m["session_id"],
                    frame_type=m["frame_type"], original_name=m["filename"],
                    stored_path=str(dest.relative_to(DATA_DIR)), size=size, sha256=sha, status="pending",
-                   description=none_if_empty(mm.get("description")), exposure_s=to_float(mm.get("exposure_s")),
-                   gain=none_if_empty(mm.get("gain")), temperature=none_if_empty(mm.get("temperature")),
-                   filter=none_if_empty(mm.get("filter")))
+                   exposure_s=to_float(mm.get("exposure_s")),
+                   gain=none_if_empty(mm.get("gain")), temperature=none_if_empty(mm.get("temperature")))
     db.add(ff)
     db.commit()
     worker.wake()
@@ -371,7 +374,6 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
     sid = session_for(db, project, data.get("session_id"))
     if project and not sid:
         return err("Choose the session (night) the files belong to")
-    mm = as_dict(data.get("meta"))
     job = ImportJob(project_id=project.id if project else None, calib_set_id=calib.id if calib else None,
                     source_dir=str(root), skip_dups=bool(data.get("skip_dups", True)), total=0)
     db.add(job)
@@ -394,8 +396,7 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
                              import_job_id=job.id, frame_type=ftype, original_name=src.name,
                              stored_path=str(dest.relative_to(DATA_DIR)), source_path=str(src),
                              size=src.stat().st_size, status="importing",
-                             description=none_if_empty(mm.get("description")),
-                             filter=none_if_empty(mm.get("filter")) or none_if_empty(it.get("filter"))))
+                             filter=none_if_empty(it.get("filter"))))
             job.total += 1
         db.commit()
     except Exception:

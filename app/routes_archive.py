@@ -134,6 +134,14 @@ def group_files(db, files: list) -> list:
     groups = defaultdict(list)
     for f in files:
         groups[(name_key(f["project"]) or f["project"], f["night"])].append(f)
+    # first session per (project, night) of the matched projects – one query instead of one per group
+    nights = {}
+    pids = {m[0] for m in by_key.values() if m}
+    if pids:
+        for pid, d, sid in db.execute(select(ImagingSession.project_id, ImagingSession.date, ImagingSession.id)
+                                      .where(ImagingSession.project_id.in_(pids)).order_by(ImagingSession.id)):
+            nights.setdefault((pid, d), sid)
+    first_session = lambda pid, d: nights.get((pid, d))
     out = []
     for (key, night), fs in groups.items():
         names = defaultdict(int)
@@ -143,9 +151,7 @@ def group_files(db, files: list) -> list:
         match = by_key.get(key)
         sess = None
         if match and night:
-            s = db.scalars(select(ImagingSession).where(ImagingSession.project_id == match[0],
-                                                        ImagingSession.date == date.fromisoformat(night))).first()
-            sess = s.id if s else None
+            sess = first_session(match[0], date.fromisoformat(night))
         counts = defaultdict(int)
         for f in fs:
             counts[f["type"]] += 1

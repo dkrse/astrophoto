@@ -12,6 +12,13 @@ document.documentElement.dataset.fview=v==='grid'||v==='list'?v:fd;})();
 function setFview(v){document.documentElement.dataset.fview=v;if(window.applyViewSort)applyViewSort();
   try{localStorage.setItem('fview',v);localStorage.setItem('fviewdef',{{ S.files_view|tojson }})}catch(e){}}</script>
 <meta name="csrf-token" content="{{ csrf }}">
+<!-- no flashing between pages: the first paint waits until the whole page incl. its scripts is parsed (panels,
+     tabs, selected session already set), and the old page stays visible until then (view transition) -->
+<link rel="expect" href="#page-ready" blocking="render">
+<script type="speculationrules">{"prefetch": [{"where": {"and": [{"href_matches": "/*"},
+  {"not": {"href_matches": ["/logout", "/export/*", "/*/zip*", "/*/export*", "/files/*/download*", "/files/*/annotated*",
+   "/files/zip*", "/files/*/view*", "/api/*", "/*/delete*", "/static/*"]}},
+  {"not": {"selector_matches": "[download], [target], .no-prefetch"}}]}, "eagerness": "moderate"}]}</script>
 <script>
 // CSRF: every same-origin fetch() with a body-changing method and every POST form carries the session token
 (function(){var T=document.querySelector('meta[name=csrf-token]').content, of=window.fetch;
@@ -142,5 +149,6 @@ document.querySelectorAll('.datepicker').forEach(function(el){
     var pane=el&&(el.classList.contains('tabpane')?el:el.closest('.tabpane'));
     if(pane&&links.some(function(a){return a.getAttribute('href')==='#'+pane.id;})){show(pane.id,false);if(el!==pane)el.scrollIntoView({block:'start'});}});});})();
 </script>
+<div id="page-ready" hidden></div>
 </body>
 </html>

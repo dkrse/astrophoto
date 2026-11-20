@@ -193,7 +193,22 @@ def fits_cfa_pattern(header, opts) -> str | None:
     return pat if pat in BAYER_PATTERNS else None
 
 
-def load_fits_raw(path: Path):
+def _decimate(raw: np.ndarray, k: int, cfa: bool) -> np.ndarray:
+    """Every k-th pixel (CFA: every k-th 2×2 cell, so the Bayer pattern stays intact) of the last two axes –
+    read from the memory map before any float copy is made."""
+    if k <= 1:
+        return raw
+    if not cfa:
+        return raw[..., ::k, ::k]
+    def cells(n):
+        start = np.arange(0, n - 1, 2 * k)
+        return (start[:, None] + np.array([0, 1])).ravel()
+    return raw[..., cells(raw.shape[-2]), :][..., cells(raw.shape[-1])]
+
+
+def load_fits_raw(path: Path, max_side: int | None = None, opts: dict | None = None):
+    """Pixels as float32 + header. With `max_side` (previews) the data are decimated on the memory map first:
+    a 60 MP frame no longer becomes a 240 MB float array just to be shrunk afterwards."""
     from astropy.io import fits
     # memmap: the native pixels are read once straight into the float32 array (no second full-size copy);
     # the copy is made inside the with block, so nothing refers to the closed file afterwards
@@ -204,6 +219,11 @@ def load_fits_raw(path: Path):
             return None, hdul[0].header.copy()
         h = hdu.header
         raw = planes_first(hdu.data)
+        if max_side:
+            cfa = opts is not None and fits_cfa_pattern(h, opts) is not None   # (also a manual pattern on a cube)
+            # superpixel debayer halves a CFA; the final image may still be ≤ 2× max_side (as before)
+            side = max(raw.shape[-2:]) // (2 if cfa else 1)
+            raw = _decimate(raw, max(1, side // (max_side * 2)), cfa)
         data = np.array(raw, dtype=np.float32, copy=True)
         blank = h.get("BLANK") if raw.dtype.kind in "iu" else None
         if blank is not None:
@@ -237,7 +257,7 @@ def to_image_planes(d: np.ndarray) -> np.ndarray:
 
 
 def load_fits(path: Path, opts: dict, max_side: int | None):
-    data, header = load_fits_raw(path)
+    data, header = load_fits_raw(path, max_side, opts)
     if data is None:
         return None, header
     if data.ndim == 3 and opts["bayer"] in BAYER_PATTERNS:
@@ -272,12 +292,28 @@ def load_raw(path: Path, opts: dict, max_side: int | None):
 
 
 def load_image(path: Path, opts: dict, max_side: int | None):
-    im = ImageOps.exif_transpose(Image.open(path))
+    with Image.open(path) as im0:                 # closed right away (no file handle per render)
+        im = ImageOps.exif_transpose(im0)
+        im.load()
     if im.mode in ("P", "RGBA", "LA", "CMYK", "YCbCr"):     # CMYK JPEGs would otherwise get wrong colours
         im = im.convert("RGB")
     if max_side and max(im.size) > max_side * 2:
         im.thumbnail((max_side * 2, max_side * 2))
     return np.asarray(im, dtype=np.float32), None
+
+
+def read_exif(src: Path) -> dict:
+    """EXIF tags of camera RAW / JPEG / TIFF files (header only, no pixels); {} for other files."""
+    if src.suffix.lower() not in (IMAGE_EXT | RAW_EXT):
+        return {}
+    try:
+        import exifread
+        with open(src, "rb") as fh:
+            tags = exifread.process_file(fh, details=False)
+        return {k: str(v) for k, v in sorted(tags.items())
+                if "Thumbnail" not in k and not k.startswith("MakerNote") and len(str(v)) <= 500}
+    except Exception:
+        return {}
 
 
 def is_8bit_image(path: Path) -> bool:

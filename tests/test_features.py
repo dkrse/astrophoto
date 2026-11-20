@@ -120,11 +120,13 @@ def test_bayer_and_metadata_extraction(client, project, tmp_path):
 # ---------- single-file actions ----------
 def test_single_file_edit_reject_delete(client, project, tmp_path):
     f = one_file(client, project, tmp_path)
+    before = (f.exposure_s, f.gain, f.filter, f.temperature)
     client.post(f"/files/{f.id}/edit", data={"exposure_s": "12,5", "gain": "200", "filter": "OIII",
-                                             "temperature": "-5", "description": "nice"})
+                                             "temperature": "-5", "description": "nice", "note": "dew at 2 am"})
     with SessionLocal() as db:
         x = db.get(FrameFile, f.id)
-        assert (x.exposure_s, x.gain, x.filter, x.description) == (12.5, "200", "OIII", "nice") and x.updated_at
+        assert (x.description, x.note) == ("nice", "dew at 2 am") and x.updated_at
+        assert (x.exposure_s, x.gain, x.filter, x.temperature) == before      # set values come from the file
     client.post(f"/files/{f.id}/reject")
     assert files_of(project)[0].rejected
     client.post(f"/files/{f.id}/reject")
@@ -160,8 +162,9 @@ def test_bulk_meta_reject_reprocess(client, project, tmp_path):
     a = one_file(client, project, tmp_path, "m1.fits")
     b = one_file(client, project, tmp_path, "m2.fits", data=star_frame(seed=11))
     ids = [a.id, b.id]
-    client.post("/api/files/bulk", json={"ids": ids, "action": "meta", "value": {"filter": "Ha", "exposure_s": "300"}})
-    assert {(f.filter, f.exposure_s) for f in files_of(project)} == {("Ha", 300.0)}
+    r = client.post("/api/files/bulk", json={"ids": ids, "action": "meta", "value": {"note": "clouds", "filter": "Ha"}})
+    assert r.status_code == 400                                         # no bulk metadata any more (use i per file)
+    assert {(f.note, f.filter) for f in files_of(project)} == {(None, None)}
     client.post("/api/files/bulk", json={"ids": ids, "action": "reject"})
     assert all(f.rejected for f in files_of(project))
     client.post("/api/files/bulk", json={"ids": ids, "action": "unreject"})

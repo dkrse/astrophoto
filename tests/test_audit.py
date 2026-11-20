@@ -108,16 +108,23 @@ def test_analysis_cancel_bad_project_id(client):
     assert client.post("/api/analysis/cancel").json()["ok"]
 
 
-def test_bulk_meta_non_string_values(client, project, tmp_path):
-    upload(client, write_fits(tmp_path / "m.fits", OBJECT="M42"), project_id=project)
+def test_upload_ignores_filter_and_description_from_the_client(client, project, tmp_path):
+    """Filter only from the file (header), description / note only in the i dialog."""
+    p = write_fits(tmp_path / "m.fits", OBJECT="M42")
+    data = p.read_bytes()
+    r = client.post("/api/uploads", json={"project_id": project, "session_id": default_session(project),
+                                          "filename": p.name, "size": len(data), "frame_type": "light",
+                                          "meta": {"filter": "Ha", "description": "d"}})
+    uid = r.json()["id"]
+    client.put(f"/api/uploads/{uid}?offset=0", content=data)
+    client.post(f"/api/uploads/{uid}/finish")
     drain()
-    fid = files_of(project)[0].id
-    r = client.post("/api/files/bulk", json={"ids": [fid], "action": "meta",
-                                             "value": {"gain": 120, "temperature": -10, "filter": "  Ha "}})
-    assert r.status_code == 200, r.text
     f = files_of(project)[0]
-    assert (f.gain, f.temperature, f.filter) == ("120", "-10", "Ha")
-    assert client.post("/api/files/bulk", json={"ids": [fid], "action": "meta", "value": "x"}).status_code == 200
+    assert (f.filter, f.description) == (None, None)
+    page = client.get(f"/projects/{project}").text
+    assert "up-filter" not in page and "up-desc" not in page and 'data-bulk="meta"' not in page and 'id="meta-dlg"' not in page
+    assert client.post("/api/files/bulk", json={"ids": [f.id], "action": "meta",
+                                                "value": {"note": "x"}}).status_code == 400
 
 
 def test_upload_meta_must_be_object(client, project):

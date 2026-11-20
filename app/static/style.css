@@ -56,7 +56,7 @@ h1{margin:0 0 8px}h2{margin:0}
 .stack-hero figcaption{padding:12px 16px}
 .meta dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0}.meta dt{color:var(--muted)}.meta dd{margin:0}
 .pre{white-space:pre-wrap}
-.zipsel{margin:10px 0}
+.zip-types{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px;margin:4px 0 12px}
 details.upload,details.group{border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:10px 0}
 summary{cursor:pointer;display:flex;gap:8px;align-items:center}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
@@ -481,6 +481,9 @@ mark{background:color-mix(in srgb,#f5c542 55%,transparent);color:inherit;border-
 .statstoggle{border-color:transparent;box-shadow:none;color:var(--muted)}
 .statstoggle:hover{color:var(--fg)}
 dialog.has-dp,dialog.has-dp .dlg-body{overflow:visible}
+/* the calendar must not be clipped, so such dialogs do not scroll – they grow with their content instead of
+   letting it spill out below the frame */
+dialog.cat-dialog.has-dp{max-height:none}
 dialog .flatpickr-wrapper{display:block;margin-top:4px}dialog .flatpickr-wrapper input{margin-top:0}
 dialog .flatpickr-calendar.static{top:calc(100% + 4px);z-index:1000}
 .cols.panels label.check{margin-top:8px}
@@ -610,3 +613,19 @@ th.sortable::after{content:"↕";opacity:.25;margin-left:4px;font-size:.9em}
 th.sort-asc::after{content:"▲";opacity:.8}
 th.sort-desc::after{content:"▼";opacity:.8}
 @media(max-width:700px){th.sortable{padding:10px 8px}}   /* bigger tap target on phones */
+fieldset.sess-set{border:1px solid var(--border, #444);border-radius:8px;padding:.4rem .8rem .2rem;margin:.6rem 0}
+fieldset.sess-set .cols{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+fieldset.sess-set p{margin:.2rem 0 .4rem}
+/* low screens: the session dialog scrolls inside its frame (the calendar opens below the date field, which is the
+   first one, and is reached by scrolling) instead of growing past the window */
+@media (max-height:760px){dialog.sess-dlg{max-height:calc(100vh - 16px)}dialog.sess-dlg .dlg-body{overflow:auto}}
+fieldset.sess-set legend{padding:0 .3rem;font-weight:600}
+fieldset.sess-set input[readonly]{opacity:.6}
+
+/* page changes / reloads without a white flash: keep the old page until the new one is ready, quick cross-fade;
+   the header stays put */
+@view-transition{navigation:auto}
+::view-transition-old(root),::view-transition-new(root){animation-duration:.12s}
+.top{view-transition-name:topbar}
+::view-transition-group(topbar){animation:none}
+@media (prefers-reduced-motion:reduce){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}}

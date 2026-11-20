@@ -83,6 +83,26 @@ def migrate_software_to_sessions(db):
     db.commit()
 
 
+def migrate_session_sets(db):
+    """Sessions hold one acquisition set (exposure, gain, filter, camera temperature): sort the lights of
+    existing sessions into per-set sessions once (marker in settings)."""
+    from .models import Setting
+    from .sessets import split_project
+    if db.get(Setting, "migr_session_sets_v1"):
+        return
+    moved = 0
+    for p in list(db.scalars(select(Project).order_by(Project.id))):
+        n = split_project(db, p)
+        if n:
+            db.flush()
+            worker.reflag_project(db, p.id)     # suspect flags are computed per session
+        moved += n
+    db.add(Setting(key="migr_session_sets_v1", value=str(moved)))
+    db.commit()
+    if moved:
+        print(f"session sets: {moved} light frame(s) sorted into per-set sessions")
+
+
 @app.on_event("startup")
 def startup():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,6 +132,7 @@ def startup():
             f.original_name = clean_filename(f.original_name)
         migrate_project_to_sessions(db)
         migrate_software_to_sessions(db)
+        migrate_session_sets(db)
         if not db.get(Setting, "migr_moon_v2"):          # Meeus formula + site time zone
             from .core import recompute_moon
             recompute_moon(db, load_settings(db)["timezone"])

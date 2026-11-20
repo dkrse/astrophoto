@@ -524,11 +524,11 @@ def file_owner(f: FrameFile) -> dict:
     """Uniform info about where a file belongs (project or calibration set)."""
     if f.project_id:
         return {"kind": "project", "id": f.project_id, "name": f.project.name,
-                "url": f"/projects/{f.project_id}", "files": f.project.files}
+                "url": f"/projects/{f.project_id}", "col": FrameFile.project_id}
     c = f.calib_set
     if c is None:                                # orphan row (neither project nor set) -> 404, not a 500
         raise HTTPException(404, "File has no project or calibration set")
-    return {"kind": "calib", "id": c.id, "name": c.name, "url": f"/calibration/{c.id}", "files": c.files}
+    return {"kind": "calib", "id": c.id, "name": c.name, "url": f"/calibration/{c.id}", "col": FrameFile.calib_set_id}
 
 
 def thumb_rel(stored_path: str) -> Path:
@@ -655,6 +655,8 @@ def asset(path: str) -> str:
 
 
 templates.env.globals["asset"] = asset
+from .sessets import set_label as _set_label  # noqa: E402
+templates.env.globals["set_label"] = _set_label
 
 
 def page_url(request, anchor: str = "", **changes) -> str:

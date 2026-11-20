@@ -98,6 +98,11 @@ FWHM, limiting magnitude, tilt and elongation
   software, seeing, SQM, temperature, humidity and computed moon illumination; new nights inherit the equipment
   of the latest one; ⚡ automatic sessions from `DATE-OBS` / EXIF (frames after midnight belong to the evening);
   FITS `DATE-OBS` (UTC) is converted to the **site time zone** (Settings), `DATE-LOC` / EXIF are already local
+- **One session = one night with one set** (exposure, gain / ISO, filter, camera temperature): light frames with
+  another set go automatically to their own session of that night (equipment, conditions and linked calibration
+  copied). Tolerances: exposure 0.1 s, `101.0` = `101`, filter case-insensitive, sensor ±1.5 °C – temperature only
+  for cooled cameras (“Cooled” in the equipment list or a `SET-TEMP` in the header). A new session takes the set
+  of the majority of its lights (or set it in advance); calibration frames and stacks are never split
 - Moon illumination at 23:00 local time (Meeus, accurate to ~0.5 %)
 - Integration time per session and filter (rejected frames excluded), total per project
 - Image scale and field of view from the equipment parameters; **measured** values per night next to them
@@ -115,8 +120,10 @@ FWHM, limiting magnitude, tilt and elongation
 - **📁 Import** of a server folder into a session, **📦 Import archive** of a whole folder tree into many
   projects and sessions at once (reviewed per project × night before copying)
 - Frame type detection (FITS `IMAGETYP`, file and folder names); duplicate detection by SHA-256 content hash
-- Bulk operations: type, move, session, metadata, reject / restore, reprocess, delete, 🎯 Solve, 🔬 Optics
+- Bulk operations: type, move, session, reject / restore, reprocess, delete, 🎯 Solve, 🔬 Optics
 - Frame quality statistics for lights (FWHM, stars, background, noise) with automatic “suspect” flags
+- Per file you edit only a **description** and a **note** (i dialog); exposure, gain, temperature and filter
+  come from the file and its session
 - Unreadable / corrupt files are marked with the reason
 - File lists as **☰ list** (table) or **▦ image tiles** – switch above every list, default in Settings; actions
   for the checked files in the bottom bar (i details, ⬇ download / ZIP, reject, delete, type, move, …)
@@ -176,13 +183,18 @@ FWHM, limiting magnitude, tilt and elongation
 - **Archive health**: quick check (existence, size, unknown files, processing errors) or full check (SHA-256 of
   every file), with a stored report
 - Page speed guarded by tests (3000-frame project, query counts); lists use small cached thumbnails, FITS headers
-  are loaded only when needed, memory caches are bounded
+  are loaded only when needed, memory caches are bounded; FITS previews are decimated before conversion (a 60 MP
+  frame needs no full-size float copy); star detection is bounded on noisy frames
+- **No flashing**: the first paint waits until a page is fully set up (chosen session, panels, tabs), page changes
+  keep the old page until the new one is ready (view transitions), links are prefetched on hover (Chrome / Edge /
+  Safari; other browsers as before)
 
 ### Downloads and export
 - Streamed ZIP downloads (start immediately, no temporary files): all sessions as `01_<date>/<type>/…` (the layout
   PixInsight WBPP / Siril expect), one session, selected types, calibration sets; rejected frames excluded by default
 - `INFO.txt` and `metadata.json` in every project ZIP; **📄 Export metadata** of a project and **⬇ Download metadata** (👤 menu) of
-  all projects + calibration library (incl. all FITS headers, EXIF, plate solves and optics results)
+  all projects + calibration library (incl. all FITS headers, EXIF, plate solves and optics results) – streamed
+  project by project, constant memory; EXIF is stored at processing, so exports never re-open RAW files
 
 ### Overview, search and gallery
 - Search across projects, sessions, equipment, file names, descriptions and FITS headers with highlighted matches
@@ -261,7 +273,8 @@ FWHM, limiting magnitude, tilt and elongation
 
 **Typical workflow**
 1. **+ New project** (= one object) → **+ Add session** (night, location, equipment) → **⬆ Add files** on the
-   session. Or bring a whole archive with **📦 Import archive** (account menu).
+   session. Or bring a whole archive with **📦 Import archive** (account menu). Upload the whole night at once –
+   frames with other exposure / gain / filter / sensor temperature end up in their own sessions of that night.
 2. Previews, metadata and frame statistics are made in the background; with *measure new nights automatically* on,
    3 frames per night are plate-solved and analysed and the session's Seeing / SQM are filled in.
 3. Open frames in the **viewer**: 🎯 Solve, ✨ Objects, ⬆ North up, 🔬 Optics.
@@ -297,6 +310,7 @@ app/
   main.py            entry point, startup (migrations, seeding, worker)
   core.py            app object, settings, auth, helpers, storage, pagination
   models.py          SQLAlchemy models + idempotent migrations
+  sessets.py         one acquisition set per session: matching, sibling sessions, sorting
   worker.py          background processing (imports, hashes, previews, statistics, analysis queue)
   preview.py         loading / stretching / histogram / metadata for FITS, RAW, images
   framestats.py      FWHM, star count, background, noise
@@ -317,7 +331,7 @@ tests/               pytest suite
 ## Tests
 
 ```bash
-./run-tests.sh            # all tests (418, ≈ 60 s, no warnings)
+./run-tests.sh            # all tests (459, ≈ 70 s, no warnings)
 ./run-tests.sh -k upload  # any pytest arguments
 ```
 
@@ -336,6 +350,8 @@ needed – plate solving is simulated where required.
 | `test_review.py`, `test_audit.py` | regression tests for the bugs found in the code reviews (malformed API input → 400, busy files, upload races, login CSRF, time zone, foreign keys, moon phase, session-only file list, list / image view) |
 | `test_gaps.py` | paths found untested by the coverage report and the speed / stability work: cache / upload housekeeping, crash-loop protection, solver lock and time budget, optics / viewer / histogram caches, FITS BZERO/BSCALE/BLANK, integrity check, archive helpers, ZIP names |
 | `test_helpers.py` | small pure helpers: formatting, passwords, settings, file names, equipment specs, nights, FITS header values / dates, RA / Dec, geometry, view options |
+| `test_session_sets.py` | one set per session: normalisation / tolerances, splitting on upload, uncooled cameras, predefined sets, manual moves, metadata edits, session form lock, ⚡ Auto, migration of mixed sessions, export / table |
+| `test_review2.py`, `test_review3.py`, `test_review4.py` | review fixes 2026-11: lights still processing, time zone typo, gallery wildcards, slideshow / calibration queries, prefetch exclusions, upload form, frames without metadata, majority set, waiting frames, unicode downloads, missing files, solve without scale, bounded star detection, closed file handles, EXIF cache, streamed full export (several calibration sets), header preload query count, viewer navigation by SQL, decimated CFA previews, SET-TEMP rule, render-blocking marker |
 | `test_paging.py` | pagination of sessions, file groups and the calibration library, page-size settings |
 | `test_skymap.py` | sky map: TAN outlines vs. astropy, catalogue, ecliptic / galactic centre, constellations, API |
 | `test_perf.py` | small cached thumbnails, render slots never blocking the server, star-tile cache budget, settings cache, deferred FITS headers (query counts), large uploads |

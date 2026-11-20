@@ -59,7 +59,7 @@ def frame_stats(src: Path) -> dict | None:
     if n == 0:
         return {"bg": bg, "noise": noise, "stars": 0, "fwhm": None}
     idx = np.arange(1, n + 1)
-    sizes = ndimage.sum_labels(np.ones_like(lum), labels, idx)
+    sizes = np.bincount(labels.ravel(), minlength=n + 1)[1:]      # no full-size float array
     peaks = ndimage.maximum(lum, labels, idx)
     sat = float(lum.max()) * 0.97
     ok = (sizes >= 4) & (sizes <= 2500) & (peaks < sat)
@@ -67,10 +67,8 @@ def frame_stats(src: Path) -> dict | None:
 
     fwhms = []
     objs = ndimage.find_objects(labels)
-    order = np.argsort(-peaks)
-    for i in order:
-        if not ok[i]:
-            continue
+    cand = np.flatnonzero(ok)                     # brightest first, bounded (noisy frames: 10^5+ labels)
+    for i in cand[np.argsort(-peaks[cand])][:MAX_STARS * 20]:
         sl = objs[i]
         if sl is None:
             continue

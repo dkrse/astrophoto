@@ -171,7 +171,7 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
         cols = [Project.name, Project.target, Project.object_type, Project.tags,
                 Project.description, Project.notes]
         file_match = select(FrameFile.project_id).where(FrameFile.project_id.is_not(None), or_(
-            FrameFile.original_name.ilike(like), FrameFile.description.ilike(like),
+            FrameFile.original_name.ilike(like), FrameFile.description.ilike(like), FrameFile.note.ilike(like),
             FrameFile.filter.ilike(like), FrameFile.header.ilike(like)))
         sess_match = select(ImagingSession.project_id).where(or_(
             ImagingSession.notes.ilike(like), ImagingSession.location.ilike(like),
@@ -343,6 +343,7 @@ def search_hits(p: Project, q: str, headers: list | None = None) -> list:
     for f in p.files:
         add(f"File {f.original_name}", f.original_name if q.lower() in (f.original_name or "").lower() else None)
         add(f"File {f.original_name} · description", f.description)
+        add(f"File {f.original_name} · note", f.note)
         add(f"File {f.original_name} · filter", f.filter)
     for name, text in (headers if headers is not None else
                        [(f.original_name, f.header) for f in p.files if f.header]):
@@ -370,7 +371,7 @@ def gallery(request: Request, q: str = "", page_no: int = Query(1, alias="page")
             .outerjoin(ImagingSession, FrameFile.session_id == ImagingSession.id)
             .where(FrameFile.frame_type == "stack", FrameFile.thumb_path.is_not(None)))
     if q.strip():
-        like = f"%{q.strip()}%"
+        like = like_pattern(q)                    # % and _ are literal characters, like everywhere else
         stmt = stmt.where(or_(Project.name.ilike(like), Project.target.ilike(like), Project.tags.ilike(like),
                               FrameFile.original_name.ilike(like), FrameFile.description.ilike(like)))
     sort = request.query_params.get("sort") or cfg["gallery_sort"]
@@ -399,7 +400,8 @@ def gallery(request: Request, q: str = "", page_no: int = Query(1, alias="page")
 def api_slides(ids: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
     from sqlalchemy.orm import selectinload
     order = [int(x) for x in ids.split(",") if x.isdigit()][:2000]
-    rows = {f.id: f for f in db.scalars(select(FrameFile).options(selectinload(FrameFile.project))
+    rows = {f.id: f for f in db.scalars(select(FrameFile).options(selectinload(FrameFile.project),
+                                                                   selectinload(FrameFile.session))
                                         .where(FrameFile.id.in_(order)))} if order else {}
     out = []
     for i in order:                                # one query instead of one per id; keep the requested order
@@ -515,9 +517,11 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
         flash(request, "Settings reset to defaults")
         return RedirectResponse("/settings", status_code=303)
     old_tz = load_settings(db)["timezone"]
+    bad_tz = form.get("timezone") is not None and \
+        coerce_setting("timezone", form["timezone"]) != str(form["timezone"]).strip()
     for k, (default, typ, lim, _) in SETTINGS.items():
         v = ("1" if form.get(k) else "0") if typ is bool else form.get(k)
-        if v is None:
+        if v is None or (k == "timezone" and bad_tz):   # unknown zone: keep the current one (not reset to UTC)
             continue
         v = coerce_setting(k, v)
         row = db.get(Setting, k)
@@ -528,8 +532,8 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
     db.commit()
     invalidate_settings()
     new_tz = load_settings(db)["timezone"]
-    if form.get("timezone") is not None and coerce_setting("timezone", form["timezone"]) != str(form["timezone"]).strip():
-        flash(request, f"Unknown time zone “{form['timezone']}” – kept {new_tz}", "err")
+    if bad_tz:
+        flash(request, f"Unknown time zone “{form['timezone']}” – kept {old_tz}", "err")
         return RedirectResponse("/settings", status_code=303)
     if new_tz != old_tz:
         from .worker import recompute_capture_times

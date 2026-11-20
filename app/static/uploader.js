@@ -51,7 +51,6 @@
     var fallback = /\.(jpe?g|png|tiff?|webp|bmp|gif)$/i.test(f.name) ? 'stack' : 'light';
     if (/\.(fits?|fts)$/i.test(f.name)) {
       return fitsCards(f).then(function (c) {
-        item.filter = c.FILTER || '';
         item.exp = c.EXPTIME || c.EXPOSURE || '';
         return typeFromText(c.IMAGETYP || c.FRAME || c.IMAGETYPE || '') || byName || byDir || fallback;
       });
@@ -150,8 +149,7 @@
       var init = await api('POST', '/api/uploads', Object.assign(common, {
         filename: it.file.name, size: it.file.size, frame_type: it.type,
         session_id: sessSel ? sessSel.value : '', skip_dups: root.querySelector('.up-skipdups').checked,
-        meta: { filter: it.filter || root.querySelector('.up-filter').value || '', exposure_s: it.exp || '',
-                description: root.querySelector('.up-desc').value || '' }
+        meta: { exposure_s: it.exp || '' }
       }));
       if (!init.id) throw new Error(init.error || 'init failed');
       it.uid = init.id; it.sent = 0;
@@ -190,7 +188,7 @@
   async function runQueue() {
     window.UPLOADER_BUSY = true; if (window.activityPoke) activityPoke();   // header indicator
     running = true; startBtn.disabled = true; pauseBtn.hidden = false;
-    root.querySelectorAll('.up-session, .up-alltype, .up-filter, .up-desc, .up-skipdups').forEach(function (e) { e.disabled = true; });
+    root.querySelectorAll('.up-session, .up-alltype, .up-skipdups').forEach(function (e) { e.disabled = true; });
     var it, tried = new Set();
     while ((it = items.find(function (x) { return (x.state === 'queued' || x.state === 'error') && !tried.has(x); }))) {
       tried.add(it);
@@ -201,7 +199,7 @@
       updateSummary();
     }
     running = false; startBtn.disabled = false; pauseBtn.hidden = true; paused = false; pauseBtn.textContent = 'Pause';
-    root.querySelectorAll('.up-session, .up-alltype, .up-filter, .up-desc, .up-skipdups').forEach(function (e) { e.disabled = false; });
+    root.querySelectorAll('.up-session, .up-alltype, .up-skipdups').forEach(function (e) { e.disabled = false; });
     var ok = items.filter(function (x) { return x.state === 'done'; }).length;
     var failed = items.filter(function (x) { return x.state === 'error'; }).length;
     startBtn.textContent = failed ? 'Retry failed' : 'Start upload';

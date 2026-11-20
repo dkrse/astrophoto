@@ -75,7 +75,6 @@
         var inp = document.createElement('input'); inp.name = 'ids'; inp.value = ids.join(','); f.append(inp);
         document.body.append(f); f.submit(); f.remove();
       }
-      else if (a === 'meta') document.getElementById('meta-dlg').showModal();
       else if (a === 'optics') { if (window.bulkOptics) window.bulkOptics(selected()); }
       else if (a === 'solve') { if (window.bulkSolve) window.bulkSolve(selected()); }
       else run(a, null);
@@ -91,13 +90,6 @@
         s.value = '';
         run(a, v, msg);
       });
-    });
-    var mf = document.getElementById('meta-form');
-    if (mf) mf.addEventListener('submit', function (e) {
-      e.preventDefault();
-      var v = {}; ['exposure_s', 'gain', 'temperature', 'filter', 'description'].forEach(function (k) { v[k] = mf.elements[k].value; });
-      document.getElementById('meta-dlg').close();
-      run('meta', v);
     });
     refresh();
   }

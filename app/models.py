@@ -113,6 +113,11 @@ class ImagingSession(Base):
     temperature: Mapped[str | None] = mapped_column(String(20))
     humidity: Mapped[str | None] = mapped_column(String(20))
     moon_illum: Mapped[float | None] = mapped_column(Float)     # 0-100 %, computed from date
+    # the one acquisition set of this session (see sessets.py): every light frame in it has these values
+    exposure_s: Mapped[float | None] = mapped_column(Float)
+    gain: Mapped[str | None] = mapped_column(String(50))
+    filter: Mapped[str | None] = mapped_column(String(50))
+    cam_temp: Mapped[float | None] = mapped_column(Float)        # sensor set point °C (temperature = ambient)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -172,7 +177,9 @@ class FrameFile(Base):
     filter: Mapped[str | None] = mapped_column(String(50))
     date_obs: Mapped[datetime | None] = mapped_column(DateTime)
     description: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)                    # free note of the user (like description)
     header: Mapped[str | None] = mapped_column(Text, deferred=True)   # FITS header text – loaded only when used
+    exif: Mapped[str | None] = mapped_column(Text, deferred=True)     # JSON of the EXIF tags (RAW / JPEG …), "{}" = none
     view_opts: Mapped[str | None] = mapped_column(Text)
     solve: Mapped[str | None] = mapped_column(Text)         # JSON result of the last ASTAP plate solve
     optics: Mapped[str | None] = mapped_column(Text)        # JSON summary of the last optics analysis
@@ -252,6 +259,8 @@ MIGRATIONS = [
     "ALTER TABLE frame_files ALTER COLUMN project_id DROP NOT NULL",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS header TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS view_opts TEXT",
+    "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS exif TEXT",
+    "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS note TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS calib_set_id INTEGER "
     "REFERENCES calibration_sets(id) ON DELETE CASCADE",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS session_id INTEGER "
@@ -279,6 +288,10 @@ MIGRATIONS = [
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
     "ALTER TABLE catalog_items ADD COLUMN IF NOT EXISTS specs TEXT",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS software VARCHAR(200)",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS exposure_s DOUBLE PRECISION",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS gain VARCHAR(50)",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS filter VARCHAR(50)",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS cam_temp DOUBLE PRECISION",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS solve TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS optics TEXT",
     "CREATE INDEX IF NOT EXISTS ix_ff_project_type_status ON frame_files (project_id, frame_type, status)",

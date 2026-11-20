@@ -26,11 +26,9 @@
   <div class="cols">
     {% if p %}
     <label>Session (night) *<select id="session" required><option value="">— choose —</option>
-      {% for s in p.sessions %}<option value="{{ s.id }}" {% if sel_session and sel_session.id == s.id %}selected{% endif %}>{{ s.date|dmy or ('#' ~ s.id) }}{% if s.location %} · {{ s.location }}{% endif %}</option>{% endfor %}</select></label>
+      {% for s in p.sessions %}<option value="{{ s.id }}" {% if sel_session and sel_session.id == s.id %}selected{% endif %}>{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}{% if s.location %} · {{ s.location }}{% endif %}</option>{% endfor %}</select></label>
     {% endif %}
     <label>Set type of selected<select id="settype"><option value="">—</option>{% for t in (FRAME_TYPES if p else CALIB_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
-    <label>Filter (if not in header)<input id="filter"></label>
-    <label>Description<input id="desc"></label>
   </div>
   <label class="check"><input type="checkbox" id="skipdups" {% if skip_dups %}checked{% endif %}> Skip files that already exist (same content)</label>
   <div class="tablewrap"><table class="ftable" id="scantable">
@@ -111,7 +109,7 @@
     fetch('/api/import/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},TARGET,{
       path:cur,files:sel.map(function(f){return {rel:f.rel,type:f.type,filter:f.filter||''};}),
       session_id:s?s.value:'',skip_dups:document.getElementById('skipdups').checked,
-      meta:{filter:document.getElementById('filter').value,description:document.getElementById('desc').value}}))})
+      meta:{}}))})
       .then(function(r){return r.json();}).then(function(j){
         if(j.error||j.detail||!j.redirect){alert(j.error||j.detail||'Import failed');b.disabled=false;return;}
         location=j.redirect;
