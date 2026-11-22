@@ -3,9 +3,119 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] – 2026-11-22
+
+### Added
+- 🧩 **Mosaic** panel on the project page: plan a grid (columns × rows, overlap, field size, rotation, centre –
+  defaults from the latest plate solve, centred on the object); every panel shows how much of it the solved
+  light frames cover (exact TAN fields), its integration (nights attributed by where their solved frames fall)
+  and done / partial / missing, with a north-up drawing and J2000 centres to copy for framing.
+- 🔗 **Calibration check** per session: the linked library sets are compared with the light frames – camera,
+  gain, offset, telescope, exposure (scalable with a bias?), sensor temperature (±2 °C), flats per filter, flat
+  age (another night / month), flats without bias / dark flats, dark-flat exposure, old darks, missing darks /
+  flats. Chip in the session header, details in the session block; unknown values never count as mismatches.
+- 🔬 **Optics recommendations** (Stats → Optics & conditions) per setup from the night-by-night optics analyses:
+  tilt towards the same side on most nights (mechanical → tilt plate, side to adjust) vs. a changing side (sag /
+  flexure – directions compared as angles, weighted by the tilt), soft corners against the new session field
+  **corrector spacing (mm)** – best spacing fitted through the tried spacings or the direction to continue in –,
+  lasting changes between nights (single outlier nights ignored) and elongation that points to guiding.
+- ✨ Objects in the field: **stars** (HYG v4.1) – HD number, proper name / Bayer–Flamsteed designation,
+  spectral type with a B–V colour dot (also the overlay colour), variable-star range, distance in light years.
+- ✨ Objects in the field: **Sharpless, Barnard, LBN, LDN, van den Bergh, RCW, Cederblad, Collinder, Melotte,
+  Trumpler, Stock, Arp, HCG and PK** objects (Stellarium DSO catalogue); NGC / IC objects get their cross
+  designations (e.g. IC 405 = Sh2-229 = LBN 795) and distances – project targets like “Sh2-229” are found.
+- ✨ Objects: **filter** (deep-sky / stars / star magnitude limit, remembered) for the list, the image overlay and
+  the annotated JPEG.
+- ✨ Objects: **measured brightness** of the listed stars in the frame (zero-point calibrated, Gaia BP) with Δ to
+  the catalogue and a saturation mark.
+- 🎯 Sky & photometry: **photometric quality** – zero point ± error, scatter, linearity (slope), saturation onset,
+  field uniformity (gradient with its direction in the displayed image, vignetting / brighter corners), residual
+  plot and verdicts. Stars at the catalogue depth limit and saturated stars are left out of the checks; the zero
+  point is refined on the well-measured stars. Needs **Solve again** for frames solved before.
+
+### Changed
+- **Fully offline**: no internet at run time (astropy downloads switched off; nothing external in the pages), and
+  the Docker image builds offline from `vendor/` (ASTAP, OpenNGC, HYG, Stellarium, fonts, Python wheels –
+  `scripts/fetch-vendor.sh` fills it once); `./run-tests.sh` installs its test packages from there too.
+
+### Documentation
+- README rewritten: what the application is for and who it serves, highlights, features by area, architecture,
+  installation, backups, data sources and licences.
+- New set of 10 screenshots (projects, project with measured nights, objects overlay on IC 434, object list,
+  photometric quality, optics inspector, mosaic, sky map, statistics, optics & conditions with recommendations);
+  the 16 old ones removed.
+
+### Fixed (found while taking the screenshots)
+- Objects in the field: an object present in both OpenNGC and the Stellarium catalogue (e.g. the Horsehead as
+  `B033` and `B 33`) was listed twice; it is now one object with the merged designations, name and distance
+  (≈ 300 duplicates, also within the Stellarium catalogue itself).
+- Optics recommendations: nights whose tilt side is unknown (analyses from before the sensor frame) were reported
+  as a “tilt that changes side”; they now ask for a new 🔬 Optics run instead.
+
+### Fixed (second review 2026-11-22)
+- Archive import: a frame counter or exposure after the date in a file name (`_0001`, `_0300s`) was read as the
+  capture hour and moved the file to the previous night; only a full `HH-MM-SS` time counts now.
+- Transparency reference: invalidated after the commit of a relevant change (solve, frame session / type /
+  rejection, deleted frame, session telescope / camera) – it could cache the old values for a minute.
+- Optics: the tilt side is stored in the **sensor frame** (read-out orientation) – it depended on the flip /
+  rotation the frame was viewed with, so the same mechanical tilt could look like a tilt changing sides.
+  Sides of earlier analyses are ignored until 🔬 Optics is run again (the tilt % stays).
+- Optics recommendations: a single bad latest night was reported as a lasting change.
+- Calibration check: binning and offset are now compared (from the lights' FITS header).
+- `/stats` showed the number of aggregation groups as "light frames".
+- Viewer: a star-magnitude limit remembered from another field could hide every star while the slider showed
+  another value.
+- Equal counts of two gains / tilt sides were resolved randomly (could change after a restart).
+- Archive health: Stop did not end the scan for orphan files.
+
+### Fixed (review 2026-11-22)
+- **Star FWHM was too large** (plain box moments: noise and the wings of real stars added weight at large radii –
+  +7–16 % on Gaussian stars, about +50 % on real ones). Now adaptive Gaussian-windowed moments with the window
+  deconvolved (unbiased within 0.2 % in tests, also the elongation); frame statistics, optics and seeing use it.
+  Stored frames are **re-measured once in the background** so that old and new values are not mixed.
+- Frame statistics / optics dropped the brightest unsaturated stars (cut at 97 % / 90 % of the image maximum even
+  without clipping); the cut now applies only when the frame really has clipped pixels.
+- Session sorting by **Set** crashed (500) when a set had no exposure.
+- Project baseline medians (FWHM / stars / background) included **rejected** frames and took the upper median.
+- Merging sessions onto their night compared the set values literally and ignored the rig: now with the set
+  tolerances (“101” = “101.0”, ±1.5 °C) and never across different telescopes / cameras.
+- Saving a session that was deleted in another tab created a new one; now a message.
+- `/stats`: a night with several targets counted as several nights.
+- `?page=abc` on the overview / gallery returned a 422 page.
+- FWHM in arcsec / seeing of unsolved frames of resized exports used the sensor scale (2× off for a 50 % JPEG).
+- A numeric RA in hours with an `OBJCTRA` but no `OBJCTDEC` gave a wrong solver hint; Dec “-0°00′”.
+- 32-bit integer FITS with BZERO lost their low bits (scaled in float32).
+- Server import: the worker re-checks that the source is still inside the import folder and does not follow a
+  symlink (a file swapped for a link could have copied any container file into the archive); any import error
+  marks the file instead of blocking the queue; jobs without accepted files are refused / finished.
+- A failed move (disk full, permissions) left an empty placeholder file; an upload finishing while its project /
+  set / session was deleted returned a 500 and left an orphan file (now 410, file removed).
+
+### Performance (review 2026-11-22)
+- Project page: calibration counts from one query (was one full row load per linked set and session), cover
+  dialog limited to 60 light subs (+ all stacks), calibration library passed as plain values.
+- Overview search: file hits and FITS-header hits come from SQL (count + one snippet per project) instead of
+  loading every file of the page's projects.
+- `/stats` aggregates in SQL (GROUP BY night / filter / target / equipment) instead of one row per light frame.
+- Calibration library list: file counts / sizes from one aggregate query.
+- Bulk actions (move / delete …) and server-import start run in a worker thread, not on the event loop (moving
+  gigabytes no longer freezes the server); free-space check of archive imports likewise.
+- Object lookup by name is an O(1) index (was a scan of ~19 000 entries).
+- Limits: 5000 files per bulk action, 20 000 per import request, 8 MB per JSON request.
+
+### Fixed
+- Moving files to a project **without sessions** left them in no session (the project showed 0 files); a copy of
+  their source session is created in the target project.
+
 ## [1.6.0] – 2026-11-20
 
 ### Changed
+- 🎯🔬 Analyse: “What” offers **Nothing – only session names and nights**; the dialog closes on Start; “analyse again frames that already have a result” replaces “skip frames that already have a result”.
+- Session **Name** defaults to the project name (existing sessions were named once); sessions named after the project follow a project rename.
+- Settings → General: **Sessions table** – choose the columns shown in the Sessions panel.
+- Settings → Background processing: **Keep session names and nights in line with their files** – after a project's files are processed, an empty name becomes the project name and each session moves to the night most of its files were taken in (merged with that night's session of the same set). In 🎯🔬 Analyse of a project the option sets both: every session gets the project name and its majority night.
+- Sessions have an optional **Name**, the first column of the sessions table (sortable), also shown in the session headers, dialogs and session selects.
+- Upload: the capture dates of the dropped files are read (FITS DATE-LOC / DATE-OBS, otherwise the file date); when most of them belong to another night, the upload goes to that night's session – an existing one, or a new one with the equipment of the session the upload was opened on.
 - **One session = one night with one set**: exposure, gain / ISO, filter and camera temperature are stored with
   the session (new “Set” column, chip in the file list, fields in the session dialog). Light frames with another
   set go to a sibling session of the same night (created automatically, equipment / conditions / linked

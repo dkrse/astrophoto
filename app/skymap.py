@@ -84,6 +84,8 @@ def catalogue_points(max_mag: float = 10.0) -> list:
     from .platesolve import catalogue
     out = []
     for o in catalogue():
+        if o.get("catalog") != "OpenNGC":             # the sky map stays NGC / IC / Messier
+            continue
         if o["messier"] or (o["mag"] is not None and o["mag"] <= max_mag):
             out.append({"n": o["messier"] or o["name"], "alt": o["name"] if o["messier"] else None,
                         "c": o["common"], "t": o["type_label"], "ra": round(o["ra"], 4), "dec": round(o["dec"], 4),

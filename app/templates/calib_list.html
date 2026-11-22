@@ -30,7 +30,7 @@
     <td>{{ c.camera or '' }}</td><td>{{ c.telescope or '' }}</td><td>{{ c.temperature or '' }}</td>
     <td>{{ c.gain or '' }}</td><td>{{ c.offset or '' }}</td><td>{{ c.exposure_s|num if c.exposure_s else '' }}</td>
     <td>{{ c.filter or '' }}</td><td>{{ c.binning or '' }}</td>
-    <td>{{ c.files|length }}</td><td class="nowrap">{{ c.files|sum(attribute='size')|size }}</td>
+    {% set a = agg.get(c.id, (0, 0)) %}<td>{{ a[0] }}</td><td class="nowrap">{{ a[1]|size }}</td>
     <td>{{ c.sessions|length or "" }}</td>
   </tr>
   {% endfor %}

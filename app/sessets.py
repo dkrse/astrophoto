@@ -96,6 +96,23 @@ def matches(s: ImagingSession, key: dict) -> bool:
     return abs(s.cam_temp - key["cam_temp"]) <= TEMP_TOL
 
 
+def session_key(s: ImagingSession) -> dict:
+    """The set of a session in the form frame_key() gives for a frame."""
+    return {"exposure_s": norm_exposure(s.exposure_s), "gain": norm_gain(s.gain), "filter": norm_filter(s.filter),
+            "cam_temp": s.cam_temp}
+
+
+def same_set(a: ImagingSession, b: ImagingSession) -> bool:
+    """Same acquisition set with the tolerances of matches() ('101' = '101.0', camera temperature ±1.5 °C)."""
+    return matches(a, session_key(b))
+
+
+def same_rig(a: ImagingSession, b: ImagingSession) -> bool:
+    """Not two different telescopes / cameras (an empty field matches anything)."""
+    return all(not getattr(a, k) or not getattr(b, k) or _eq_text(getattr(a, k), getattr(b, k))
+               for k in ("telescope", "camera"))
+
+
 def has_set(s: ImagingSession) -> bool:
     return any(getattr(s, k) is not None for k in SET_FIELDS)
 
@@ -122,7 +139,7 @@ def accepts(db, s: ImagingSession, f: FrameFile, key: dict | None = None) -> boo
     return matches(s, key) or (not has_set(s) and not other_lights(db, s, f.id))
 
 
-COPY_FIELDS = ("date", "location", "telescope", "camera", "mount", "software", "seeing", "sqm",
+COPY_FIELDS = ("name", "date", "location", "telescope", "camera", "mount", "software", "seeing", "sqm",
                "temperature", "humidity", "moon_illum")
 
 
@@ -234,3 +251,59 @@ def set_label(s) -> str:
     if s.cam_temp is not None:
         parts.append(f"{s.cam_temp:g} °C")
     return " · ".join(parts)
+
+
+# ---------- session names and nights from their files ----------
+def majority_night(files):
+    """Night most of the files were taken in (lights count first; ties: the earlier night). None without dates."""
+    from collections import Counter
+    from .core import night_of
+    dated = [f for f in files if f.date_obs]
+    use = [f for f in dated if f.frame_type == "light"] or dated
+    if not use:
+        return None
+    c = Counter(night_of(f.date_obs) for f in use)
+    return min(c, key=lambda d: (-c[d], d))
+
+
+def fix_sessions(db, p: Project, rename: bool = False) -> dict:
+    """Sessions of project p: an empty name (rename=True: every name) becomes the project name; the night becomes the one most of the
+    session's files were taken in. A session moving onto a night that already has a session with the same set
+    is merged into it (empty fields filled, files and calibration links moved). Returns counts."""
+    from .core import moon_illumination
+    out = {"named": 0, "redated": 0, "merged": 0}
+    lock_project(db, p.id)
+    sessions = list(db.scalars(select(ImagingSession).where(ImagingSession.project_id == p.id)
+                               .order_by(ImagingSession.id)))
+    for s in sessions:
+        if (rename or not (s.name or "").strip()) and s.name != p.name:
+            s.name = p.name
+            out["named"] += 1
+    gone = set()
+    for s in sessions:
+        if s.id in gone:
+            continue
+        night = majority_night(s.files)
+        if not night or night == s.date:
+            continue
+        twin = next((x for x in sessions if x.id != s.id and x.id not in gone and x.date == night
+                     and same_set(x, s) and same_rig(x, s)), None)
+        if twin:
+            for f in list(s.files):
+                f.session_id = twin.id
+            for k in ("location", "telescope", "camera", "mount", "software", "seeing", "sqm",
+                      "temperature", "humidity", "notes"):
+                if getattr(twin, k) in (None, "") and getattr(s, k) not in (None, ""):
+                    setattr(twin, k, getattr(s, k))
+            twin.calib_sets = list({c.id: c for c in [*twin.calib_sets, *s.calib_sets]}.values())
+            db.flush()
+            db.expire(s, ["files"])
+            db.delete(s)
+            gone.add(s.id)
+            out["merged"] += 1
+        else:
+            s.date = night
+            s.moon_illum = moon_illumination(night)
+            out["redated"] += 1
+    db.flush()
+    return out

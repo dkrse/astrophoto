@@ -230,7 +230,7 @@ def test_optics_endpoint_stores_summary_and_session_measured(client, project, tm
 def test_session_measured_medians():
     files = [SimpleNamespace(id=i, solve=json.dumps(fake_solve(focal_mm=f, photometry={"limit_mag": m})),
                              optics=json.dumps({"fwhm_px": p, "elong": 1.1, "metrics": {"tilt_pct": t},
-                                                "tilt_dir": d}))
+                                                "tilt_dir": d, "dir_frame": "sensor"}))
              for i, (f, m, p, t, d) in enumerate([(510, 16.0, 4.0, 30, "left"), (520, 16.5, 5.0, 10, None),
                                                    (530, 17.0, 6.0, 40, "left")])]
     m = measured.session_measured(files, nominal_focal=480, nominal_scale=1.6)

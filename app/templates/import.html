@@ -26,7 +26,7 @@
   <div class="cols">
     {% if p %}
     <label>Session (night) *<select id="session" required><option value="">— choose —</option>
-      {% for s in p.sessions %}<option value="{{ s.id }}" {% if sel_session and sel_session.id == s.id %}selected{% endif %}>{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}{% if s.location %} · {{ s.location }}{% endif %}</option>{% endfor %}</select></label>
+      {% for s in p.sessions %}<option value="{{ s.id }}" {% if sel_session and sel_session.id == s.id %}selected{% endif %}>{% if s.name %}{{ s.name }} · {% endif %}{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}{% if s.location %} · {{ s.location }}{% endif %}</option>{% endfor %}</select></label>
     {% endif %}
     <label>Set type of selected<select id="settype"><option value="">—</option>{% for t in (FRAME_TYPES if p else CALIB_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
   </div>

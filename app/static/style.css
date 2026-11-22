@@ -497,6 +497,8 @@ tr.sessrow{cursor:pointer}tr.sessrow.sel td{background:color-mix(in srgb,var(--a
 .sky-ovl .gl{fill:rgba(150,190,255,.7);font-size:11px}
 .sky-ovl .o{fill:none;stroke:#ffd34d;stroke-width:1.5}
 .sky-ovl .ol{fill:#ffd34d;font-size:13px;font-weight:600;paint-order:stroke;stroke:rgba(0,0,0,.75);stroke-width:3px}
+.sky-ovl .o.st{stroke:#9cd3ff;stroke-width:1.2}
+.sky-ovl .ol.st{fill:#9cd3ff;font-size:11px;font-weight:500}
 .sky-ovl .c{stroke:#7ee787;stroke-width:2}
 .sky-ovl .cl{fill:#7ee787;font-size:13px;font-weight:700;paint-order:stroke;stroke:rgba(0,0,0,.75);stroke-width:3px}
 .target-check{margin-top:14px;padding:10px 14px;border-radius:8px;font-size:14px;background:color-mix(in srgb,var(--accent) 12%,transparent)}
@@ -629,3 +631,66 @@ fieldset.sess-set input[readonly]{opacity:.6}
 .top{view-transition-name:topbar}
 ::view-transition-group(topbar){animation:none}
 @media (prefers-reduced-motion:reduce){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}}
+/* optics inspector: tabs, summary cards, values table */
+.op-tabs{margin:6px 0 14px}
+.op-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.op-stat{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--border);border-radius:10px;padding:10px 14px;display:flex;flex-direction:column;gap:2px}
+.op-stat.good{border-left-color:#2fb344}.op-stat.warn{border-left-color:#f59f00}.op-stat.bad{border-left-color:#e03131}
+.op-stat .op-l{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.op-stat b{font-size:20px;font-variant-numeric:tabular-nums}
+.op-stat .op-s{font-size:12px;color:var(--muted);line-height:1.3}
+.op-kv{width:100%;border-collapse:collapse;font-size:13px}
+.op-kv th,.op-kv td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.op-kv th{color:var(--muted);font-weight:500;white-space:nowrap;width:1%;text-transform:none;letter-spacing:0;font-size:13px}
+.op-kv .op-v{font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums;width:1%}
+.op-kv tr.op-sec th{padding-top:14px;color:var(--fg);font-weight:600;font-size:12px !important;text-transform:uppercase !important;letter-spacing:.05em !important;border-bottom:2px solid var(--border)}
+.op-kv tr.good .op-v{color:#2fb344}.op-kv tr.warn .op-v{color:#f59f00}.op-kv tr.bad .op-v{color:#e03131}
+#op-t-diag .target-check:first-child{margin-top:0}
+/* optics inspector help ("?") */
+#optics-dlg .tabpane{position:relative}
+.op-help{margin:0 0 10px}
+.op-help>summary{list-style:none;cursor:pointer;width:24px;height:24px;border-radius:50%;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:13px;color:var(--muted);margin-left:auto;background:var(--card)}
+.op-help>summary::-webkit-details-marker{display:none}
+.op-help>summary:hover,.op-help[open]>summary{color:var(--accent-fg);background:var(--accent);border-color:var(--accent)}
+.op-help-box{margin-top:6px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:color-mix(in srgb,var(--accent) 6%,var(--card));font-size:13px;line-height:1.5}
+.op-help-box>b{display:block;margin-bottom:6px}
+.op-help-box p{margin:4px 0}
+.op-help-box dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0}
+.op-help-box dt{font-weight:600}.op-help-box dd{margin:0;color:var(--muted)}
+.op-help-box .g{color:#2fb344;font-weight:600}.op-help-box .w{color:#f59f00;font-weight:600}.op-help-box .b{color:#e03131;font-weight:600}
+/* objects in the field: filter, stars, links */
+.obj-filter{gap:14px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.obj-filter input[type=range]{width:120px;vertical-align:middle}
+.objtab td.g{color:#2fb344}.objtab td.w{color:#f59f00}.objtab td.b{color:#e03131}
+.objtab .alias{font-size:11px}
+.bvdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+.varmark{color:#f59f00;font-size:11px}
+/* photometric quality */
+.qc-h{font-size:14px;margin:16px 0 6px}
+.qc-plot{margin:10px 0 0}.qc-plot svg{width:100%;height:auto;display:block;background:color-mix(in srgb,var(--fg) 3%,transparent);border-radius:6px}
+.qc-plot .qc-grid{stroke:color-mix(in srgb,var(--fg) 12%,transparent);stroke-width:1}
+.qc-plot .qc-zero{stroke:color-mix(in srgb,var(--fg) 45%,transparent);stroke-width:1.2}
+.qc-plot .qc-sat{stroke:#f85149;stroke-width:1.5;stroke-dasharray:4 3}
+.qc-plot .qc-ax{fill:var(--muted);font-size:11px}
+.qc-plot .qc-pt{fill:color-mix(in srgb,var(--fg) 30%,transparent)}.qc-plot .qc-pt.used{fill:var(--accent)}
+.qc-k{color:color-mix(in srgb,var(--fg) 30%,transparent)}.qc-k.used{color:var(--accent)}
+/* calibration check */
+.chip.cc-ok{background:color-mix(in srgb,#2fb344 18%,transparent)}
+.chip.cc-info{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.chip.cc-warn{background:color-mix(in srgb,#f59f00 22%,transparent)}
+.chip.cc-bad{background:color-mix(in srgb,var(--danger) 22%,transparent)}
+.calibcheck{margin:4px 0 10px}.calibcheck .target-check{margin-top:6px;font-size:13px;padding:6px 10px}
+/* optics recommendations */
+.adv-setup{margin:0 0 18px}.adv-h{margin:6px 0 2px;font-size:14px}
+.adv-setup .target-check{margin-top:6px;font-size:13px}
+/* mosaic */
+.mz-form .cols{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+.mz-fig{margin:12px 0}.mz-svg{width:100%;max-width:680px;height:auto;display:block;background:#0b0f18;border-radius:8px}
+.mz-svg .mz-panel{stroke-width:1.5;fill-opacity:.22}
+.mz-svg .mz-panel.done{fill:#2fb344;stroke:#2fb344}.mz-svg .mz-panel.partial{fill:#f59f00;stroke:#f59f00}
+.mz-svg .mz-panel.missing{fill:#e03131;stroke:#e03131;fill-opacity:.12;stroke-dasharray:5 4}
+.mz-svg .mz-field{fill:none;stroke:#74c0fc;stroke-width:1;stroke-opacity:.8}
+.mz-svg .mz-n{fill:#fff;font-size:15px;font-weight:700}.mz-svg .mz-i{fill:#dfe6f3;font-size:11px}
+.mz-svg .mz-obj{fill:none;stroke:#ffd34d;stroke-width:1.5}
+.mz-tab tr.mz-missing td{color:#e03131}.mz-tab tr.mz-partial td:nth-child(5){color:#f59f00}

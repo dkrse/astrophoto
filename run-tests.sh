@@ -24,6 +24,7 @@ docker run --rm \
   -v "$PWD/tests:/srv/tests:ro" \
   -v "$PWD/pytest.ini:/srv/pytest.ini:ro" \
   -v "$PWD/requirements-dev.txt:/srv/requirements-dev.txt:ro" \
+  -v "$PWD/vendor/wheels:/srv/wheels:ro" \
   -w /srv \
   "$IMAGE" \
-  sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore -r requirements-dev.txt && python -m pytest "$@"' _ "$@"
+  sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore --no-index --find-links wheels -r requirements-dev.txt && python -m pytest "$@"' _ "$@"

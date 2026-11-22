@@ -4,6 +4,7 @@ State lives in the database (frame_files.status), so work survives restarts:
   importing -> pending -> done / error
 """
 import hashlib
+import os
 import json
 import threading
 import time
@@ -12,10 +13,10 @@ from pathlib import Path
 
 from sqlalchemy import select, func
 
-from .core import DATA_DIR, night_of, thumb_rel, load_settings
+from .core import DATA_DIR, IMPORT_DIR, night_of, thumb_rel, load_settings
 from .sessets import place_light
 from .framestats import frame_stats, flag_suspects
-from .models import SessionLocal, FrameFile, ImportJob, ImagingSession, AnalysisTask
+from .models import SessionLocal, FrameFile, ImportJob, ImagingSession, AnalysisTask, Setting
 from .preview import (read_exif, PREVIEW_EXT, FITS_EXT, RAW_EXT, IMAGE_EXT, make_preview, header_text, header_meta,
                       exif_meta, clean_opts)
 
@@ -232,12 +233,18 @@ def process_file(db, ff: FrameFile, with_stats=True):
 def do_import(db, ff: FrameFile):
     """Copy one file from the import folder, hashing on the fly; skip duplicates if asked."""
     job = db.get(ImportJob, ff.import_job_id) if ff.import_job_id else None
-    src = Path(ff.source_path)
     dest = DATA_DIR / ff.stored_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha256()
-    try:
-        with open(src, "rb") as fi, open(dest, "wb") as fo:
+    try:                                          # any failure marks the row – it must never block the queue
+        src = Path(ff.source_path or "")
+        # re-checked here, not only when the import started: a file / folder in the import share could have
+        # been replaced by a symlink pointing anywhere in the container meanwhile
+        root = IMPORT_DIR.resolve()
+        if root not in src.resolve().parents:
+            raise ValueError("source is no longer inside the import folder")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fi, open(dest, "wb") as fo:
             while chunk := fi.read(CHUNK):
                 h.update(chunk)
                 fo.write(chunk)
@@ -348,6 +355,9 @@ def step() -> bool:
     with SessionLocal() as db:
         ff = db.scalars(select(FrameFile).where(FrameFile.status == "importing")
                         .order_by(FrameFile.id).limit(1)).first()
+        if not ff and db.scalar(select(ImportJob.id).where(ImportJob.status == "running").limit(1)):
+            finish_jobs(db)                       # jobs left "running" (nothing accepted, a failed commit …)
+            db.commit()
         if ff:
             current.update(file=ff.original_name, since=time.time())
             dest = DATA_DIR / ff.stored_path
@@ -364,7 +374,7 @@ def step() -> bool:
         ff = db.scalars(select(FrameFile).where(FrameFile.status == "pending")
                         .order_by(FrameFile.id).limit(1)).first()
         if not ff:
-            return run_analysis(db)
+            return restat_step(db) or run_analysis(db)
         current.update(file=ff.original_name, since=time.time())
         fid = ff.id                               # read now: a deleted row cannot be read inside except
         ff.error = PROCESSING[1] if ff.error == INTERRUPTED else PROCESSING[0]   # committed by process_file
@@ -385,6 +395,21 @@ def step() -> bool:
         except Exception:             # row deleted meanwhile
             db.rollback()
             return True
+        if ff.project_id and load_settings()["sessions_auto_fix"]:
+            try:                                  # Settings: session names / nights follow their files
+                pid = ff.project_id
+                if not db.scalar(select(func.count()).where(FrameFile.project_id == pid,
+                                                            FrameFile.status.in_(["pending", "importing"]))):
+                    from .sessets import fix_sessions
+                    from .models import Project
+                    fix_sessions(db, db.get(Project, pid))
+                    db.commit()
+            except Exception:
+                db.rollback()
+                traceback.print_exc()
+            ff = db.get(FrameFile, fid)
+            if ff is None:
+                return True
         if ff.project_id and ff.frame_type == "light":
             reflag_project(db, ff.project_id)
             db.commit()
@@ -398,6 +423,46 @@ def step() -> bool:
                 db.rollback()
                 traceback.print_exc()
         return True
+
+
+RESTAT_KEY = "restat_fwhm_v2"     # star FWHM measured with windowed moments (box moments read too large)
+
+
+def restat_step(db) -> bool:
+    """Recompute the frame statistics of one light frame stored with the former FWHM method (cursor in Settings:
+    'last id done/highest id of the old method', 'done' at the end; frames added later are measured the new way). Mixed old / new values in one project would make the old frames look
+    blurred ('suspect'). Returns True if a frame was measured."""
+    cur = db.get(Setting, RESTAT_KEY)
+    if cur is None or cur.value == "done" or not load_settings(db)["bg_frame_stats"]:
+        return False
+    last, _, upto = (cur.value or "0").partition("/")      # "last done id/highest id measured the old way"
+    last, upto = int(last or 0), int(upto or 0)
+    f = db.scalars(select(FrameFile).where(FrameFile.id > last, FrameFile.id <= upto, FrameFile.frame_type == "light",
+                                           FrameFile.status == "done", FrameFile.stat_fwhm.is_not(None))
+                   .order_by(FrameFile.id).limit(1)).first()
+    if f is None:                                 # all re-measured: suspect flags of every project with lights
+        for pid in db.scalars(select(FrameFile.project_id).where(FrameFile.frame_type == "light",
+                                                                 FrameFile.project_id.is_not(None)).distinct()):
+            reflag_project(db, pid)
+        cur.value = "done"
+        db.commit()
+        return True
+    fid, src = f.id, DATA_DIR / f.stored_path
+    current.update(file=f"Re-measuring stars: {f.original_name}", since=time.time())
+    db.commit()                                   # no open transaction while measuring
+    st = None
+    try:
+        if src.is_file():
+            st = frame_stats(src)
+    except Exception as e:
+        print(f"stats failed for {src}: {e}")
+    f, cur = db.get(FrameFile, fid), db.get(Setting, RESTAT_KEY)
+    if f is not None and st:
+        f.stat_bg, f.stat_noise, f.stat_stars, f.stat_fwhm = st["bg"], st["noise"], st["stars"], st["fwhm"]
+    if cur is not None:
+        cur.value = f"{fid}/{upto}"
+    db.commit()
+    return True
 
 
 def run_analysis(db) -> bool:

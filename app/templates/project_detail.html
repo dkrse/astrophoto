@@ -59,28 +59,30 @@
     <button type="button" class="btn small primary" onclick="openSession()">+ Add session</button>
   </div>
   {% if sessions %}
+  {% set SC = settings.session_columns.split(',') %}
   <div class="tablewrap"><table class="kvt" data-sort-param="so" data-page-param="sp" data-anchor="sessions">
-    <thead><tr>{{ sth('Night', 'night', scol, sdir) }}{{ sth('Set', 'set', scol, sdir, 'Exposure · gain / ISO · filter · camera temperature – a session holds one set') }}{{ sth('Equipment', 'equipment', scol, sdir) }}{{ sth('Scale / FOV', 'scale', scol, sdir, 'Image scale · field of view (from equipment parameters)') }}{{ sth('Moon', 'moon', scol, sdir, 'Moon illumination') }}{{ sth('Measured', 'measured', scol, sdir, 'From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude – sorted by seeing / FWHM') }}{{ sth('Files', 'files', scol, sdir) }}<th></th></tr></thead>
+    <thead><tr>{% if 'name' in SC %}{{ sth('Name', 'name', scol, sdir) }}{% endif %}{% if 'night' in SC %}{{ sth('Night', 'night', scol, sdir) }}{% endif %}{% if 'set' in SC %}{{ sth('Set', 'set', scol, sdir, 'Exposure · gain / ISO · filter · camera temperature – a session holds one set') }}{% endif %}{% if 'equipment' in SC %}{{ sth('Equipment', 'equipment', scol, sdir) }}{% endif %}{% if 'scale' in SC %}{{ sth('Scale / FOV', 'scale', scol, sdir, 'Image scale · field of view (from equipment parameters)') }}{% endif %}{% if 'moon' in SC %}{{ sth('Moon', 'moon', scol, sdir, 'Moon illumination') }}{% endif %}{% if 'measured' in SC %}{{ sth('Measured', 'measured', scol, sdir, 'From plate-solved (🎯) and analysed (🔬) frames of the night: focal length vs. equipment, star FWHM, limiting magnitude – sorted by seeing / FWHM') }}{% endif %}{% if 'files' in SC %}{{ sth('Files', 'files', scol, sdir) }}{% endif %}<th></th></tr></thead>
     <tbody>
     {% for r in page_rows %}{% set s = r.s %}
     <tr class="sessrow" data-target="s{{ s.id }}_" title="Show files of this session">
-      <td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>
-      <td class="small nowrap">{{ set_label(s) or '—' }}</td>
-      <td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>
-      <td class="small nowrap">{% if r.optic %}{{ '%.2f″/px'|format(r.optic.scale) }}{% if r.optic.fov %} <span class="muted">· {{ '%.0f′×%.0f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</span>{% endif %}{% endif %}</td>
-      <td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>
-      <td class="small nowrap">{% set m = r.measured %}{% if m %}
+      {% if 'name' in SC %}<td class="nowrap">{{ s.name or '' }}</td>{% endif %}
+      {% if 'night' in SC %}<td class="nowrap"><b>{{ s.date|dmy or '—' }}</b></td>{% endif %}
+      {% if 'set' in SC %}<td class="small nowrap">{{ set_label(s) or '—' }}</td>{% endif %}
+      {% if 'equipment' in SC %}<td class="small">{{ [s.telescope, s.camera, s.mount]|select|join(' · ') }}</td>{% endif %}
+      {% if 'scale' in SC %}<td class="small nowrap">{% if r.optic %}{{ '%.2f″/px'|format(r.optic.scale) }}{% if r.optic.fov %} <span class="muted">· {{ '%.0f′×%.0f′'|format(r.optic.fov[0], r.optic.fov[1]) }}</span>{% endif %}{% endif %}</td>{% endif %}
+      {% if 'moon' in SC %}<td class="nowrap">{% if s.moon_illum is not none %}{{ '🌑🌒🌓🌔🌕'[ ((s.moon_illum or 0) / 25)|round|int ] }} {{ s.moon_illum|int }}%{% endif %}</td>{% endif %}
+      {% if 'measured' in SC %}<td class="small nowrap">{% set m = r.measured %}{% if m %}
         {% if m.focal_mm %}<span title="Median focal length of {{ m.solved }} solved frame(s)">{{ m.focal_mm|round|int }} mm{% if m.get('focal_diff_pct') is not none and m.focal_diff_pct|abs >= 3 %} <b class="{{ 'bad-text' if m.focal_diff_pct|abs >= 10 else 'warn-text' }}">{{ '%+.0f'|format(m.focal_diff_pct) }} %</b>{% endif %}</span>{% endif %}
         {% if m.get('seeing') %} · <span title="Seeing ≈ star FWHM in the centre without diffraction ({{ m.seeing_label }}){{ ' – undersampled, upper limit' if m.seeing_undersampled }}">🌬 {{ '%.1f'|format(m.seeing) }}″</span>
         {% elif m.fwhm_arcsec %} · <span title="Median star FWHM ({{ m.analysed }} analysed frame(s))">{{ '%.1f'|format(m.fwhm_arcsec) }}″</span>{% endif %}
         {% if m.get('sqm') %} · <span title="Sky brightness (mag/arcsec², like SQM)">🌃 {{ '%.1f'|format(m.sqm) }}</span>{% endif %}
         {% if m.get('transparency_mag') is not none and m.transparency_mag >= 0.3 %} · <span class="warn-text" title="Transparency: {{ m.get('transparency_pct', '?') }} % of the best night of this setup">☁ −{{ '%.1f'|format(m.transparency_mag) }} mag</span>{% endif %}
         {% if m.limit_mag %} · <span title="Limiting magnitude (Gaia BP, SNR 5)">{{ '%.1f'|format(m.limit_mag) }} mag</span>{% endif %}
-      {% endif %}</td>
-      <td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>
+      {% endif %}</td>{% endif %}
+      {% if 'files' in SC %}<td>{{ r.count }}{% if r.lights %} <span class="muted small">({{ r.lights }} lights)</span>{% endif %}</td>{% endif %}
       <td class="nowrap acts">
         <button type="button" class="btn small ibtn" title="Session details" onclick="document.getElementById('sinfo-{{ s.id }}').showModal()">i</button>
-        <button type="button" class="btn small" title="Edit" onclick='openSession({{ {"sid": s.id, "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "software": s.software or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or "", "exposure_s": '%g'|format(s.exposure_s) if s.exposure_s is not none else "", "gain": s.gain or "", "filter": s.filter or "", "cam_temp": '%g'|format(s.cam_temp) if s.cam_temp is not none else "", "set_locked": r.lights > 0}|tojson }})'>✎</button>
+        <button type="button" class="btn small" title="Edit" onclick='openSession({{ {"sid": s.id, "name": s.name or "", "date": s.date|dmy, "location": s.location or "", "telescope": s.telescope or "", "camera": s.camera or "", "mount": s.mount or "", "software": s.software or "", "seeing": s.seeing or "", "sqm": s.sqm or "", "temperature": s.temperature or "", "humidity": s.humidity or "", "notes": s.notes or "", "exposure_s": '%g'|format(s.exposure_s) if s.exposure_s is not none else "", "gain": s.gain or "", "filter": s.filter or "", "cam_temp": '%g'|format(s.cam_temp) if s.cam_temp is not none else "", "backfocus_mm": '%g'|format(s.backfocus_mm) if s.backfocus_mm is not none else "", "set_locked": r.lights > 0}|tojson }})'>✎</button>
         <form method="post" action="/sessions/{{ s.id }}/delete" class="inl" onsubmit="return confirm({{ ('Delete session ' ~ (s.date|dmy) ~ ' including all its ' ~ r.count ~ ' file(s)? This cannot be undone. Linked calibration library sets are only unlinked.')|tojson|forceescape }})"><button class="btn small danger" title="Delete">🗑</button></form>
       </td>
     </tr>
@@ -90,7 +92,7 @@
   {{ pager(spg, 'sp', 'sessions', 'sessions') }}
   {% for r in page_rows %}{% set s = r.s %}
   <dialog id="sinfo-{{ s.id }}" class="cat-dialog wide">
-    <form method="dialog" class="cat-head"><h2>🌙 Session {{ s.date|dmy or '#' ~ s.id }}</h2><button class="btn small" aria-label="Close">✕</button></form>
+    <form method="dialog" class="cat-head"><h2>🌙 Session {% if s.name %}{{ s.name }} · {% endif %}{{ s.date|dmy or '#' ~ s.id }}</h2><button class="btn small" aria-label="Close">✕</button></form>
     <div class="dlg-body">
       {% set spec = namespace(t='', c='', m='') %}
       {% for it in cat.telescope if it.name == s.telescope %}{% set spec.t = spec_summary('telescope', it.spec) %}{% endfor %}
@@ -133,7 +135,7 @@
         {% if m.get('rotation') is not none %}<dt>Rotation</dt><dd>{{ '%.1f'|format(m.rotation) }}°</dd>{% endif %}
         {% if m.limit_mag %}<dt>Limiting magnitude</dt><dd>{{ '%.1f'|format(m.limit_mag) }} mag <span class="muted">(Gaia BP, SNR 5, {{ m.limit_n }} frame(s))</span></dd>{% endif %}
         {% if m.fwhm_px %}<dt>Star FWHM</dt><dd>{{ '%.2f'|format(m.fwhm_px) }} px{% if m.fwhm_arcsec %} · {{ '%.2f'|format(m.fwhm_arcsec) }}″{% endif %} {% if m.elong is not none %} · elongation {{ '%.2f'|format(m.elong) }}{% endif %}</dd>
-          {% if m.tilt_pct is not none %}<dt>Tilt</dt><dd>{{ m.tilt_pct|round|int }} %{% if m.tilt_dir %} · worse towards the {{ m.tilt_dir }} in {{ m.tilt_frames }} of {{ m.analysed }} frame(s){% endif %}</dd>{% endif %}{% endif %}
+          {% if m.tilt_pct is not none %}<dt>Tilt</dt><dd>{{ m.tilt_pct|round|int }} %{% if m.tilt_dir %} · worse towards the {{ m.tilt_dir }} of the sensor (as read out) in {{ m.tilt_frames }} of {{ m.analysed }} frame(s){% endif %}</dd>{% endif %}{% endif %}
       </dl>{% endif %}
       <h3>Conditions <span class="muted small" style="font-weight:400">– measured from the frames</span></h3>
       {% if m and (m.get('seeing') or m.get('sqm') or m.get('transparency_mag') is not none) %}
@@ -162,7 +164,7 @@
         <tfoot><tr><th>Total</th><th>{{ r.expo.count }}</th><th></th><th class="num">{{ r.expo.total|dur }}</th></tr></tfoot>
       </table>{% endif %}
       {% if s.calib_sets %}<h3>Calibration library</h3>
-      <div class="chips big">{% for c in s.calib_sets %}<a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ c.files|length }})</a>{% endfor %}</div>{% endif %}
+      <div class="chips big">{% for c in s.calib_sets %}<a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ calib_counts.get(c.id, 0) }})</a>{% endfor %}</div>{% endif %}
       {% if s.notes %}<h3>Notes</h3><p class="pre">{{ s.notes }}</p>{% endif %}
       <p class="muted small">Created {{ s.created_at|dmy }} · modified {{ s.updated_at|dmy }}</p>
       <div class="row"><a class="btn" href="#{{ 's%d_'|format(s.id) }}" onclick="this.closest('dialog').close()">Go to files</a></div>
@@ -172,6 +174,103 @@
   {% else %}<p class="muted">No sessions yet. Add one per night (date, location, equipment), or let them be created from the frames’ observation dates.</p>{% endif %}
   </div>
 </details>
+
+<details class="card fold" id="mosaic">
+  <summary><h2>Mosaic <small class="muted">panels &amp; coverage</small></h2>
+    <span class="muted small" id="mz-sum">{% if p.mosaic %}planned{% else %}single field – plan a mosaic{% endif %}</span></summary>
+  <div class="fold-body">
+    <p class="muted small">Grid of camera fields around the object. Coverage comes from the plate solves of the light frames (🎯 Solve – a few per night are enough): each panel shows how much of it is covered and the integration of the nights shot there. Coordinates are J2000 – use them for framing (NINA, ASIAIR, Ekos).</p>
+    <form id="mz-form" class="mz-form" onsubmit="return mzSave(event)">
+      <div class="cols">
+        <label>Columns<input name="cols" type="number" min="1" max="10" step="1" required></label>
+        <label>Rows<input name="rows" type="number" min="1" max="10" step="1" required></label>
+        <label>Overlap (%)<input name="overlap" type="number" min="0" max="60" step="1" required></label>
+        <label>Field width (′)<input name="fov_w" type="number" min="1" max="1200" step="0.1" required></label>
+        <label>Field height (′)<input name="fov_h" type="number" min="1" max="1200" step="0.1" required></label>
+        <label>Rotation (°, N→E)<input name="rot" type="number" min="-360" max="360" step="0.1" required></label>
+        <label>Centre RA (h m s)<input name="ra" placeholder="20 56 24" required></label>
+        <label>Centre Dec (° ′ ″)<input name="dec" placeholder="+31 43 00" required></label>
+      </div>
+      <div class="row"><button class="btn primary">Save plan</button>
+        <button type="button" class="btn" id="mz-dflt" title="Field size and rotation of the latest plate solve, centred on the object">↺ From latest solve</button>
+        <button type="button" class="btn" id="mz-clear">Remove plan</button>
+        <button type="button" class="btn" id="mz-copy" title="Copy the panel centres as text">⧉ Copy coordinates</button>
+        <span class="muted small" id="mz-msg"></span></div>
+    </form>
+    <div id="mz-body"><p class="muted small">Loading…</p></div>
+  </div>
+</details>
+<script>
+(function(){
+  var PID={{ p.id }},det=document.getElementById('mosaic'),F=document.getElementById('mz-form'),D=null,loaded=false;
+  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;}
+  function pad(n,w){return String(n).padStart(w,'0');}
+  function fmtRA(d){var s=Math.round(((d%360+360)%360)/15*3600);s%=86400;return pad(Math.floor(s/3600),2)+'h '+pad(Math.floor(s%3600/60),2)+'m '+pad(s%60,2)+'s';}
+  function fmtDec(d){var t=Math.round(Math.abs(d)*3600),g=(d<0&&t)?'−':'+';return g+pad(Math.floor(t/3600),2)+'° '+pad(Math.floor(t%3600/60),2)+'′ '+pad(t%60,2)+'″';}
+  function sexa(v,hours){v=String(v||'').trim().replace(/[hdms°′″'":]/g,' ').replace(/−/g,'-');if(!v)return NaN;
+    var neg=/^-/.test(v),p=v.replace(/^[+-]/,'').trim().split(/\s+/).map(Number);if(p.some(isNaN))return NaN;
+    var x=(p[0]||0)+(p[1]||0)/60+(p[2]||0)/3600;return (neg?-x:x)*(hours?15:1);}
+  function fill(plan){if(!plan)return;['cols','rows','overlap','fov_w','fov_h','rot'].forEach(function(k){F.elements[k].value=plan[k];});
+    F.elements.ra.value=fmtRA(plan.ra).replace(/[hms]/g,'');F.elements.dec.value=fmtDec(plan.dec).replace(/[°′″]/g,'').replace('−','-');}
+  function dur(s){s=Math.round(s||0);var h=Math.floor(s/3600),m=Math.round(s%3600/60);return s?(h?h+' h '+m+' min':m+' min'):'—';}
+  function render(d){
+    D=d;var body=document.getElementById('mz-body'),sum=document.getElementById('mz-sum');body.innerHTML='';
+    if(!d.plan){body.append(el('p','muted',d.error||'No plan.'));sum.textContent='single field';return;}
+    fill(d.plan);var S=d.summary;
+    sum.textContent=(d.stored?'':'not saved · ')+S.panels+' panel'+(S.panels>1?'s':'')+' · '+S.done+' done'+(S.partial?' · '+S.partial+' partial':'')+(S.missing?' · '+S.missing+' missing':'');
+    // drawing: tangent plane, north up / east left
+    var xs=[],ys=[];d.panels.forEach(function(p){p.plane.forEach(function(q){xs.push(-q[0]);ys.push(-q[1]);});});
+    d.fields.forEach(function(f){f.plane.forEach(function(q){xs.push(-q[0]);ys.push(-q[1]);});});
+    var x0=Math.min.apply(null,xs),x1=Math.max.apply(null,xs),y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys);
+    var W=640,pad_=24,k=Math.min((W-2*pad_)/((x1-x0)||1),(420-2*pad_)/((y1-y0)||1)),H=Math.round((y1-y0)*k+2*pad_);
+    var X=function(q){return (pad_+(-q[0]-x0)*k).toFixed(1);},Y=function(q){return (pad_+(-q[1]-y0)*k).toFixed(1);};
+    var NS='http://www.w3.org/2000/svg',svg=document.createElementNS(NS,'svg');svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.setAttribute('class','mz-svg');
+    function s(n,a,t){var e=document.createElementNS(NS,n);for(var key in a)e.setAttribute(key,a[key]);if(t!=null)e.textContent=t;svg.append(e);return e;}
+    d.fields.forEach(function(f){s('polygon',{points:f.plane.map(function(q){return X(q)+','+Y(q);}).join(' '),'class':'mz-field'});});
+    d.panels.forEach(function(p){var poly=s('polygon',{points:p.plane.map(function(q){return X(q)+','+Y(q);}).join(' '),'class':'mz-panel '+p.status});
+      var t=document.createElementNS(NS,'title');t.textContent='Panel '+p.n+': '+Math.round(p.covered*100)+' % covered, '+dur(p.integration);poly.append(t);
+      var c=[-p.xi,-p.eta];var cx=pad_+(c[0]-x0)*k,cy=pad_+(c[1]-y0)*k;
+      s('text',{x:cx.toFixed(1),y:(cy-2).toFixed(1),'class':'mz-n','text-anchor':'middle'},String(p.n));
+      s('text',{x:cx.toFixed(1),y:(cy+13).toFixed(1),'class':'mz-i','text-anchor':'middle'},p.integration?dur(p.integration):Math.round(p.covered*100)+' %');});
+    if(d.target&&d.target.plane){var q=d.target.plane;var tx=+X(q),ty=+Y(q);
+      if(d.target.maj)s('circle',{cx:tx,cy:ty,r:Math.max(d.target.maj/60/2*k,4),'class':'mz-obj'});
+      s('path',{d:'M'+(tx-6)+' '+ty+'h12M'+tx+' '+(ty-6)+'v12','class':'mz-obj'});}
+    s('text',{x:W-6,y:14,'class':'mz-i','text-anchor':'end'},'N ↑  E ←');
+    var fig=el('figure','mz-fig');fig.append(svg);
+    fig.append(el('figcaption','muted small','Panels: green done (≥ 90 % covered) · amber partial · red missing · blue = solved frames · + = object'));
+    body.append(fig);
+    // table
+    var t=el('table','kvt small mz-tab'),h=t.createTHead().insertRow();
+    ['#','Row · col','RA (J2000)','Dec (J2000)','Covered','Integration','Nights'].forEach(function(x,i){var th=el('th',i>3&&i<6?'num':null,x);h.append(th);});
+    var tb=t.createTBody();d.panels.forEach(function(p){var tr=tb.insertRow();tr.className='mz-'+p.status;
+      [String(p.n),p.row+' · '+p.col,fmtRA(p.ra),fmtDec(p.dec),Math.round(p.covered*100)+' %',dur(p.integration)].forEach(function(v,i){var td=tr.insertCell();td.textContent=v;if(i>3)td.className='num';});
+      var td=tr.insertCell();p.sessions.forEach(function(x,i){if(i)td.append(', ');var a=el('a',null,(x.date?x.date.split('-').reverse().join('-'):'#'+x.id));a.href='#s'+x.id+'_';a.title=dur(x.integration);td.append(a);});});
+    var w=el('div','tablewrap');w.append(t);body.append(w);
+    var notes=[];if(!S.solved_frames)notes.push('No plate-solved light frames yet – coverage is empty until frames are solved.');
+    if(S.sessions_unplaced)notes.push(S.sessions_unplaced+' night(s) with lights have no solved frame inside a panel – solve a few of their frames to place them.');
+    if(S.panels>1&&S.done===S.panels)notes.push('All panels covered – weakest panel '+dur(S.min_integration)+'.');
+    notes.forEach(function(n){body.append(el('p','muted small',n));});
+  }
+  function load(){loaded=true;fetch('/api/projects/'+PID+'/mosaic').then(function(r){return r.json();}).then(render)
+    .catch(function(){document.getElementById('mz-body').textContent='✗ Could not load the mosaic.';});}
+  det.addEventListener('toggle',function(){if(det.open&&!loaded)load();});
+  if(det.open)load();
+  function post(body){var m=document.getElementById('mz-msg');m.textContent='…';
+    return fetch('/api/projects/'+PID+'/mosaic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||'failed');return j;});})
+      .then(function(j){m.textContent='✓ saved';render(j);}).catch(function(e){m.textContent='✗ '+e.message;});}
+  window.mzSave=function(ev){ev.preventDefault();var plan={};['cols','rows','overlap','fov_w','fov_h','rot'].forEach(function(k){plan[k]=Number(F.elements[k].value);});
+    plan.ra=sexa(F.elements.ra.value,true);plan.dec=sexa(F.elements.dec.value,false);
+    if(isNaN(plan.ra)||isNaN(plan.dec)){document.getElementById('mz-msg').textContent='✗ RA as h m s, Dec as ° ′ ″';return false;}
+    post({plan:plan});return false;};
+  document.getElementById('mz-clear').onclick=function(){if(confirm('Remove the mosaic plan of this project?'))post({clear:true});};
+  document.getElementById('mz-dflt').onclick=function(){if(D&&D.defaults)fill(D.defaults);else document.getElementById('mz-msg').textContent='✗ No plate-solved frame yet';};
+  document.getElementById('mz-copy').onclick=function(){if(!D||!D.panels)return;
+    var txt=D.panels.map(function(p){return 'Panel '+p.n+'  RA '+fmtRA(p.ra)+'  Dec '+fmtDec(p.dec).replace('−','-')+'  rot '+D.plan.rot+'°';}).join('\n');
+    (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(function(){document.getElementById('mz-msg').textContent='✓ copied';},
+      function(){window.prompt('Panel centres',txt);});};
+})();
+</script>
 
 
 {% if sessions %}{{ uploader('project_id', p.id, sessions, settings.skip_duplicates, '/import?project=%d'|format(p.id), fixed_session=True) }}{% endif %}
@@ -188,15 +287,16 @@
   <details class="sessblock{% if r %} sesspick{% endif %}" id="{{ g.key }}"{% if r %} hidden{% endif %}>
     <summary class="sesshead">
       {% if r %}{% set s = r.s %}
-      <div><b>🌙 {{ s.date|dmy or 'Session #' ~ s.id }}</b>{% if set_label(s) %} <span class="chip" title="Exposure · gain / ISO · filter · camera temperature of this session">{{ set_label(s) }}</span>{% endif %}
+      <div><b>🌙 {% if s.name %}{{ s.name }} · {% endif %}{{ s.date|dmy or 'Session #' ~ s.id }}</b>{% if set_label(s) %} <span class="chip" title="Exposure · gain / ISO · filter · camera temperature of this session">{{ set_label(s) }}</span>{% endif %}
         <span class="muted small">{{ [s.location, s.telescope, s.camera, s.mount]|select|join(' · ') }}</span>
         <div class="muted small">{{ r.count }} files{% if r.lights %} · {{ r.lights }} lights{% endif %}{% if r.exposure %} · {{ r.exposure|dur }}{% endif %}
-          {% for c in s.calib_sets %} <a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}" title="Linked calibration library set">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ c.files|length }})</a>{% endfor %}</div></div>
+          {% for c in s.calib_sets %} <a class="chip t-{{ c.frame_type }}" href="/calibration/{{ c.id }}" title="Linked calibration library set">🔗 {{ FRAME_LABELS[c.frame_type] }} · {{ c.name }} ({{ calib_counts.get(c.id, 0) }})</a>{% endfor %}
+          {% if r.calib_sum.level %}<span class="chip cc-{{ r.calib_sum.level }}" title="Calibration check – open the session for details">{{ {'ok': '✓ calibration fits', 'info': 'ℹ calibration: notes', 'warn': '⚠ calibration: ' ~ r.calib_sum.problems ~ ' to check', 'bad': '✗ calibration: ' ~ r.calib_sum.problems ~ ' problem(s)'}[r.calib_sum.level] }}</span>{% endif %}</div></div>
       <div class="row">
-        <button type="button" class="btn small primary" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}" onclick="uploadTo(this.dataset.sid, this.dataset.label)" title="Upload lights / calibration frames of this night">⬆ Add files</button>
+        <button type="button" class="btn small primary" data-sid="{{ s.id }}" data-label="{% if s.name %}{{ s.name }} · {% endif %}{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}" onclick="uploadTo(this.dataset.sid, this.dataset.label)" title="Upload lights / calibration frames of this night">⬆ Add files</button>
         <a class="btn small" href="/import?project={{ p.id }}&session={{ s.id }}" title="Import a folder already on the server into this session">📁 Import</a>
         <button type="button" class="btn small" onclick="openCalib({{ s.id }})" title="Link darks / flats / bias from the calibration library">🔗 Calibration library…</button>
-        {% if r.count or s.calib_sets %}{% set zc = {} %}{% for t in FRAME_TYPES %}{% set _ = zc.update({t: g.groups[t]|length + (s.calib_sets|selectattr('frame_type', 'equalto', t)|map(attribute='files')|map('length')|sum)}) %}{% endfor %}
+        {% if r.count or s.calib_sets %}{% set zc = {} %}{% for t in FRAME_TYPES %}{% set _ = zc.update({t: g.groups[t]|length + calib_type_counts.get(s.id, {}).get(t, 0)}) %}{% endfor %}
         <button type="button" class="btn small" data-sid="{{ s.id }}" data-label="{{ s.date|dmy or ('#' ~ s.id) }}{% if set_label(s) %} · {{ set_label(s) }}{% endif %}" data-counts="{{ zc|tojson|forceescape }}" onclick="openZip(this)" title="Download the files of this session as a ZIP – choose the frame types">⬇ ZIP session…</button>{% endif %}
       </div>
       {% else %}
@@ -205,6 +305,12 @@
       {% endif %}
     </summary>
     {% if r %}{% set s = r.s %}
+      {% if r.calib and r.calib_sum.level != 'ok' %}
+      <details class="calibcheck"><summary class="small"><b>Calibration check</b> – {{ r.calib|length }} note(s)</summary>
+        {% for x in r.calib %}<div class="target-check {{ {'ok': 'good', 'warn': 'warn', 'bad': 'bad'}.get(x.level, '') }}"><b>{{ FRAME_LABELS.get(x.kind, '') ~ ': ' if x.kind in FRAME_LABELS else '' }}{{ x.title }}</b> – {{ x.text }}</div>{% endfor %}
+        <p class="muted small">Compared: camera, telescope, gain, offset, exposure, sensor temperature, filters and dates of the linked library sets with the light frames of this session.</p>
+      </details>
+      {% endif %}
       {% if r.expo.rows %}
       <table class="kvt sessexpo">
         <thead><tr><th>Filter</th><th>Frames</th><th>Exposures</th><th class="num">Integration</th></tr></thead>
@@ -245,6 +351,7 @@
   <form method="post" action="/projects/{{ p.id }}/sessions" class="dlg-body" id="session-form">
     <input type="hidden" name="sid">
     <div class="cols">
+      <label>Name <span class="muted small">(optional)</span><input name="name" maxlength="200" placeholder="e.g. Ha test night"></label>
       <label>Night (date)<input class="datepicker" name="date" placeholder="dd-mm-yyyy"></label>
       {% for kind, label in [('location','Location'),('telescope','Telescope'),('camera','Camera'),('mount','Mount'),('software','Software')] %}
       <label><span class="lbl">{{ label }}<button type="button" class="mng" data-manage="{{ kind }}">⚙</button></span>
@@ -266,6 +373,9 @@
       <p class="muted small" id="set-hint">Taken from the first light frame when left empty. Light frames with another
         exposure / gain / filter / camera temperature go to their own session of the same night automatically.</p>
     </fieldset>
+    <div class="cols">
+      <label>Corrector spacing (mm) <span class="muted small">(optional)</span><input name="backfocus_mm" inputmode="decimal" placeholder="e.g. 55.0" title="Backfocus / spacing of the flattener or reducer used this night – with it, Stats → Optics recommends the spacing with the sharpest corners from your own nights"></label>
+    </div>
     <label>Notes<textarea name="notes" rows="2" class="resizable"></textarea></label>
     <p class="muted small">Moon illumination is computed from the date. Frames taken that night are assigned automatically.</p>
     <div class="row"><button class="btn primary">Save</button></div>
@@ -287,7 +397,7 @@
 </dialog>
 <script>var CALIB_LIB = {{ calib_lib|tojson }};
 var SESS_CALIB = {{ {}|tojson }};
-{% for r in sessions %}SESS_CALIB[{{ r.s.id }}] = {{ {"date": r.s.date.isoformat() if r.s.date else None, "label": r.s.date|dmy, "camera": r.s.camera or "", "linked": r.s.calib_sets|map(attribute='id')|list}|tojson }};
+{% for r in sessions %}SESS_CALIB[{{ r.s.id }}] = {{ {"date": r.s.date.isoformat() if r.s.date else None, "label": ((r.s.name ~ ' · ') if r.s.name else '') ~ (r.s.date|dmy), "camera": r.s.camera or "", "linked": r.s.calib_sets|map(attribute='id')|list}|tojson }};
 {% endfor %}</script>
 
 <!-- cover dialog -->
@@ -341,6 +451,21 @@ function openCalib(sid){
 }
 document.getElementById('calib-q').addEventListener('input',function(){var v=this.value.toLowerCase();
   document.querySelectorAll('#calib-rows tr').forEach(function(tr){tr.hidden=v&&tr.dataset.q.indexOf(v)<0;});});
+window.UPLOAD_TZ={{ (settings.timezone or '')|tojson }};
+// files dropped into a session: most of them taken in another night -> upload into that night's session
+window.UPLOAD_NIGHT=function(night,n,total){
+  var up=document.getElementById('upload'),inp=up.querySelector('.up-session'),cur=SESS_CALIB[inp.value];
+  if(!inp.value||inp.disabled||(cur&&cur.date===night))return;
+  var dmy=night.split('-').reverse().join('-');
+  fetch('/api/projects/{{ p.id }}/sessions/for-night',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({date:night,from:inp.value})}).then(function(r){return r.json();}).then(function(j){
+      if(!j.id)return;
+      if(!SESS_CALIB[j.id])SESS_CALIB[j.id]={date:night,label:j.label,camera:'',linked:[]};
+      inp.value=j.id;up.querySelector('.up-sesslabel').textContent=j.label;
+      var note=up.querySelector('.up-nightnote');
+      if(note){note.hidden=false;note.textContent=n+' of '+total+' file(s) were taken in the night '+dmy+' – they go to session '+j.label+(j.created?' (new session, created now)':'')+'.';}
+    }).catch(function(){});
+};
 function uploadTo(sid, label){
   var up=document.getElementById('upload'), slot=document.getElementById('upslot-'+sid);
   var inp=up.querySelector('.up-session');
@@ -368,9 +493,9 @@ function zipGo(f){var t=[].map.call(f.querySelectorAll('[name=t]:checked'),funct
 function openSession(d){
   var dlg=document.getElementById('session-dlg'), f=document.getElementById('session-form');
   // new session: equipment pre-filled from the latest session
-  d=d||{sid:'',date:{{ (today|dmy)|tojson }},location:{{ ((last_s.location if last_s else '') or '')|tojson }},
+  d=d||{sid:'',name:{{ p.name|tojson }},date:{{ (today|dmy)|tojson }},location:{{ ((last_s.location if last_s else '') or '')|tojson }},
         telescope:{{ ((last_s.telescope if last_s else '') or '')|tojson }},camera:{{ ((last_s.camera if last_s else '') or '')|tojson }},
-        mount:{{ ((last_s.mount if last_s else '') or '')|tojson }},software:{{ ((last_s.software if last_s else '') or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:'',exposure_s:'',gain:'',filter:'',cam_temp:'',set_locked:false};
+        mount:{{ ((last_s.mount if last_s else '') or '')|tojson }},software:{{ ((last_s.software if last_s else '') or '')|tojson }},seeing:'',sqm:'',temperature:'',humidity:'',notes:'',exposure_s:'',gain:'',filter:'',cam_temp:'',backfocus_mm:{{ ('%g'|format(last_s.backfocus_mm) if last_s and last_s.backfocus_mm is not none else '')|tojson }},set_locked:false};
   document.getElementById('session-title').textContent=d.sid?'Edit session':'New session';
   Object.keys(d).forEach(function(k){var el=f.elements[k];if(!el)return;
     if(el.tagName==='SELECT'&&d[k]&&![...el.options].some(function(o){return o.value===d[k];})){var o=new Option(d[k],d[k]);o.dataset.item='1';el.add(o);}

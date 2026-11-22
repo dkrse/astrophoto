@@ -140,17 +140,57 @@
       <a class="btn" id="fi-annot" href="/files/{{ f.id }}/annotated.jpg" hidden title="Download the image as shown with objects, RA/Dec grid and north / east drawn in">⬇ Annotated JPEG</a>
       <button type="button" class="btn" id="fi-usefocal" hidden onclick="useFocal()"></button>
       <span class="muted small" id="fi-solve-msg"></span></div>
-    <dl class="meta-dl" id="fi-solve-dl" style="margin-top:12px"></dl>
-    <div id="fi-target" class="target-check" hidden></div>
-    <div id="fi-objs" hidden>
-      <h3>Objects in the field <span class="muted small" id="fi-objs-n"></span>
-        <label class="inline small" style="font-weight:400;margin-left:12px"><input type="checkbox" id="fi-ovl-toggle"> show on image</label></h3>
-      <div class="tablewrap"><table class="kvt small"><thead><tr><th>Object</th><th>Name</th><th>Type</th><th class="num">Mag</th><th class="num">Size</th></tr></thead>
-        <tbody id="fi-objs-rows"></tbody></table></div>
-      <p class="muted small">Catalogue: OpenNGC (NGC, IC, Messier + addendum). Objects only partly in the frame are marked with ◐.
-        Click an object to show only it on the image (the dialog closes and the object is centred); click on the image
-        or the object again to show all.</p>
-    </div>
+    <nav class="tabs op-tabs" id="sv-tabs" hidden>
+      <a href="#sv-t-res" class="active">Result</a><a href="#sv-t-sky">Sky &amp; photometry</a>
+      <a href="#sv-t-obj">Objects <small id="fi-objs-n"></small></a></nav>
+    <div class="tabpane" id="sv-t-res" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Result – what the values mean</b><dl>
+<dt>Focal length</dt><dd>Real focal length = 206.265 × pixel (µm) / scale. Differs from the nominal one by reducers / flatteners and backfocus:
+ <span class="g">within ±2 %</span> normal · <span class="w">2–5 %</span> check the spacing or the value in the equipment · <span class="b">&gt; 5 %</span> wrong reducer / pixel size / binning. “Use … mm” stores the measured value in the telescope.</dd>
+<dt>Image scale</dt><dd>Arcseconds per pixel, measured from the star positions (exact, unlike the nominal one). Sensor scale is shown separately when the image was resized / drizzled.</dd>
+<dt>Field of view</dt><dd>Sky area of this image (width × height).</dd>
+<dt>Centre</dt><dd>RA / Dec (J2000) of the image centre – use it to re-frame the same target next night (NINA / ASIAIR “Framing”, plate-solve sync).</dd>
+<dt>Rotation</dt><dd>Camera angle, measured from north towards east. Keep it the same between nights to stack / mosaic without wasted edges; 180° difference is common after a meridian flip and does not matter.</dd>
+<dt>Pointing</dt><dd>Where the project object lies: <span class="g">✓ within 15 %</span> of the way to the corner = centred, <span class="w">⚠</span> off-centre, <span class="b">✗</span> not in the frame.</dd>
+<dt>Image size</dt><dd>Note when the image is cropped / resized compared with the sensor (the focal length is corrected then).</dd></dl></div></details>
+      <div id="fi-target" class="target-check" hidden style="margin:0 0 12px"></div>
+      <dl class="meta-dl" id="fi-solve-dl"></dl></div>
+    <div class="tabpane" id="sv-t-sky" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Sky &amp; photometry – what the values mean</b><p>Measured only on linear raw light frames (not JPEG / stacks). Star brightnesses are matched with the Gaia catalogue (BP band).</p><dl>
+<dt>Limiting magnitude</dt><dd>Faintest stars detected with the given SNR in this single exposure. Higher = deeper. Depends on exposure, aperture, sky and transparency – compare frames with the same settings.</dd>
+<dt>Sky brightness</dt><dd>Like an SQM meter, mag/arcsec² – higher = darker sky:
+ <span class="g">≥ 21.5 dark site</span> (Bortle 1–3) · <span class="g">20.5–21.5 rural</span> (Bortle 4) · <span class="w">19.5–20.5 suburban</span> (Bortle 5–6) · <span class="b">&lt; 19.5 city</span> (Bortle 7–9). The Moon, twilight and narrowband filters change it a lot. Needs a bias / dark (camera offset), otherwise estimated.</dd>
+<dt>Zero point</dt><dd>Magnitude of a star giving 1 ADU per second. Same equipment + filter + gain → it should be constant; <span class="w">lower by 0.2–0.5 mag</span> = haze / thin cloud, dew on the optics or low altitude. Used for the transparency between nights.</dd>
+<dt>Photometric quality</dt><dd>From the stars matched with Gaia (SNR ≥ 20, not saturated):
+ <b>scatter</b> – robust spread of measured − catalogue (<span class="g">≤ 0.05 precise</span>, ≤ 0.12 normal, <span class="w">more</span> = clouds, gradient, trailing, narrowband filter) ·
+ <b>zero point ±</b> – its uncertainty ·
+ <b>linearity</b> – slope of measured vs catalogue magnitude, <span class="g">1.00 ± 0.05</span> linear (else stretched data, wrong offset / bias) ·
+ <b>saturation</b> – stars brighter than this are clipped ·
+ <b>field</b> – zero point change edge to edge (<span class="w">&gt; 0.15 mag</span>: dew, gradient, obstruction) and corners vs centre (vignetting, normal without flats).</dd></dl></div></details>
+      <dl class="meta-dl" id="fi-sky-dl"></dl>
+      <div id="fi-qc" hidden><h3 class="qc-h">Photometric quality</h3><dl class="meta-dl" id="fi-qc-dl"></dl><div id="fi-qc-v"></div>
+        <figure class="qc-plot"><svg id="fi-qc-svg" viewBox="0 0 600 230" role="img" aria-label="Measured minus catalogue magnitude of the matched stars"></svg>
+          <figcaption class="muted small">Measured − catalogue magnitude (Gaia BP) of the matched stars · <span class="qc-k used">●</span> used (SNR ≥ <span id="fi-qc-snr"></span>, not saturated, not at the catalogue depth limit) · <span class="qc-k">●</span> others · red line = saturation onset</figcaption></figure></div>
+      <p class="muted small" id="fi-qc-old" hidden>Solve again for the photometric quality check (solved with an older version).</p></div>
+    <div class="tabpane" id="sv-t-obj" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Objects in the field</b><p>Deep-sky objects from OpenNGC (NGC, IC, Messier) and Stellarium (Sharpless, Barnard, LBN, LDN, van den Bergh, RCW, Cederblad, Collinder, Trumpler, Arp, HCG, PK …) that lie in the solved frame, then the brightest stars from HYG (HD number; proper name / Bayer–Flamsteed designation).</p><dl>
+<dt>Type</dt><dd>Object class; for stars the spectral type (O B A F G K M, hot → cool) – the coloured dot is the star colour from the B–V index. <b>var</b> = variable star with its catalogued range.</dd>
+<dt>Mag</dt><dd>Total brightness (lower = brighter): V for stars and most objects. Galaxies fainter than ~13 mag need long integration.</dd>
+<dt>Size / dist.</dt><dd>Apparent size (major × minor axis) – compare with the field of view – and the distance in light years where it is known (stars: Hipparcos / Gaia parallax).</dd>
+<dt>Measured</dt><dd>Brightness of the star in this frame (zero-point calibrated, Gaia BP band) and the difference Δ to the Gaia BP catalogue value. <span class="g">|Δ| ≤ 0.1</span> normal · <span class="w">larger</span> blend, variable star or a colour difference · <b>sat.</b> saturated (too bright for this exposure – it measures too faint). V (Mag column) and BP differ by the star colour.</dd>
+<dt>◐</dt><dd>Only partly in the frame.</dd></dl>
+<p>Click a row to show only that object on the image (centred); click again or on the image to show all. The filter also applies to the image overlay and the annotated JPEG.</p></div></details>
+      <p class="muted small" id="fi-objs-none" hidden>Solve again to list the objects (solved with an older version).</p>
+      <div id="fi-objs" hidden>
+        <div class="row obj-filter small">
+          <label class="inline"><input type="checkbox" id="fi-ovl-toggle"> show on image</label>
+          <label class="inline"><input type="checkbox" id="flt-dso" checked> deep-sky</label>
+          <label class="inline"><input type="checkbox" id="flt-stars" checked> stars</label>
+          <label class="inline" id="flt-smag-l">to mag <input type="range" id="flt-smag" min="0" max="15" step="0.5" value="15" aria-label="Faintest star shown"> <output id="flt-smag-v"></output></label>
+        </div>
+        <div class="tablewrap"><table class="kvt small objtab"><thead><tr><th>Object</th><th>Name</th><th>Type</th><th class="num">Mag</th><th class="num">Size / dist.</th><th class="num" title="Measured in this frame, Gaia BP">Measured</th></tr></thead>
+          <tbody id="fi-objs-rows"></tbody></table></div>
+      </div></div>
   </div>
 </dialog>
 
@@ -161,9 +201,50 @@
       Best on a single sharp light frame with many stars. Only a summary is stored (for session values and trends).</p>
     <div class="row"><span class="muted small" id="op-msg"></span>
       <label class="inline small" id="op-ovl-l" hidden><input type="checkbox" id="op-ovl"> show star shapes on image</label></div>
-    <div id="op-diag"></div>
+    <nav class="tabs op-tabs" id="op-tabs" hidden>
+      <a href="#op-t-sum" class="active">Summary</a><a href="#op-t-field">Field map</a>
+      <a href="#op-t-diag">Diagnosis <small id="op-diag-n"></small></a><a href="#op-t-opt">Optics &amp; sampling</a></nav>
+    <div class="tabpane" id="op-t-sum" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Summary – what the numbers mean</b><dl>
+<dt>Stars measured</dt><dd>Usable stars found (galaxies, blends, hot pixels dropped). Below ~50 the values are less reliable; min. 15.</dd>
+<dt>FWHM</dt><dd>Star diameter at half its peak brightness – the main sharpness value. In ″ (needs a plate solve):
+ <span class="g">&lt; 2″ excellent</span> · <span class="g">2–3″ good</span> · <span class="w">3–4″ average</span> · <span class="b">&gt; 4″ poor</span> (typical amateur site 2–4″).</dd>
+<dt>HFR</dt><dd>Half-flux radius ≈ FWHM / 2. The number NINA, ASIAIR, SharpCap show while focusing – lower = better focus.</dd>
+<dt>Elongation</dt><dd>Long / short axis of the stars. <span class="g">&lt; 1.15 round</span> · <span class="w">1.15–1.3 slightly stretched</span> · <span class="b">&gt; 1.3 stretched</span> (guiding, wind, tilt, coma).</dd>
+<dt>Seeing ≈</dt><dd>Atmospheric blur estimated from the centre of the field (with the optics' diffraction removed). <span class="g">&lt; 2″ good</span> · <span class="w">2–3″ average</span> · <span class="b">&gt; 3″ poor</span>. If the stars are much larger than the seeing can explain, focus / optics is the more likely cause.</dd>
+<dt>Sampling</dt><dd>Pixels across one FWHM. <span class="g">1.5–3.5 px ideal</span>, below = undersampled (square stars), above = oversampled (binning gives more signal without losing detail).</dd>
+<dt>Field of view</dt><dd>Sky area of the frame – from the plate solve if available, otherwise nominal from telescope + camera.</dd>
+<dt>Colour bar</dt><dd><span class="g">green</span> OK · <span class="w">orange</span> worth checking · <span class="b">red</span> problem.</dd></dl></div></details><div class="op-stats" id="op-stats"></div>
+      <p class="muted small">Values are medians over all measured stars. Details per part of the frame are in <i>Field map</i>.</p></div>
+    <div class="tabpane" id="op-t-diag" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Diagnosis</b><p>Automatic findings from the field map, in plain language. <span class="g">✓</span> fine, <span class="w">⚠</span> worth checking, <span class="b">✗</span> clear problem.</p>
+<p>The findings describe this one frame – confirm a problem on a few frames from different parts of the night before changing the setup (wind or a guiding glitch can affect a single frame).</p>
+<p>For tilt and curvature use a frame that is in focus; a defocused frame exaggerates both.</p></div></details><div id="op-diag"></div></div>
+    <div class="tabpane" id="op-t-opt" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Optics &amp; sampling – what the numbers mean</b><dl>
+<dt>Image scale</dt><dd>Arcseconds per pixel = 206.265 × pixel (µm) / focal length (mm). Typical deep-sky 0.7–2.5 ″/px.</dd>
+<dt>Pixels per FWHM</dt><dd><span class="b">&lt; 1.5</span> undersampled · <span class="g">1.5–3.5</span> ideal (Nyquist ≈ 2–3) · <span class="w">&gt; 3.5</span> oversampled. With bad seeing a long focal length is always oversampled – binning (or 2× downsample in processing) recovers SNR.</dd>
+<dt>FWHM / HFR</dt><dd>Star size; HFR ≈ FWHM / 2 for a Gaussian star. Use HFR to compare with NINA / ASIAIR autofocus values.</dd>
+<dt>Eccentricity</dt><dd>Other notation of elongation (PixInsight SubframeSelector): <span class="g">&lt; 0.42 excellent</span> · <span class="g">&lt; 0.5 round to the eye</span> · <span class="w">0.5–0.6 borderline</span> · <span class="b">&gt; 0.6 visibly stretched</span>. Elongation 1.15 ≈ 0.5, 1.3 ≈ 0.64.</dd>
+<dt>Airy FWHM</dt><dd>Smallest star the aperture can form (diffraction, 550 nm) = 116 / aperture (mm) ″. A 100 mm lens: 1.2″, 200 mm: 0.6″.</dd>
+<dt>Dawes limit</dt><dd>Closest double star separable visually = 116 / D ″. For imaging the seeing almost always dominates.</dd>
+<dt>Measured vs. limit</dt><dd>Measured FWHM / Airy FWHM. <span class="g">&lt; 2×</span> close to the optics' limit (great seeing, small aperture) · 2–5× typical · <span class="w">&gt; 5×</span> seeing, focus or guiding limit the image, not the telescope.</dd>
+<dt>Focal ratio</dt><dd>Focal length / aperture. Faster (lower f/) = more signal per pixel, but a much narrower focus zone.</dd>
+<dt>Critical focus zone</dt><dd>CFZ = 4.88 · λ · N². How far the sensor may be from the perfect focus with no visible blur. E.g. f/4 ≈ 43 µm, f/5 ≈ 67 µm, f/7 ≈ 132 µm, f/10 ≈ 270 µm. Tilt across the sensor larger than the CFZ shows as one side soft; a focuser step / temperature drift should be well below it.</dd></dl></div></details><table class="op-kv"><tbody id="op-kv"></tbody></table>
+      <p class="muted small">Diffraction and critical focus zone for green light (550 nm). Without a plate solve the scale is the nominal one from the telescope + camera.</p></div>
+    <div class="tabpane" id="op-t-field" hidden>
+      <details class="op-help"><summary title="Help – what the values mean">?</summary><div class="op-help-box"><b>Field map – how to read the tiles</b><p>The frame is split into 3×3 parts; each tile shows a crop from the middle of that part, the values are the median of all stars in that ninth.</p>
+<dl><dt>Caption</dt><dd>FWHM px / ″ · elongation (stars). Colour: <span class="g">green</span> = sharpest part, <span class="b">red</span> = worst part <i>of this frame</i> (relative, not absolute).</dd>
+<dt>Line</dt><dd>Direction in which stars are stretched – drawn only when elongation &gt; 1.1 and the direction is consistent.</dd>
+<dt>Typical patterns</dt><dd>
+ • all tiles stretched the same way → guiding / tracking / wind<br>
+ • corners stretched radially (pointing to the centre) → coma / backfocus of the corrector wrong<br>
+ • one side larger FWHM than the other → sensor tilt<br>
+ • all corners larger than the centre → field curvature (flattener missing / spacing)<br>
+ • centre larger than the corners → focus set off-centre or spacing too long</dd>
+<dt>Spread</dt><dd>Corner FWHM within <span class="g">+10 %</span> of the centre is very good, <span class="w">+10–25 %</span> acceptable, <span class="b">&gt; 25 %</span> visible in the image.</dd></dl></div></details>
     <div id="op-body" hidden>
-      <h3>Corners, edges and centre <span class="muted small" id="op-tile-info" style="font-weight:400"></span></h3>
+      <h3 style="margin-top:0">Corners, edges and centre <span class="muted small" id="op-tile-info" style="font-weight:400"></span></h3>
       <div class="op-masks small" id="op-masks">Show in tiles:
         <label class="inline"><input type="checkbox" data-m="cap" checked> values</label>
         <label class="inline"><input type="checkbox" data-m="dir" checked> stretch direction</label>
@@ -177,6 +258,7 @@
       <p class="muted small">Each tile: median FWHM · elongation (1.00 = round). Colour: green = sharpest, red = worst part of
         this frame. The line shows the direction stars are stretched (only drawn when they are stretched consistently).
         Measured stars: cyan circles = stars measured inside this crop (the values use the whole ninth of the frame); star shapes: red ellipses enlarged 3× (elongation and angle).</p>
+    </div>
     </div>
   </div>
 </dialog>
@@ -435,6 +517,10 @@ var SOLVED={{ solved|tojson }};
 function showSolve(r){
   var dl=document.getElementById('fi-solve-dl'), m=document.getElementById('fi-solve-msg'), b=document.getElementById('fi-solve');
   b.textContent=r?'🎯 Solve again':'🎯 Solve';dl.innerHTML='';m.textContent='';
+  var sdl=document.getElementById('fi-sky-dl');sdl.innerHTML='';
+  var tabs=document.getElementById('sv-tabs'),okR=!!(r&&r.ok);tabs.hidden=!okR;
+  if(!okR)document.querySelectorAll('#solve-dlg .tabpane').forEach(function(p){p.hidden=true;});
+  else{var last;try{last=localStorage.getItem('sv-tabs');}catch(e){}dlgTab('sv-tabs',last&&document.getElementById(last)?last:'sv-t-res');}
   if(!r)return;
   var when=r.solved_at?r.solved_at.replace('T',' '):'';
   if(!r.ok){m.textContent='✗ '+r.error+(when?' ('+when+')':'');return;}
@@ -451,10 +537,13 @@ function showSolve(r){
     ['Sky brightness',r.sky?(r.sky.sqm!=null?f(r.sky.sqm,2)+' mag/arcsec² (like SQM, Gaia BP; offset from '+(r.sky.pedestal_src||'the camera')+')':'— '+(r.sky.sqm_note||'')):''],
     ['Zero point',r.sky&&r.sky.zp_s!=null?f(r.sky.zp_s,2)+' mag for 1 ADU/s'+(r.sky.gain?' · gain '+r.sky.gain:'')+' – compared between nights for the transparency':''],
     ['Equipment',[r.telescope,r.camera].filter(Boolean).join(' · ')],['Image size',r.note||''],['⚠ Outdated',r.stale||'']];
+  var SKYROWS=['Limiting magnitude','Sky brightness','Zero point'];
+  if(!rows.some(function(x){return SKYROWS.indexOf(x[0])>=0&&x[1];}))rows.push(['_sky','— not measured (only on linear raw light frames)']);
   rows.forEach(function(x){if(!x[1])return;var dt=document.createElement('dt'),dd=document.createElement('dd');
-    dt.textContent=x[0];dd.textContent=x[1].replace('<span id="fi-mirror"></span>','');if(x[0]==='Rotation'){var sp=document.createElement('span');sp.id='fi-mirror';dd.append(sp);}dl.append(dt,dd);});
-  showTarget(r.target_check);
-  var a=document.getElementById('fi-annot');a.hidden=!r.wcs;a.onclick=function(){a.href='/files/{{ f.id }}/annotated.jpg?flip='+skyFlip()+'&north='+((window.NUP&&NUP.on)?'1':'0');};
+    var tgt=(SKYROWS.indexOf(x[0])>=0||x[0]==='_sky')?sdl:dl;if(x[0]==='_sky'){dd.className='muted';dd.textContent=x[1];sdl.append(dd);return;}
+    dt.textContent=x[0];dd.textContent=x[1].replace('<span id="fi-mirror"></span>','');if(x[0]==='Rotation'){var sp=document.createElement('span');sp.id='fi-mirror';dd.append(sp);}tgt.append(dt,dd);});
+  showTarget(r.target_check);showQC(r.photometry,r.orient||0);
+  var a=document.getElementById('fi-annot');a.hidden=!r.wcs;a.onclick=function(){a.href='/files/{{ f.id }}/annotated.jpg?flip='+skyFlip()+'&north='+((window.NUP&&NUP.on)?'1':'0')+fltQuery();};
   var uf=document.getElementById('fi-usefocal');
   uf.hidden=!(r.telescope&&r.focal_mm&&r.focal_expected_mm&&Math.abs(r.focal_mm/r.focal_expected_mm-1)>=0.01);
   if(!uf.hidden){uf.textContent='Use '+Math.round(r.focal_mm)+' mm for '+r.telescope;uf.dataset.tel=r.telescope;uf.dataset.focal=r.focal_mm;}
@@ -464,6 +553,7 @@ function showSolve(r){
     if(r.wcs&&window.NUP&&(NUP.on||NUP.want))setTimeout(function(){setNorth(true);},0);}
   if(r.wcs)loadSky(true).then(function(a){listObjects(a);var mi=document.getElementById('fi-mirror');if(a&&mi)mi.textContent=skyMirrored()?' · image is mirrored (as displayed)':'';});
   else{var t=document.getElementById('fi-objs');t.hidden=true;m.textContent+=' · solved with an older version – Solve again for objects in the field';}
+  document.getElementById('fi-objs-none').hidden=!!r.wcs;
 }
 function showTarget(t){
   var el=document.getElementById('fi-target');el.hidden=!t;el.className='target-check';if(!t)return;
@@ -474,17 +564,96 @@ function showTarget(t){
   el.classList.add(t.offset_pct<=15?'good':'warn');
   el.textContent=(t.offset_pct<=15?'✓':'⚠')+' Pointing: '+nm(t)+' is in the frame, '+d+' '+t.direction+' of the centre ('+t.offset_pct+' % of the way to the corner).';
 }
+// ---------- objects in the field: filter, list ----------
+var FLT={dso:true,stars:true,smag:null};
+try{var _f=JSON.parse(localStorage.getItem('skyflt')||'null');if(_f)FLT={dso:_f.dso!==false,stars:_f.stars!==false,smag:_f.smag!=null?Number(_f.smag):null};}catch(e){}
+function saveFlt(){try{localStorage.setItem('skyflt',JSON.stringify(FLT));}catch(e){}}
+function objShown(o){if(o.star)return FLT.stars&&(FLT.smag==null||(o.mag!=null&&o.mag<=FLT.smag));return FLT.dso;}
+function fltQuery(){return '&dso='+(FLT.dso?1:0)+'&stars='+(FLT.stars?1:0)+(FLT.smag!=null?'&smag='+FLT.smag:'');}
+function fmtLy(ly){if(ly==null)return '';var v=ly<100?Math.round(ly):(ly<10000?Math.round(ly/10)*10:Math.round(ly/1000)*1000);
+  return (v>=1e6?(v/1e6).toLocaleString(undefined,{maximumFractionDigits:1})+' M':v.toLocaleString())+' ly';}
+function fmtSize(o){if(!o.maj)return '';var a=function(x){return x<1?Math.round(x*60)+'″':x.toFixed(1)+'′';};
+  return a(o.maj)+(o.min&&o.min!==o.maj?' × '+a(o.min):'');}
+function starRange(objs){var m=objs.filter(function(o){return o.star&&o.mag!=null;}).map(function(o){return o.mag;});
+  return m.length?{lo:Math.floor(Math.min.apply(null,m)*2)/2,hi:Math.ceil(Math.max.apply(null,m)*2)/2,def:Math.ceil(m[Math.min(m.length,30)-1]*2)/2}:null;}
+function syncFlt(a){
+  var r=a?starRange(a.objects):null,sl=document.getElementById('flt-smag'),out=document.getElementById('flt-smag-v');
+  document.getElementById('flt-dso').checked=FLT.dso;document.getElementById('flt-stars').checked=FLT.stars;
+  document.getElementById('flt-smag-l').hidden=!r||!FLT.stars;
+  // a limit remembered from another field may lie outside this field's star range: use the clamped value
+  // for filtering too (else the slider shows one value while every star is hidden by the old one)
+  if(r){sl.min=r.lo;sl.max=r.hi;var v=FLT.smag==null?r.def:Math.min(Math.max(FLT.smag,r.lo),r.hi);sl.value=v;FLT.smag=v;out.textContent=Number(sl.value).toFixed(1);}
+}
 function listObjects(a){
   var box=document.getElementById('fi-objs'), tb=document.getElementById('fi-objs-rows');tb.innerHTML='';
   if(!a){box.hidden=true;return;}
-  box.hidden=false;document.getElementById('fi-objs-n').textContent='('+a.objects.length+')';
+  box.hidden=false;syncFlt(a);
   document.getElementById('fi-ovl-toggle').checked=SKY.on;
-  if(!a.objects.length){var tr=tb.insertRow();var td=tr.insertCell();td.colSpan=5;td.className='muted';td.textContent='No catalogued deep-sky objects in this field.';}
-  a.objects.forEach(function(o){var tr=tb.insertRow();tr.className='objrow'+(SKY.only===o.name?' sel':'');tr.dataset.name=o.name;
+  var shown=a.objects.filter(objShown);
+  document.getElementById('fi-objs-n').textContent='('+(shown.length===a.objects.length?a.objects.length:shown.length+' / '+a.objects.length)+')';
+  if(!shown.length){var tr=tb.insertRow();var td=tr.insertCell();td.colSpan=6;td.className='muted';
+    td.textContent=a.objects.length?'All objects are hidden by the filter.':'No catalogued objects in this field.';}
+  shown.forEach(function(o){var tr=tb.insertRow();tr.className='objrow'+(o.star?' star':'')+(SKY.only===o.name?' sel':'');tr.dataset.name=o.name;
     tr.title='Show only this object on the image (click again or next to it to show all)';
-    [(o.inside?'':'◐ ')+[o.messier,o.name].filter(Boolean).join(' / '),o.common||'',o.type,o.mag!=null?o.mag.toFixed(1):'',
-     o.maj?(o.maj<1?Math.round(o.maj*60)+'″':o.maj.toFixed(1)+'′')+(o.min&&o.min!==o.maj?' × '+(o.min<1?Math.round(o.min*60)+'″':o.min.toFixed(1)+'′'):''):'']
-    .forEach(function(v,i){var td=tr.insertCell();td.textContent=v;if(i>2)td.className='num';});});
+    var c0=tr.insertCell();c0.textContent=(o.inside?'':'◐ ')+[o.messier,o.name].filter(Boolean).join(' / ');
+    var c1=tr.insertCell();c1.textContent=o.common||'';
+    if(o.aliases&&o.aliases.length){var al=document.createElement('span');al.className='muted alias';al.textContent=(o.common?' · ':'')+o.aliases.join(', ');c1.append(al);}
+    var c2=tr.insertCell();
+    if(o.star){var dot=document.createElement('span');dot.className='bvdot';dot.style.background=o.color||'#fff';
+      dot.title=o.bv!=null?'B–V '+o.bv.toFixed(2):'colour unknown';c2.append(dot,document.createTextNode(o.spect||'Star'));
+      if(o.var){var v=document.createElement('span');v.className='varmark';v.textContent=' var'+(o.var.bright!=null?' '+o.var.bright.toFixed(1)+'–'+o.var.faint.toFixed(1):'');
+        v.title='Variable star'+(o.var.name?' '+o.var.name:'')+(o.var.bright!=null?', '+o.var.bright.toFixed(2)+' – '+o.var.faint.toFixed(2)+' mag':'');c2.append(v);}}
+    else c2.textContent=o.type;
+    var c3=tr.insertCell();c3.className='num';c3.textContent=o.mag!=null?o.mag.toFixed(1):'';
+    var c4=tr.insertCell();c4.className='num';c4.textContent=[fmtSize(o),fmtLy(o.dist_ly)].filter(Boolean).join(' · ');
+    var c5=tr.insertCell();c5.className='num';
+    if(o.meas){var m=o.meas,d=(m.delta>=0?'+':'')+m.delta.toFixed(2);
+      c5.textContent=m.mag.toFixed(2)+' (Δ'+d+')'+(m.saturated?' sat.':'');
+      c5.classList.add(m.saturated?'muted':(Math.abs(m.delta)<=0.1?'g':(Math.abs(m.delta)<=0.3?'w':'b')));
+      c5.title='Measured '+m.mag.toFixed(2)+' (Gaia BP, zero-point calibrated) · catalogue BP '+m.cat.toFixed(2)+' · SNR '+Math.round(m.snr)+(m.saturated?' · saturated: measures too faint':'');}
+  });
+}
+function setFlt(k,v){FLT[k]=v;saveFlt();if(SKY.only&&SKY.data){var ob=SKY.data.objects.find(function(x){return x.name===SKY.only;});if(ob&&!objShown(ob))SKY.only=null;}
+  listObjects(SKY.data);drawSky();}
+// ---------- photometric quality ----------
+function showQC(ph,orient){
+  var box=document.getElementById('fi-qc'),old=document.getElementById('fi-qc-old');
+  var q=ph&&ph.qc;box.hidden=!q;old.hidden=!(ph&&ph.limit_mag&&!q);if(!q)return;
+  var dl=document.getElementById('fi-qc-dl');dl.innerHTML='';
+  var dir=q.gradient_vec?dispDir(q.gradient_vec,orient||0):null;
+  var rows=[['Zero point',(ph.zero_point!=null?ph.zero_point.toFixed(2):'—')+' ± '+q.zp_err.toFixed(3)+' mag ('+q.n+' stars, SNR ≥ '+q.min_snr+')'],
+    ['Scatter',q.scatter_mag.toFixed(3)+' mag (robust σ of measured − catalogue)'],
+    ['Linearity',q.slope!=null?'slope '+q.slope.toFixed(3)+' over '+q.slope_range[0].toFixed(1)+'–'+q.slope_range[1].toFixed(1)+' mag (ideal 1.000)':'— too narrow magnitude range'],
+    ['Saturation',q.sat_mag!=null?'stars brighter than ≈'+q.sat_mag.toFixed(1)+' mag (Gaia BP)':'none among the matched stars'],
+    ['Field',q.gradient_mag!=null?'gradient '+q.gradient_mag.toFixed(2)+' mag edge to edge'+(dir&&q.gradient_mag>=0.05?' (fainter towards the '+dir+')':'')+' · corners '+(q.vignetting_mag>=0?'+':'')+q.vignetting_mag.toFixed(2)+' mag vs centre':'— too few stars']];
+  rows.forEach(function(x){var dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=x[0];dd.textContent=x[1];dl.append(dt,dd);});
+  var vb=document.getElementById('fi-qc-v');vb.innerHTML='';
+  (q.verdicts||[]).forEach(function(x){var e=document.createElement('div');e.className='target-check '+({ok:'good',warn:'warn',bad:'bad'}[x.level]||'');
+    var b=document.createElement('b');b.textContent=x.title+': ';e.append(b,document.createTextNode(x.text.replace('{dir}',dir||'one side')));vb.append(e);});
+  document.getElementById('fi-qc-snr').textContent=q.min_snr;
+  qcPlot(q);
+}
+function dispDir(g,orient){          // direction (u right, v down) in the solved array -> side of the displayed image
+  var u=0.5+g[0],v=0.5+g[1],t,f=skyFlip();
+  if(orient===180){u=1-u;v=1-v;}else if(orient===90){t=u;u=1-v;v=t;}else if(orient===270){t=u;u=v;v=1-t;}
+  if(f.indexOf('h')>=0)u=1-u;if(f.indexOf('v')>=0)v=1-v;
+  var a=Math.atan2(v-0.5,u-0.5)*180/Math.PI;
+  return ['right','bottom right','bottom','bottom left','left','top left','top','top right'][Math.floor(((a+360)%360+22.5)/45)%8];}
+function qcPlot(q){
+  var svg=document.getElementById('fi-qc-svg'),NS='http://www.w3.org/2000/svg';svg.innerHTML='';
+  var pts=q.plot||[];if(!pts.length)return;
+  var W=600,H=230,L=44,R=10,T=10,B=28,xs=pts.map(function(p){return p[0];});
+  var x0=Math.floor(Math.min.apply(null,xs)),x1=Math.ceil(Math.max.apply(null,xs));if(x1-x0<1)x1=x0+1;
+  var lim=Math.max(0.3,Math.min(1.5,Math.ceil(Math.max(q.scatter_mag*5,0.2)*10)/10));
+  var X=function(v){return L+(v-x0)/(x1-x0)*(W-L-R);},Y=function(v){return T+(lim-Math.max(-lim,Math.min(lim,v)))/(2*lim)*(H-T-B);};
+  function el(n,a,t){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);if(t!=null)e.textContent=t;svg.append(e);return e;}
+  [-lim,-lim/2,0,lim/2,lim].forEach(function(v){el('line',{x1:L,x2:W-R,y1:Y(v),y2:Y(v),'class':v===0?'qc-zero':'qc-grid'});
+    el('text',{x:L-6,y:Y(v)+4,'class':'qc-ax','text-anchor':'end'},(v>0?'+':'')+v.toFixed(2));});
+  var step=x1-x0>8?2:1;for(var m=x0;m<=x1;m+=step){el('line',{x1:X(m),x2:X(m),y1:T,y2:H-B,'class':'qc-grid'});el('text',{x:X(m),y:H-B+16,'class':'qc-ax','text-anchor':'middle'},m);}
+  el('text',{x:W-R,y:H-4,'class':'qc-ax','text-anchor':'end'},'catalogue mag (Gaia BP) →');
+  if(q.sat_mag!=null&&q.sat_mag>x0)el('line',{x1:X(q.sat_mag),x2:X(q.sat_mag),y1:T,y2:H-B,'class':'qc-sat'});
+  pts.forEach(function(p){var c=el('circle',{cx:X(p[0]).toFixed(1),cy:Y(p[1]).toFixed(1),r:p[2]?2.4:1.8,'class':p[2]?'qc-pt used':'qc-pt'});
+    var t=document.createElementNS(NS,'title');t.textContent=p[0].toFixed(2)+' mag · Δ '+(p[1]>=0?'+':'')+p[1].toFixed(3)+(Math.abs(p[1])>lim?' (off scale)':'');c.append(t);});
 }
 // ---------- sky overlay (objects, RA/Dec grid, N/E) ----------
 var SKY={on:false,data:null,err:null};
@@ -514,12 +683,12 @@ function drawSky(){
   SKY.data.grid.forEach(function(g){var p=g.pts.map(function(q){return skyMap(q[0],q[1],o);});
     el('polyline',{points:p.map(function(q){return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '),'class':'g'});
     var mid=p[Math.floor(p.length/2)];el('text',{x:mid[0]+3,y:mid[1]-3,'class':'gl'},g.label);});
-  SKY.data.objects.forEach(function(ob){if(SKY.only&&ob.name!==SKY.only)return;var c=skyMap(ob.u,ob.v,o),rx=9,ry=9,ang=0;
+  SKY.data.objects.forEach(function(ob){if(SKY.only?ob.name!==SKY.only:!objShown(ob))return;var c=skyMap(ob.u,ob.v,o),rx=ob.star?6:9,ry=rx,ang=0;
     if(ob.axis){var a=skyMap(ob.axis[0],ob.axis[1],o);rx=Math.max(Math.hypot(a[0]-c[0],a[1]-c[1]),6);
       ry=Math.max(rx*((ob.min||ob.maj)/ob.maj),4);ang=Math.atan2(a[1]-c[1],a[0]-c[0])*180/Math.PI;}
-    el('ellipse',{cx:c[0],cy:c[1],rx:rx,ry:ry,transform:'rotate('+ang+' '+c[0]+' '+c[1]+')','class':'o'});
-    var lbl=[ob.messier,ob.name].filter(Boolean).join(' / ')+(ob.common?' – '+ob.common:'');
-    el('text',{x:c[0]+Math.max(rx,ry)*0.75+4,y:c[1]-Math.max(rx,ry)*0.75-4,'class':'ol'},lbl);});
+    el('ellipse',{cx:c[0],cy:c[1],rx:rx,ry:ry,transform:'rotate('+ang+' '+c[0]+' '+c[1]+')','class':ob.star?'o st':'o',style:ob.star&&ob.color?'stroke:'+ob.color:''});
+    var lbl=ob.star?(ob.common||ob.name):[ob.messier,ob.name].filter(Boolean).join(' / ')+(ob.common?' – '+ob.common:'');
+    el('text',{x:c[0]+Math.max(rx,ry)*0.75+4,y:c[1]-Math.max(rx,ry)*0.75-4,'class':ob.star?'ol st':'ol',style:ob.star&&ob.color?'fill:'+ob.color:''},lbl);});
   // compass in the top-left corner
   var cc=skyMap(SKY.data.compass.c[0],SKY.data.compass.c[1],o),base=(window.NUP&&window.NUP.on)?[56,56]:[Math.max(o.tx,0)+56,Math.max(o.ty,0)+56];
   ['n','e'].forEach(function(k){var p=skyMap(SKY.data.compass[k][0],SKY.data.compass[k][1],o),dx=p[0]-cc[0],dy=p[1]-cc[1],L=Math.hypot(dx,dy)||1;
@@ -542,16 +711,60 @@ function loadOptics(){
     .catch(function(){m.textContent='✗ Request failed';});
 }
 function heat(x){x=Math.max(0,Math.min(1,x));return 'hsl('+Math.round(120-120*x)+',70%,45%)';}
+function opEl(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e;}
+function dlgTab(nav,id){document.querySelectorAll('#'+nav+' a').forEach(function(a){var on=a.getAttribute('href')==='#'+id;a.classList.toggle('active',on);
+  document.getElementById(a.getAttribute('href').slice(1)).hidden=!on;});try{localStorage.setItem(nav,id);}catch(e){}}
+function opTab(id){document.querySelectorAll('#op-tabs a').forEach(function(a){var on=a.getAttribute('href')==='#'+id;a.classList.toggle('active',on);
+  document.getElementById(a.getAttribute('href').slice(1)).hidden=!on;});try{localStorage.setItem('op-tab',id);}catch(e){}}
 function showOptics(d){
-  var m=document.getElementById('op-msg'),dg=document.getElementById('op-diag'),body=document.getElementById('op-body');
-  dg.innerHTML='';body.hidden=true;document.getElementById('op-ovl-l').hidden=!d.ok;
-  if(!d.ok){m.textContent='✗ '+d.error;return;}
-  m.textContent=d.stars+' stars · FWHM '+d.fwhm_px.toFixed(2)+' px'+(d.fwhm_arcsec?' ('+d.fwhm_arcsec.toFixed(2)+'″)':'')+
-    (d.seeing&&d.seeing.seeing!=null?' · seeing ≈ '+d.seeing.seeing.toFixed(1)+'″ ('+d.seeing.label+(d.seeing.undersampled?', undersampled – upper limit':'')+(d.seeing.likely_focus?', more likely focus / optics than the atmosphere':'')+')':'')+
-    ' · elongation '+d.elong.toFixed(2)+(d.fwhm_arcsec?'':' · plate-solve the frame to get FWHM in arcseconds');
+  var m=document.getElementById('op-msg'),dg=document.getElementById('op-diag'),body=document.getElementById('op-body'),tabs=document.getElementById('op-tabs');
+  dg.innerHTML='';body.hidden=true;document.getElementById('op-ovl-l').hidden=!d.ok;tabs.hidden=!d.ok;
+  if(!d.ok){m.textContent='✗ '+d.error;document.querySelectorAll('#optics-dlg .tabpane').forEach(function(p){p.hidden=true;});return;}
+  m.textContent='';
+  var X=d.extra||{},f2=function(v,n){return v==null?'–':(+v).toFixed(n==null?2:n);};
+  // ---- summary cards ----
+  var st=document.getElementById('op-stats');st.innerHTML='';
+  function card(label,val,sub,lvl){var c=opEl('div','op-stat'+(lvl?' '+lvl:''));c.append(opEl('span','op-l',label),opEl('b',null,val));if(sub)c.append(opEl('span','op-s',sub));st.append(c);}
+  card('Stars measured',String(d.stars));
+  card('FWHM',d.fwhm_arcsec?f2(d.fwhm_arcsec)+'″':f2(d.fwhm_px)+' px',d.fwhm_arcsec?f2(d.fwhm_px)+' px':'solve the frame for arcseconds');
+  if(X.hfr_px!=null)card('HFR',f2(X.hfr_px)+' px',X.scale?f2(X.hfr_px*X.scale)+'″ · as in NINA / ASIAIR':'as in NINA / ASIAIR');
+  card('Elongation',f2(d.elong),(X.ecc!=null?'eccentricity '+f2(X.ecc)+' · ':'')+(d.elong<1.15?'round':d.elong<1.3?'slightly stretched':'stretched'),
+    d.elong<1.15?'good':d.elong<1.3?'warn':'bad');
+  if(d.seeing&&d.seeing.seeing!=null)card('Seeing ≈',f2(d.seeing.seeing,1)+'″',d.seeing.label+(d.seeing.undersampled?' · upper limit (undersampled)':'')+(d.seeing.likely_focus?' · rather focus / optics':''));
+  if(X.sampling)card('Sampling',f2(X.sampling.px_per_fwhm,1)+' px/FWHM',{under:'undersampled',ok:'well sampled',over:'oversampled · bin '+X.sampling.bin+'×'+X.sampling.bin}[X.sampling.verdict],
+    X.sampling.verdict==='ok'?'good':'warn');
+  if(d.fov)card('Field of view',f2(d.fov.w,1)+'′ × '+f2(d.fov.h,1)+'′',f2(d.fov.w/60)+'° × '+f2(d.fov.h/60)+'° · '+d.fov.src);
+  var bad=d.diagnosis.filter(function(x){return x.level!=='ok'&&x.level!=='info';});
+  card('Diagnosis',bad.length?bad.length+' issue'+(bad.length>1?'s':''):'all fine',bad.length?bad.map(function(x){return x.title;}).join(' · '):null,
+    bad.some(function(x){return x.level==='bad';})?'bad':bad.length?'warn':'good');
+  // ---- diagnosis ----
+  document.getElementById('op-diag-n').textContent=bad.length?'('+bad.length+')':'✓';
   d.diagnosis.forEach(function(x){var e=document.createElement('div');e.className='target-check '+({ok:'good',warn:'warn',bad:'bad'}[x.level]||'');
     var b=document.createElement('b');b.textContent=({ok:'✓ ',warn:'⚠ ',bad:'✗ '}[x.level]||'')+x.title;
     var p=document.createElement('div');p.className='small';p.textContent=x.text;e.append(b,p);dg.append(e);});
+  // ---- optics & sampling ----
+  var kv=document.getElementById('op-kv');kv.innerHTML='';
+  function row(label,val,note,lvl){if(val==null)return;var tr=opEl('tr',lvl||'');tr.append(opEl('th',null,label),opEl('td','op-v',val),opEl('td','muted small',note||''));kv.append(tr);}
+  function sec(t){var tr=opEl('tr','op-sec');var th=opEl('th',null,t);th.colSpan=3;tr.append(th);kv.append(tr);}
+  sec('Image');
+  row('Image scale',X.scale!=null?f2(X.scale,3)+' ″/px':null,X.scale_src);
+  row('Field of view',d.fov?f2(d.fov.w,1)+'′ × '+f2(d.fov.h,1)+'′':null,d.fov?f2(d.fov.w/60)+'° × '+f2(d.fov.h/60)+'° · '+d.fov.src:'');
+  if(X.sampling){sec('Sampling');
+    row('Pixels per FWHM',f2(X.sampling.px_per_fwhm,1)+' px','ideal ≈ 1.5–3.5 px',X.sampling.verdict==='ok'?'good':'warn');
+    row('Recommendation',X.sampling.verdict==='over'?'bin '+X.sampling.bin+'×'+X.sampling.bin:X.sampling.verdict==='under'?'more focal length / smaller pixels':'keep as is',X.sampling.tip);}
+  sec('Star size');
+  row('FWHM',f2(d.fwhm_px)+' px'+(d.fwhm_arcsec?' · '+f2(d.fwhm_arcsec)+'″':''),'full width at half maximum');
+  row('HFR',X.hfr_px!=null?f2(X.hfr_px)+' px':null,'half-flux radius (≈ FWHM / 2) – the focus metric of NINA / ASIAIR');
+  row('Eccentricity',X.ecc!=null?f2(X.ecc):null,'0 = round, < 0.5 looks round, > 0.6 visibly stretched (PixInsight)',X.ecc==null?'':X.ecc<0.5?'good':X.ecc<0.6?'warn':'bad');
+  if(X.airy_fwhm_arcsec!=null){sec('Diffraction limit');
+    row('Airy FWHM',f2(X.airy_fwhm_arcsec)+'″'+(X.airy_px!=null?' · '+f2(X.airy_px)+' px':''),'smallest star the aperture can make');
+    row('Dawes limit',f2(X.dawes_arcsec)+'″','resolution of close double stars');
+    row('Measured vs. limit',X.vs_diffraction!=null?X.vs_diffraction+'×':null,X.vs_diffraction==null?'':X.vs_diffraction>2?'limited by seeing / focus / guiding, not the optics':'close to the optical limit');}
+  if(X.f_ratio!=null){sec('Focus');
+    row('Focal ratio','f/'+f2(X.f_ratio,1));
+    row('Critical focus zone',X.cfz_um+' µm','±'+Math.round(X.cfz_um/2)+' µm – focus and tilt over the whole sensor must stay within it');}
+  var last;try{last=localStorage.getItem('op-tab');}catch(e){}
+  opTab(last&&document.getElementById(last)?last:'op-t-sum');
   var fw=d.regions.filter(function(r){return r.fwhm_px;}).map(function(r){return r.fwhm_px;}),lo=Math.min.apply(null,fw),hi=Math.max.apply(null,fw);
   var mo=document.getElementById('op-mosaic');mo.innerHTML='';
   d.regions.forEach(function(r,i){var t=document.createElement('div');t.className='op-tile';
@@ -613,6 +826,7 @@ function drawOpt(){
 }
 (function(){var b=document.getElementById('opticsbtn');if(!b)return;var dlg=document.getElementById('optics-dlg');
   b.onclick=function(){dlg.showModal();loadOptics();};
+  document.querySelectorAll('#op-tabs a').forEach(function(a){a.onclick=function(e){e.preventDefault();opTab(a.getAttribute('href').slice(1));};});
   dlg.addEventListener('click',function(e){if(e.target===dlg)dlg.close();});
   document.getElementById('op-ovl').onchange=function(){OPT.on=this.checked;b.classList.toggle('primary',OPT.on);drawOpt();};
   var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){if(OPT.on)loadOptics();else drawOpt();});})();
@@ -663,6 +877,9 @@ window.setNorth=function(on,keep){var N=window.NUP,b=document.getElementById('no
 (function(){var b=document.getElementById('skybtn');if(!b)return;
   b.onclick=function(){setSky(!SKY.on);};b.classList.toggle('primary',SKY.on);
   document.getElementById('fi-ovl-toggle').onchange=function(){setSky(this.checked);};
+  document.getElementById('flt-dso').onchange=function(){setFlt('dso',this.checked);};
+  document.getElementById('flt-stars').onchange=function(){setFlt('stars',this.checked);};
+  document.getElementById('flt-smag').oninput=function(){document.getElementById('flt-smag-v').textContent=Number(this.value).toFixed(1);setFlt('smag',Number(this.value));};
   var fl=document.getElementById('o-flip');if(fl)fl.addEventListener('change',function(){setTimeout(drawSky,0);});
   document.addEventListener('keydown',function(e){if(!document.querySelector('dialog[open]')&&!e.target.matches('input,select,textarea')&&!e.ctrlKey&&!e.metaKey&&(e.key==='o'||e.key==='O')&&!b.hidden)b.click();});
   if(SKY.on&&!b.hidden)loadSky().then(drawSky);})();
@@ -679,6 +896,7 @@ function solveFile(){
     .catch(function(){m.textContent='✗ Request failed';}).finally(function(){b.disabled=false;});
 }
 (function(){var d=document.getElementById('solve-dlg');
+  document.querySelectorAll('#sv-tabs a').forEach(function(a){a.onclick=function(e){e.preventDefault();dlgTab('sv-tabs',a.getAttribute('href').slice(1));};});
   document.getElementById('solvebtn').onclick=function(){showSolve(SOLVED);d.showModal();if(!SOLVED)solveFile();};
   d.addEventListener('click',function(e){if(e.target===d)d.close();});})();
 (function(){var b=document.getElementById('rejbtn');if(!b)return;

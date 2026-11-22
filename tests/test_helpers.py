@@ -205,9 +205,10 @@ def test_offset_roundtrip():
 def test_optics_summary():
     regions = [{"fwhm_px": i} for i in range(9)]
     res = {"stars": 120, "fwhm_px": 2.5, "elong": 1.1, "regions": regions,
-           "diagnosis": [{"key": "tilt", "dir": "NE", "level": "warn"}, {"key": "focus", "level": "ok"}]}
+           "diagnosis": [{"key": "tilt", "dir": "top left", "level": "warn"}, {"key": "focus", "level": "ok"}]}
     s = measured.optics_summary(res)
-    assert s["fwhm_centre_px"] == 4 and s["tilt_dir"] == "NE" and s["findings"] == ["tilt"] and s["bin"] == 1
+    assert s["fwhm_centre_px"] == 4 and s["tilt_dir"] == "top left" and s["findings"] == ["tilt"] and s["bin"] == 1
+    assert s["dir_frame"] == "sensor"                     # side stored in the sensor frame (no flip / rotation here)
     assert measured.optics_summary({})["fwhm_centre_px"] is None
 
 

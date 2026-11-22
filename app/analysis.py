@@ -80,8 +80,7 @@ def solve_store(f: FrameFile, res: dict) -> None:
     if res.get("error") == "File missing on disk":
         return
     f.solve = json.dumps(finite(res), ensure_ascii=False, allow_nan=False)
-    from .measured import invalidate_zp_reference
-    invalidate_zp_reference()
+    # the transparency reference is invalidated after the commit (measured._install_zp_hooks)
 
 
 def finite(v):

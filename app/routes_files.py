@@ -18,6 +18,9 @@ from .preview import (PREVIEW_EXT, FITS_EXT, render, clean_opts, file_info, OPT_
                       RENDER_KEYS, fits_is_mono, histogram)
 from . import worker
 
+SESSION_COPY = ["name", "date", "location", "telescope", "camera", "mount", "software", "seeing", "sqm",
+                "temperature", "humidity", "moon_illum", "exposure_s", "gain", "filter", "cam_temp", "notes"]
+
 
 import threading
 import time
@@ -340,9 +343,23 @@ def reject_suspects(request: Request, pid: int, user: User = Depends(current_use
 
 
 # ---------- bulk operations ----------
+BULK_MAX = 5000                   # files per bulk action (one IN list, one request)
+
+
 @app.post("/api/files/bulk")
 async def files_bulk(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
     data = await json_body(request)
+    raw = data.get("ids", [])
+    if not isinstance(raw, list) or len(raw) > BULK_MAX:
+        return JSONResponse({"error": f"Select at most {BULK_MAX} files for one action"}, status_code=400)
+    # moving / deleting can mean gigabytes of disk work: run it in a worker thread, not on the event loop
+    out = await run_in_threadpool(_files_bulk, data, db)
+    if isinstance(out, dict) and out.get("ok"):
+        flash(request, out["message"])
+    return out
+
+
+def _files_bulk(data: dict, db: Session):
     ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
     files = db.scalars(select(FrameFile).where(FrameFile.id.in_(ids))).all() if ids else []
     order = {x: i for i, x in enumerate(ids)}     # the client's order (deterministic; first light sets an open session)
@@ -409,15 +426,32 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
             p = db.get(Project, int(target)) if target.isdigit() else None
             if not p:
                 return JSONResponse({"error": "Project not found"}, status_code=404)
+            copies = {}                           # source session id -> its copy in the target project
             try:
                 for f in files:
                     if f.project_id and f.project_id != p.id and f.project.cover_file_id == f.id:
                         f.project.cover_file_id = None
                     move_file_storage(f, p.id, None)
-                    if f.project_id != p.id:          # session of the frame's night in the target, else the latest
-                        night = night_of(f.date_obs) if f.date_obs else None
+                    if f.project_id != p.id:
+                        # session of the frame's night in the target, else its latest; a target without
+                        # any session gets a copy of the frame's source session (not left unassigned)
+                        src = f.session
+                        night = night_of(f.date_obs) if f.date_obs else (src.date if src else None)
                         same = [s for s in sorted(p.sessions, key=lambda s: s.id) if night and s.date == night]
-                        f.session_id = same[0].id if same else (p.sessions[-1].id if p.sessions else None)
+                        if same:
+                            f.session_id = same[0].id
+                        elif p.sessions and not copies:
+                            f.session_id = p.sessions[-1].id      # the target's latest night
+                        elif src is not None:
+                            if src.id not in copies:
+                                c = ImagingSession(project_id=p.id, **{k: getattr(src, k) for k in SESSION_COPY})
+                                c.calib_sets = list(src.calib_sets)
+                                db.add(c)
+                                db.flush()
+                                copies[src.id] = c
+                            f.session_id = copies[src.id].id
+                        else:
+                            f.session_id = None
                     f.project_id, f.calib_set_id = p.id, None
                     db.flush()
                     place_light(db, f)            # one set per session
@@ -481,7 +515,6 @@ async def files_bulk(request: Request, user: User = Depends(current_user), db: S
         for pid in touched | {f.project_id for f in files if action != "delete" and f.project_id}:
             worker.reflag_project(db, pid)
         db.commit()
-    flash(request, msg)
     return {"ok": True, "message": msg}
 
 
@@ -609,7 +642,78 @@ async def file_optics(fid: int, flip: str = "auto", tiles: int = 1, user: User =
                     per_px * (res.get("bin") or 1))
         if se:
             res["seeing"] = {**se, "label": seeing_label(se["seeing"])}
+    if res.get("ok"):
+        res["fov"] = _file_fov(db, f)
+        res["extra"] = _optics_extra(db, f, res)
     return res
+
+
+WAVE_UM = 0.55                                    # green, for diffraction and the critical focus zone
+
+
+def _optics_extra(db, f: FrameFile, res: dict) -> dict:
+    """Derived values: HFR / eccentricity, sampling, diffraction limit, focal ratio and critical focus zone."""
+    import math
+    from .core import optics, catalog
+    out = {}
+    fw, el = res.get("fwhm_px"), res.get("elong")
+    if fw:
+        out["hfr_px"] = round(fw / 2, 2)            # Gaussian profile: half-flux radius = FWHM / 2
+    if el and el >= 1:
+        out["ecc"] = round(math.sqrt(1 - 1 / el ** 2), 2)
+    s = f.session
+    cat = catalog(db) if s else {}
+    spec = lambda kind, name: next((it.spec for it in cat.get(kind, []) if it.name == name), {}) if name else {}
+    tel, cam = (spec("telescope", s.telescope), spec("camera", s.camera)) if s else ({}, {})
+    ap, fl = to_float(tel.get("aperture_mm")), to_float(tel.get("focal_mm"))
+    # arcsec per image pixel: measured (solve) else nominal from the equipment
+    scale = res["fwhm_arcsec"] / fw if res.get("fwhm_arcsec") and fw else None
+    if not scale:
+        o = optics({"focal_mm": fl}, {"pixel_um": to_float(cam.get("pixel_um"))})
+        scale = o["scale"] if o else None
+    if scale:
+        out["scale"] = round(scale, 3)
+        out["scale_src"] = "plate solve" if res.get("fwhm_arcsec") else "nominal (equipment)"
+    if fw:
+        if fw < 1.5:
+            verdict, tip = "under", "Undersampled – stars are blocky; a longer focal length / smaller pixels would resolve more."
+        elif fw <= 3.5:
+            verdict, tip = "ok", "Well sampled (≈ 1.5–3.5 px per FWHM) – no binning needed."
+        else:
+            b = max(2, int(fw // 2))
+            verdict, tip = "over", f"Oversampled – binning {b}×{b} would give {fw / b:.1f} px per FWHM with better SNR, without losing detail."
+        out["sampling"] = {"px_per_fwhm": round(fw, 2), "verdict": verdict, "tip": tip,
+                           "bin": max(2, int(fw // 2)) if verdict == "over" else 1}
+    if ap:
+        out["airy_fwhm_arcsec"] = round(206265 * 1.03 * WAVE_UM * 1e-3 / ap, 2)
+        out["dawes_arcsec"] = round(116 / ap, 2)
+        if res.get("fwhm_arcsec"):
+            out["vs_diffraction"] = round(res["fwhm_arcsec"] / out["airy_fwhm_arcsec"], 1)
+        if scale:
+            out["airy_px"] = round(out["airy_fwhm_arcsec"] / scale, 2)
+    if ap and fl:
+        n = fl / ap
+        out["f_ratio"] = round(n, 2)
+        out["cfz_um"] = round(4.88 * WAVE_UM * n * n)     # total depth (±half) of the critical focus zone
+    return out
+
+
+def _file_fov(db, f: FrameFile) -> dict | None:
+    """Field of view for the optics inspector: measured by the plate solve, else nominal from the equipment."""
+    from .analysis import load_json
+    sol = load_json(f.solve) or {}
+    if sol.get("ok") and sol.get("fov_w_arcmin") and sol.get("fov_h_arcmin"):
+        return {"w": sol["fov_w_arcmin"], "h": sol["fov_h_arcmin"], "src": "plate solve"}
+    s = f.session
+    if not s or not s.telescope or not s.camera:
+        return None
+    from .core import optics, catalog
+    cat = catalog(db)
+    spec = lambda kind, name: next((it.spec for it in cat[kind] if it.name == name), {})
+    o = optics(spec("telescope", s.telescope), spec("camera", s.camera))
+    if not o or not o.get("fov"):
+        return None
+    return {"w": round(o["fov"][0], 2), "h": round(o["fov"][1], 2), "src": "nominal (equipment)"}
 
 
 @app.post("/api/equipment/focal")
@@ -632,8 +736,8 @@ async def equipment_focal(request: Request, user: User = Depends(current_user), 
 
 
 @app.get("/files/{fid}/annotated.jpg")
-async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str = "", user: User = Depends(current_user),
-                         db: Session = Depends(get_db)):
+async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str = "", dso: str = "1", stars: str = "1",
+                         smag: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The image as shown in the viewer (saved view settings) with objects, RA/Dec grid and N/E drawn in."""
     from fastapi.responses import Response
     from . import annotate
@@ -650,7 +754,8 @@ async def file_annotated(fid: int, flip: str = "auto", grid: int = 1, north: str
     eff = opts["flip"]
     if eff == "auto":
         eff = "v" if src.suffix.lower() in FITS_EXT and info_rowflip(src) == "BOTTOM-UP" else "none"
-    data = await slotted(annotate.annotated_jpeg, src, opts, res, eff, bool(grid), (north or opts.get("north")) == "1")
+    data = await slotted(annotate.annotated_jpeg, src, opts, res, eff, bool(grid), (north or opts.get("north")) == "1",
+                         annotate.parse_filter(dso, stars, smag))
     if data is None:
         raise HTTPException(422, "Cannot render this file")
     name = os.path.splitext(clean_filename(f.original_name))[0] + "_annotated.jpg"

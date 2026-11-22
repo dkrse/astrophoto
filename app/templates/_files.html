@@ -21,28 +21,45 @@
   <form class="dlg-body" id="an-form">
     <p class="muted small">Runs on the server in the background – you can close the page. Imports and previews always go first.</p>
     {% if not S.bg_analysis %}<p class="flash warn-box small">⏸ Background analyses are switched off in <a href="/settings">Settings</a> – queued work waits until they are switched on.</p>{% endif %}
-    <label>What<select name="kind"><option value="both">Plate solve + optics</option><option value="solve">Plate solve only</option><option value="optics">Optics only</option></select></label>
+    <label>What<select name="kind"><option value="both">Plate solve + optics</option><option value="solve">Plate solve only</option><option value="optics">Optics only</option>{% if scope == 'project' %}<option value="none">Nothing – only session names and nights</option>{% endif %}</select></label>
+    <div class="an-frames">
     <label>Frames<select name="per_session">
       <option value="3">3 light frames per session (start / middle / end) – enough for measured values</option>
       <option value="1">1 light frame per session</option>
       <option value="10">10 light frames per session</option>
       <option value="0">all light frames</option></select></label>
-    <label class="inline"><input type="checkbox" name="only_missing" checked> skip frames that already have a result</label>
+    <label class="inline"><input type="checkbox" name="again"> analyse again frames that already have a result</label>
     <p class="muted small">Final stacks are always plate-solved too. Rejected frames are skipped.</p>
-    <div class="row"><button class="btn primary">Start</button><span class="muted small" id="an-msg"></span></div>
+    </div>
+    {% if scope == 'project' %}<label class="inline"><input type="checkbox" name="fix_sessions" {% if S.sessions_auto_fix %}checked{% endif %}> sessions: set names and nights – every session gets the project name and the night most of its files were taken in</label>{% endif %}
+    <div class="row"><button class="btn primary">Start</button></div>
   </form>
 </dialog>
 <script>
 (function(){var d=document.getElementById('an-dlg'),f=document.getElementById('an-form');
-  window.openAnalysis=function(){document.getElementById('an-msg').textContent='';d.showModal();};
+  function sync(){var none=f.kind.value==='none';f.querySelector('.an-frames').hidden=none;
+    if(none&&f.fix_sessions)f.fix_sessions.checked=true;}
+  f.kind.addEventListener('change',sync);
+  window.openAnalysis=function(){sync();d.showModal();};
   d.addEventListener('click',function(e){if(e.target===d)d.close();});
   f.addEventListener('submit',function(e){e.preventDefault();
-    var body={scope:{{ scope|tojson }},project_id:{{ project_id|tojson }},kind:f.kind.value,per_session:+f.per_session.value,only_missing:f.only_missing.checked};
-    fetch('/api/analysis/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(r){return r.json();}).then(function(j){
-        if(j.error){document.getElementById('an-msg').textContent='✗ '+j.error;return;}
-        document.getElementById('an-msg').textContent=j.queued?'✓ '+j.queued+' analyses queued':'Nothing to do – everything already analysed';
-        if(j.queued){setTimeout(function(){d.close();},900);if(window.startStatusPoll)window.startStatusPoll();}});});
+    var fix=f.fix_sessions&&f.fix_sessions.checked, kind=f.kind.value;
+    if(kind==='none'&&!fix)return;
+    d.close();
+    var jobs=[];
+    if(fix)jobs.push(fetch('/api/projects/{{ project_id }}/sessions/fix',{method:'POST'}).then(function(r){return r.json();})
+      .then(function(j){return {fix:j};}));
+    if(kind!=='none'){
+      var body={scope:{{ scope|tojson }},project_id:{{ project_id|tojson }},kind:kind,per_session:+f.per_session.value,only_missing:!f.again.checked};
+      jobs.push(fetch('/api/analysis/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(function(r){return r.json();}).then(function(j){return {queue:j};}));}
+    Promise.all(jobs).then(function(res){
+      var fx=null,q=null;res.forEach(function(x){if(x.fix)fx=x.fix;if(x.queue)q=x.queue;});
+      if(q&&q.error){alert(q.error);return;}
+      if(fx&&(fx.named||fx.redated||fx.merged)){location.reload();return;}   // the sessions changed
+      if(q&&q.queued){if(window.startStatusPoll)window.startStatusPoll();}
+      else if(q)alert('Nothing to analyse – every frame already has a result (tick “analyse again” to repeat it).');
+    }).catch(function(){alert('Request failed');});});
 })();
 </script>
 {% endmacro %}
@@ -94,7 +111,7 @@ data-info='{{ info|tojson }}'
       <label>Type<select data-fi="type">{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>
       {% if sessions is not none %}
       <label>Session (night)<select data-fi="session"><option value="">(none)</option>
-        {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if set_label(r.s) %} · {{ set_label(r.s) }}{% endif %}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
+        {% for r in sessions %}<option value="{{ r.s.id }}">{% if r.s.name %}{{ r.s.name }} · {% endif %}{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if set_label(r.s) %} · {{ set_label(r.s) }}{% endif %}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
       {% endif %}
       <label>Move to<select data-fi="move"><option value="">—</option>
         {% if others %}<optgroup label="Projects">{% for o in others %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</optgroup>{% endif %}
@@ -219,7 +236,7 @@ document.getElementById('info-dlg').addEventListener('click',function(e){if(e.ta
   {% if sessions is not none %}
   <label class="inline">Session
     <select data-bulk-sel="session"><option value="">—</option><option value="__none__">(none)</option>
-      {% for r in sessions %}<option value="{{ r.s.id }}">{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if set_label(r.s) %} · {{ set_label(r.s) }}{% endif %}</option>{% endfor %}</select></label>
+      {% for r in sessions %}<option value="{{ r.s.id }}">{% if r.s.name %}{{ r.s.name }} · {% endif %}{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if set_label(r.s) %} · {{ set_label(r.s) }}{% endif %}</option>{% endfor %}</select></label>
   {% endif %}
   <label class="inline">Move to
     <select data-bulk-sel="move"><option value="">—</option>
@@ -383,11 +400,12 @@ document.getElementById('bopt-dlg').addEventListener('click',function(e){if(e.ta
       </span>
     </div>
     <div class="up-options" hidden>
+      {% if fixed_session %}<p class="flash small up-nightnote" hidden></p>{% endif %}
       <div class="cols">
         {% if fixed_session %}<input type="hidden" class="up-session" value="">
         {% elif sessions is not none %}
         <label>Session (night)<select class="up-session"><option value="">— auto by observation date —</option>
-          {% for r in sessions %}<option value="{{ r.s.id }}" {% if loop.last %}selected{% endif %}>{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
+          {% for r in sessions %}<option value="{{ r.s.id }}" {% if loop.last %}selected{% endif %}>{% if r.s.name %}{{ r.s.name }} · {% endif %}{{ r.s.date|dmy or ('#' ~ r.s.id) }}{% if r.s.location %} · {{ r.s.location }}{% endif %}</option>{% endfor %}</select></label>
         {% endif %}
         <label>Set type of all
           <select class="up-alltype"><option value="">— keep detected —</option>{% for t in (types or FRAME_TYPES) %}<option value="{{ t }}">{{ FRAME_LABELS[t] }}</option>{% endfor %}</select></label>

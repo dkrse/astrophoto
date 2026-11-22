@@ -57,10 +57,14 @@ def calib_list(request: Request, type: str = "", camera: str = "", q: str = "",
             order = order_sql(e, cdir, C.id)
     pg = paginate(total, load_settings(db)["calib_page_size"], request.query_params.get("page"))
     # only this page's sets (with their files / sessions) are loaded – not the whole library
-    sets = db.scalars(stmt.options(selectinload(CalibrationSet.files), selectinload(CalibrationSet.sessions))
+    sets = db.scalars(stmt.options(selectinload(CalibrationSet.sessions))
                       .order_by(*order)
                       .offset(pg["start"]).limit(max(pg["end"] - pg["start"], 0))).all()
-    return page(request, "calib_list.html", user=user, sets=sets, pg=pg, ftype=type, ccol=col, cdir=cdir,
+    # file count / size of the page's sets: one aggregate query instead of loading every frame row
+    agg = {cid: (n, size or 0) for cid, n, size in db.execute(
+        select(FrameFile.calib_set_id, func.count(), func.sum(FrameFile.size))
+        .where(FrameFile.calib_set_id.in_([c.id for c in sets])).group_by(FrameFile.calib_set_id))} if sets else {}
+    return page(request, "calib_list.html", user=user, sets=sets, pg=pg, agg=agg, ftype=type, ccol=col, cdir=cdir,
                 camera=camera, cq=q, cameras=cameras)
 
 

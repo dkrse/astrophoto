@@ -224,15 +224,19 @@ def load_fits_raw(path: Path, max_side: int | None = None, opts: dict | None = N
             # superpixel debayer halves a CFA; the final image may still be ≤ 2× max_side (as before)
             side = max(raw.shape[-2:]) // (2 if cfa else 1)
             raw = _decimate(raw, max(1, side // (max_side * 2)), cfa)
-        data = np.array(raw, dtype=np.float32, copy=True)
+        bscale, bzero = float(h.get("BSCALE", 1) or 1), float(h.get("BZERO", 0) or 0)
+        wide = raw.dtype.kind in "iu" and raw.dtype.itemsize >= 4 and (bscale != 1 or bzero)
+        # 32-bit integers with BZERO = 2^31 lose their low bits in float32 arithmetic: scale in float64 first
+        data = np.array(raw, dtype=np.float64 if wide else np.float32, copy=True)
         blank = h.get("BLANK") if raw.dtype.kind in "iu" else None
         if blank is not None:
             data[raw == blank] = np.nan
-        bscale, bzero = float(h.get("BSCALE", 1) or 1), float(h.get("BZERO", 0) or 0)
         if bscale != 1:
             data *= bscale
         if bzero:
             data += bzero
+        if wide:
+            data = data.astype(np.float32)
         header = h.copy()
         for k in ("BZERO", "BSCALE", "BLANK"):        # describes the scaled float data now, like astropy does
             header.remove(k, ignore_missing=True)

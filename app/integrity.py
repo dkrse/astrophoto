@@ -130,6 +130,8 @@ def run_check(full: bool = False):
     orphans = []
     if not state["cancel"] and ARCHIVE_DIR.exists():
         for dirpath, dirnames, filenames in os.walk(ARCHIVE_DIR):
+            if state["cancel"]:                       # Stop also ends the walk of a large archive
+                break
             for fn in filenames:
                 rel = os.path.normpath(os.path.relpath(os.path.join(dirpath, fn), DATA_DIR))
                 if rel not in known:

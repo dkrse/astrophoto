@@ -22,3 +22,7 @@ data/
 *.fit
 *.fts
 *.zip
+
+# third-party build inputs (scripts/fetch-vendor.sh) – kept locally for offline builds, not committed
+vendor/*
+!vendor/README.md

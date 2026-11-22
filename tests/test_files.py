@@ -224,7 +224,7 @@ def test_calibration_set_link_and_zip(client, project, tmp_path):
     names = zipfile.ZipFile(io.BytesIO(client.get(f"/projects/{project}/zip?session={s2.id}").content)).namelist()
     assert "02_2025-10-12/light/l2.fits" in names and not any(n.startswith("01_") for n in names)
     t = client.get(f"/projects/{project}").text
-    assert '"label": "11-10-2025"' in t and 'id="s%d_light"' % s1.id in t
+    assert '"label": "Test project \\u00b7 11-10-2025"' in t and 'id="s%d_light"' % s1.id in t
     assert "Test project" in client.get(f"/calibration/{cid}").text
     assert client.post(f"/calibration/{cid}/delete", follow_redirects=False).status_code == 303
     assert client.get(f"/calibration/{cid}").status_code == 404
@@ -558,3 +558,19 @@ def test_calibration_dialog_rendered_once(client, project):
     client.post("/calibration/new", data={"frame_type": "dark", "name": "D1"})
     t = client.get(f"/projects/{project}").text
     assert t.count('<dialog id="calib-dlg"') == 1 and "var CALIB_LIB" in t and t.count("openCalib(") >= 3
+
+
+def test_move_to_project_without_sessions_copies_the_session(client, project, tmp_path):
+    upload(client, write_fits(tmp_path / "c.fits", data=star_frame(seed=121)), "light", project_id=project)
+    drain()
+    [ff] = files_of(project)
+    src = [s for s in _sessions(project) if s.id == ff.session_id][0]
+    other = int(client.post("/projects/new", data={"name": "Empty"}, follow_redirects=False)
+                .headers["location"].rsplit("/", 1)[1])
+    assert not _sessions(other)
+    r = client.post("/api/files/bulk", json={"ids": [ff.id], "action": "move", "value": str(other)})
+    assert r.status_code == 200
+    [moved] = files_of(other)
+    [copy] = _sessions(other)
+    assert moved.session_id == copy.id and copy.date == src.date
+    client.post(f"/projects/{other}/delete")

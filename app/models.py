@@ -85,6 +85,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     cover_file_id: Mapped[int | None] = mapped_column(Integer)
+    mosaic: Mapped[str | None] = mapped_column(Text)            # JSON mosaic plan (see mosaic.py), None = single field
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -102,6 +103,7 @@ class ImagingSession(Base):
     __tablename__ = "imaging_sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str | None] = mapped_column(String(200))      # optional label, shown before the night
     date: Mapped[date | None] = mapped_column(Date)
     location: Mapped[str | None] = mapped_column(String(200))
     telescope: Mapped[str | None] = mapped_column(String(200))
@@ -118,6 +120,7 @@ class ImagingSession(Base):
     gain: Mapped[str | None] = mapped_column(String(50))
     filter: Mapped[str | None] = mapped_column(String(50))
     cam_temp: Mapped[float | None] = mapped_column(Float)        # sensor set point °C (temperature = ambient)
+    backfocus_mm: Mapped[float | None] = mapped_column(Float)    # corrector / reducer spacing used that night
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -292,6 +295,9 @@ MIGRATIONS = [
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS gain VARCHAR(50)",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS filter VARCHAR(50)",
     "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS cam_temp DOUBLE PRECISION",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS name VARCHAR(200)",
+    "ALTER TABLE imaging_sessions ADD COLUMN IF NOT EXISTS backfocus_mm DOUBLE PRECISION",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS mosaic TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS solve TEXT",
     "ALTER TABLE frame_files ADD COLUMN IF NOT EXISTS optics TEXT",
     "CREATE INDEX IF NOT EXISTS ix_ff_project_type_status ON frame_files (project_id, frame_type, status)",
@@ -321,3 +327,13 @@ MIGRATIONS = [
     "DELETE FROM import_jobs WHERE calib_set_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM calibration_sets r WHERE r.id = import_jobs.calib_set_id)",
     "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_import_jobs_calib_set') THEN ALTER TABLE import_jobs ADD CONSTRAINT fk_import_jobs_calib_set FOREIGN KEY (calib_set_id) REFERENCES calibration_sets(id) ON DELETE CASCADE; END IF; END $$",
 ]
+
+
+# a new session is named after its project unless a name is given
+from sqlalchemy import event as _event, select as _select  # noqa: E402
+
+
+@_event.listens_for(ImagingSession, "before_insert")
+def _default_session_name(mapper, connection, target):
+    if target.name is None and target.project_id:
+        target.name = connection.scalar(_select(Project.name).where(Project.id == target.project_id))

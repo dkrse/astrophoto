@@ -116,7 +116,7 @@ def to_bytes_gb(v):
 
 def make_pager(request, total, per, page_no, path="/"):
     pages = max(1, -(-total // per))
-    page_no = max(1, min(page_no, pages))
+    page_no = max(1, min(to_int(page_no, 1), pages))     # '?page=abc' / '?page=' -> first page, not a 422
     base = {k: v for k, v in request.query_params.items() if k != "page" and v}
     return {"page": page_no, "pages": pages, "total": total, "per": per,
             "from": (page_no - 1) * per + 1 if total else 0, "to": min(page_no * per, total),
@@ -160,7 +160,7 @@ def page_covers(db, projects) -> dict:
 
 
 @app.get("/")
-def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), sort: str = "",
+def index(request: Request, q: str = "", page_no: str = Query("1", alias="page"), sort: str = "",
           user: User = Depends(current_user), db: Session = Depends(get_db)):
     cfg = load_settings(db)
     flt = {k: (request.query_params.get(k) or "").strip() for k in FILTER_KEYS}
@@ -246,9 +246,7 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
     per = cfg["page_size"]
     total_found = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
     pager = make_pager(request, total_found, per, page_no)
-    opts = [selectinload(Project.sessions)]
-    if q.strip():
-        opts.append(selectinload(Project.files))  # search hits look into every file of the page's projects
+    opts = [selectinload(Project.sessions)]      # file-level search hits come from SQL (file_matches)
     projects = db.scalars(stmt.options(*opts).limit(per).offset((pager["page"] - 1) * per)).all()
 
     counts = dict(db.execute(select(FrameFile.frame_type, func.count()).group_by(FrameFile.frame_type)).all())
@@ -274,12 +272,13 @@ def index(request: Request, q: str = "", page_no: int = Query(1, alias="page"), 
             a["integration"] += integ or 0
     covers = page_covers(db, projects)
     hdr_hits = header_matches(db, ids, q)
+    file_hits = file_matches(db, ids, q)
     summary = {}
     for p in projects:
         dates = [s.date for s in p.sessions if s.date]
         summary[p.id] = {**agg[p.id], "cover": covers.get(p.id),
                          "first": min(dates) if dates else None, "last": max(dates) if dates else None,
-                         "nights": len(p.sessions), "hits": search_hits(p, q, hdr_hits.get(p.id, []))}
+                         "nights": len(p.sessions), "hits": search_hits(p, q, hdr_hits.get(p.id), file_hits.get(p.id, []))}
     return page(request, "index.html", user=user, projects=projects, q=q, stats=stats, summary=summary,
                 flt=flt, active=active, cat=catalog(db), pager=pager, sort=sort, pcol=col, pdir=cdir)
 
@@ -303,23 +302,49 @@ def _snippet(text: str, q: str, width: int = 60):
     return out + escape(part[pos:]) + escape("…" if b < len(text) else "")
 
 
-def header_matches(db, project_ids: list, q: str) -> dict:
-    """{project id: [(file name, header text)]} of files whose FITS header contains q – one query (uses the
-    trigram index) instead of loading every file's deferred header separately."""
+FILE_HITS_MAX = 20                # file rows shown per project in the "found in" list
+
+
+def file_matches(db, project_ids: list, q: str) -> dict:
+    """{project id: [(name, description, note, filter)]} of files whose name / description / note / filter
+    contain q – searched in SQL, at most FILE_HITS_MAX per project (never loads every file of a project)."""
     q = " ".join(q.split())
     if not q or not project_ids:
         return {}
+    pat = like_pattern(q)
+    rn = func.row_number().over(partition_by=FrameFile.project_id, order_by=FrameFile.original_name).label("rn")
+    sub = (select(FrameFile.project_id, FrameFile.original_name, FrameFile.description, FrameFile.note,
+                  FrameFile.filter, rn)
+           .where(FrameFile.project_id.in_(project_ids),
+                  or_(FrameFile.original_name.ilike(pat), FrameFile.description.ilike(pat),
+                      FrameFile.note.ilike(pat), FrameFile.filter.ilike(pat))).subquery())
     out = {}
-    for pid, name, hdr in db.execute(select(FrameFile.project_id, FrameFile.original_name, FrameFile.header)
-                                     .where(FrameFile.project_id.in_(project_ids),
-                                            FrameFile.header.ilike(like_pattern(q)))
-                                     .order_by(FrameFile.original_name)):
-        out.setdefault(pid, []).append((name, hdr))
+    for pid, name, desc, note, flt, _ in db.execute(select(sub).where(sub.c.rn <= FILE_HITS_MAX)
+                                                    .order_by(sub.c.project_id, sub.c.rn)):
+        out.setdefault(pid, []).append((name, desc, note, flt))
     return out
 
 
-def search_hits(p: Project, q: str, headers: list | None = None) -> list:
-    """Every place in a project where q occurs: [{'where': label, 'snip': Markup}] – project first."""
+def header_matches(db, project_ids: list, q: str) -> dict:
+    """{project id: (files whose FITS header contains q, (first file name, its header))} – a count per project and
+    one header (for the snippet) instead of every matching header (uses the trigram index)."""
+    q = " ".join(q.split())
+    if not q or not project_ids:
+        return {}
+    cond = (FrameFile.project_id.in_(project_ids), FrameFile.header.ilike(like_pattern(q)))
+    counts = dict(db.execute(select(FrameFile.project_id, func.count()).where(*cond)
+                             .group_by(FrameFile.project_id)).all())
+    if not counts:
+        return {}
+    first = db.execute(select(FrameFile.project_id, FrameFile.original_name, FrameFile.header).where(*cond)
+                       .order_by(FrameFile.project_id, FrameFile.original_name)
+                       .distinct(FrameFile.project_id)).all()
+    return {pid: (counts[pid], (name, hdr)) for pid, name, hdr in first}
+
+
+def search_hits(p: Project, q: str, headers: tuple | None = None, files: list = ()) -> list:
+    """Every place in a project where q occurs: [{'where': label, 'snip': Markup}] – project first.
+    headers: (count, (file name, header text)) from header_matches; files: rows from file_matches."""
     q = " ".join(q.split())
     if not q:
         return []
@@ -339,22 +364,18 @@ def search_hits(p: Project, q: str, headers: list | None = None) -> list:
         for label, v in (("location", se.location), ("telescope", se.telescope), ("camera", se.camera),
                          ("mount", se.mount), ("software", se.software)):
             add(f"Session {d} · {label}", v)
-    hdr = 0
-    for f in p.files:
-        add(f"File {f.original_name}", f.original_name if q.lower() in (f.original_name or "").lower() else None)
-        add(f"File {f.original_name} · description", f.description)
-        add(f"File {f.original_name} · note", f.note)
-        add(f"File {f.original_name} · filter", f.filter)
-    for name, text in (headers if headers is not None else
-                       [(f.original_name, f.header) for f in p.files if f.header]):
-        if text and q.lower() in text.lower():
-            hdr += 1
-            if hdr <= 1:
-                line = next((ln for ln in text.splitlines() if q.lower() in ln.lower()), "")
-                add(f"FITS header · {name}", line)
-    if hdr > 1:
-        from markupsafe import Markup
-        hits.append({"where": "FITS headers", "snip": Markup(f"match in {hdr} files")})
+    for name, desc, note, flt in files:
+        add(f"File {name}", name if q.lower() in (name or "").lower() else None)
+        add(f"File {name} · description", desc)
+        add(f"File {name} · note", note)
+        add(f"File {name} · filter", flt)
+    if headers:
+        n, (name, text) = headers
+        line = next((ln for ln in (text or "").splitlines() if q.lower() in ln.lower()), "")
+        add(f"FITS header · {name}", line)
+        if n > 1:
+            from markupsafe import Markup
+            hits.append({"where": "FITS headers", "snip": Markup(f"match in {n} files")})
     return hits
 
 
@@ -364,7 +385,7 @@ GALLERY_SORTS = {"photo_desc": "Photo date (newest)", "photo_asc": "Photo date (
 templates.env.globals["GALLERY_SORTS"] = GALLERY_SORTS
 
 @app.get("/gallery")
-def gallery(request: Request, q: str = "", page_no: int = Query(1, alias="page"),
+def gallery(request: Request, q: str = "", page_no: str = Query("1", alias="page"),
             user: User = Depends(current_user), db: Session = Depends(get_db)):
     cfg = load_settings(db)
     stmt = (select(FrameFile).join(Project, FrameFile.project_id == Project.id)
@@ -436,13 +457,18 @@ templates.env.globals.update(last_night=last_night, photo_date=photo_date)
 # ---------- statistics ----------
 @app.get("/stats")
 def stats_page(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    rows = db.execute(
-        select(FrameFile.exposure_s, FrameFile.date_obs, FrameFile.filter, FrameFile.project_id,
-               ImagingSession.date, Project.created_at, Project.target, Project.name, ImagingSession.telescope,
-               ImagingSession.camera, Project.object_type)
-        .join(Project, FrameFile.project_id == Project.id)
-        .outerjoin(ImagingSession, FrameFile.session_id == ImagingSession.id)
-        .where(FrameFile.frame_type == "light", FrameFile.rejected.is_not(True))).all()
+    # light integration aggregated in SQL per (night, filter, target, equipment); only frames whose session has
+    # no date need their own DATE-OBS (night computed in Python, local time zone)
+    dims = (ImagingSession.date, FrameFile.filter, Project.id, Project.target, Project.name, ImagingSession.telescope,
+            ImagingSession.camera, Project.object_type)
+    def agg(*extra):
+        return (select(*dims, func.sum(func.coalesce(FrameFile.exposure_s, 0.0)), func.count(FrameFile.id), *extra)
+                .join(Project, FrameFile.project_id == Project.id)
+                .outerjoin(ImagingSession, FrameFile.session_id == ImagingSession.id)
+                .where(FrameFile.frame_type == "light", FrameFile.rejected.is_not(True)))
+    rows = [(*r, None) for r in db.execute(agg().where(ImagingSession.date.is_not(None)).group_by(*dims))]
+    rows += db.execute(agg(FrameFile.date_obs).where(ImagingSession.date.is_(None))
+                       .group_by(*dims, FrameFile.date_obs)).all()
     by_month = defaultdict(float)
     by_year = defaultdict(float)
     by_obj = defaultdict(float)
@@ -452,14 +478,16 @@ def stats_page(request: Request, user: User = Depends(current_user), db: Session
     by_type = defaultdict(float)
     nights = set()
     total = 0.0
-    for exp, dobs, flt, pid, sdate, pdate, target, pname, tel, cam, otype in rows:
-        e = exp or 0.0
+    frames = 0
+    for sdate, flt, pid, target, pname, tel, cam, otype, e, n, dobs in rows:
+        e = float(e or 0.0)
+        frames += n                              # rows are groups, not frames
         total += e
         d = sdate or night_of(dobs)              # unknown date -> not counted as a night / month
         if d:
             by_month[(d.year, d.month)] += e
             by_year[d.year] += e
-            nights.add((pid, d))
+            nights.add(d)                        # a night with several targets is one night
         by_obj[target or pname] += e
         by_tel[tel or "(not set)"] += e
         by_cam[cam or "(not set)"] += e
@@ -494,7 +522,7 @@ def stats_page(request: Request, user: User = Depends(current_user), db: Session
     from . import worker, integrity
     return page(request, "stats.html", user=user, status=worker.queue_status(db), total=total,
                 dups=integrity.duplicate_summary(db), integrity_state=dict(integrity.state),
-                integrity_report=integrity.last_report(db), frames=len(rows), nights=len(nights),
+                integrity_report=integrity.last_report(db), frames=frames, nights=len(nights),
                 months=months, years=sorted(by_year.items()), objects=top(by_obj, 15),
                 telescopes=top(by_tel), cameras=top(by_cam), filters=top(by_filter), types=top(by_type),
                 disk_types=disk_types, calib_size=calib_size, files_total=files_total, disk=disk,
@@ -520,7 +548,10 @@ async def settings_save(request: Request, user: User = Depends(current_user), db
     bad_tz = form.get("timezone") is not None and \
         coerce_setting("timezone", form["timezone"]) != str(form["timezone"]).strip()
     for k, (default, typ, lim, _) in SETTINGS.items():
-        v = ("1" if form.get(k) else "0") if typ is bool else form.get(k)
+        if typ == "multi":                        # checkboxes; a hidden empty field marks the group as sent
+            v = form.getlist(k) or None
+        else:
+            v = ("1" if form.get(k) else "0") if typ is bool else form.get(k)
         if v is None or (k == "timezone" and bad_tz):   # unknown zone: keep the current one (not reset to UTC)
             continue
         v = coerce_setting(k, v)

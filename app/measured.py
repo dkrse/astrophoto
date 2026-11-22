@@ -12,14 +12,41 @@ def load(text):
         return None
 
 
+SIDES = ["right", "bottom right", "bottom", "bottom left", "left", "top left", "top", "top right"]   # optics.py
+
+
+def sensor_side(side: str | None, orient: int = 0, flip: str = "none") -> str | None:
+    """A side seen in the analysed (rotated by `orient`, then flipped) image -> the same side of the sensor
+    array as read out (row 1 at the top). Tilt is fixed to the camera, so only this frame is comparable between
+    frames analysed with different view settings."""
+    if side not in SIDES:
+        return None
+    import math
+    a = math.radians(SIDES.index(side) * 45)
+    dx, dy = round(math.cos(a), 6), round(math.sin(a), 6)            # screen: x right, y down
+    if "h" in (flip or ""):
+        dx = -dx
+    if "v" in (flip or ""):
+        dy = -dy
+    if orient == 90:                                 # analysed image = sensor turned clockwise: undo
+        dx, dy = dy, -dx
+    elif orient == 180:
+        dx, dy = -dx, -dy
+    elif orient == 270:
+        dx, dy = -dy, dx
+    return SIDES[int((math.degrees(math.atan2(dy, dx)) % 360 + 22.5) // 45) % 8]
+
+
 def optics_summary(res: dict) -> dict:
-    """What is kept of an optics analysis (the mosaic and vectors are not stored)."""
+    """What is kept of an optics analysis (the mosaic and vectors are not stored). The tilt side is stored in
+    the sensor frame (dir_frame = "sensor"), independent of the flip / rotation the analysis was viewed with."""
     tilt = next((d for d in res.get("diagnosis", []) if d.get("key") == "tilt"), None)
     centre = (res.get("regions") or [{}] * 9)[4] if len(res.get("regions") or []) == 9 else {}
     return {"analysed_at": datetime.now().isoformat(timespec="seconds"), "stars": res.get("stars"),
             "fwhm_px": res.get("fwhm_px"), "fwhm_centre_px": centre.get("fwhm_px"), "elong": res.get("elong"),
             "bin": res.get("bin") or 1, "metrics": res.get("metrics") or {},
-            "tilt_dir": tilt["dir"] if tilt else None,
+            "tilt_dir": sensor_side(tilt["dir"], res.get("orient") or 0, res.get("flip") or "none") if tilt else None,
+            "dir_frame": "sensor",
             "findings": [d["key"] for d in res.get("diagnosis", []) if d.get("level") != "ok"]}
 
 
@@ -60,11 +87,13 @@ def session_measured(files, nominal_focal=None, nominal_scale=None, aperture_mm=
         out["sqm_note"] = notes[0] if notes and out["sqm"] is None else None
         out["sqm_src"] = next((k.get("pedestal_src") for k in skies if k.get("sqm") is not None), None)
         gains = [norm_gain(k.get("gain")) for k in skies if k.get("zp_s") is not None]
-        out["gain"] = max(set(gains), key=gains.count) if gains else None
+        out["gain"] = max(sorted(set(gains)), key=gains.count) if gains else None    # ties: deterministic
         # zero point of the most common gain only (the reference is per gain)
         out["zp_s"] = _med([k.get("zp_s") for k in skies if norm_gain(k.get("gain")) == out["gain"]])
     if opts:
-        scale = out.get("scale") or nominal_scale
+        # FWHM is in image pixels: unsolved frames take the median per-IMAGE scale of the solved ones (out["scale"]
+        # is per sensor pixel – 2× off for a 50 % export), else the nominal scale
+        scale = _med([s.get("scale_arcsec_px") for s in solves]) or nominal_scale
         sol_by_id = {f.id: load(f.solve) for f, _ in opts}
         arcs = []
         for f, o in opts:
@@ -92,9 +121,14 @@ def session_measured(files, nominal_focal=None, nominal_scale=None, aperture_mm=
             out["seeing_focus"] = bool(se.get("likely_focus"))
         out["elong"] = _med([o.get("elong") for _, o in opts])
         out["tilt_pct"] = _med([(o.get("metrics") or {}).get("tilt_pct") for _, o in opts])
-        dirs = [o.get("tilt_dir") for _, o in opts if o.get("tilt_dir")]
+        # sides of analyses stored before the sensor frame (view-dependent) are not comparable: ignored
+        dirs = [o.get("tilt_dir") for _, o in opts if o.get("tilt_dir") and o.get("dir_frame") == "sensor"]
         out["tilt_frames"] = len(dirs)
-        out["tilt_dir"] = max(set(dirs), key=dirs.count) if dirs else None
+        out["tilt_dir"] = max(sorted(set(dirs)), key=dirs.count) if dirs else None
+        out["corners_pct"] = _med([(o.get("metrics") or {}).get("corners_pct") for _, o in opts])
+        fnd = [set(o.get("findings") or []) for _, o in opts]       # share of frames with each optics finding
+        out["findings_share"] = {k: round(sum(k in x for x in fnd) / len(fnd), 2)
+                                 for k in ("curvature", "tilt", "radial", "tangential", "uniform", "irregular")}
     return out
 
 
@@ -108,6 +142,53 @@ def invalidate_zp_reference() -> None:
     with _REF_LOCK:
         _REF["data"] = None
         _REF["gen"] += 1
+
+
+# The reference is recomputed after a COMMIT that changed what it is built from (a solve, a frame's session /
+# type / rejection, a deleted frame, a session's telescope / camera) – not before the commit (a request could
+# otherwise cache the old rows for the TTL), and not after unrelated commits (previews, stats …).
+_ZP_FRAME_ATTRS = ("solve", "session_id", "frame_type", "rejected")
+_ZP_SESSION_ATTRS = ("telescope", "camera")
+
+
+def _zp_relevant(session) -> bool:
+    from sqlalchemy import inspect
+    from .models import FrameFile, ImagingSession
+    for obj in session.deleted:
+        if isinstance(obj, (FrameFile, ImagingSession)):
+            return True
+    for obj in session.new:
+        if isinstance(obj, FrameFile) and obj.solve:
+            return True
+    for obj in session.dirty:
+        attrs = _ZP_FRAME_ATTRS if isinstance(obj, FrameFile) else (
+            _ZP_SESSION_ATTRS if isinstance(obj, ImagingSession) else ())
+        st = inspect(obj)
+        if any(st.attrs[a].history.has_changes() for a in attrs):
+            return True
+    return False
+
+
+def _install_zp_hooks():
+    from sqlalchemy import event
+    from .models import SessionLocal
+
+    @event.listens_for(SessionLocal, "before_flush")
+    def _mark(session, flush_context, instances):
+        if _zp_relevant(session):
+            session.info["zp_dirty"] = True
+
+    @event.listens_for(SessionLocal, "after_commit")
+    def _commit(session):
+        if session.info.pop("zp_dirty", False):
+            invalidate_zp_reference()
+
+    @event.listens_for(SessionLocal, "after_rollback")
+    def _rollback(session):
+        session.info.pop("zp_dirty", None)
+
+
+_install_zp_hooks()
 
 
 def norm_gain(g):

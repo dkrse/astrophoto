@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import Request, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import IntegrityError
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -271,7 +272,12 @@ def _store_locked(part, meta_p, m, size, sha, db):
                    exposure_s=to_float(mm.get("exposure_s")),
                    gain=none_if_empty(mm.get("gain")), temperature=none_if_empty(mm.get("temperature")))
     db.add(ff)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:                      # owner / session deleted in the last moment: no orphan file
+        db.rollback()
+        dest.unlink(missing_ok=True)
+        return err("The project / calibration set / session was deleted during the upload", 410)
     worker.wake()
     return {"ok": True, "file_id": ff.id, "duplicate_of": (f"{dup.original_name} in {describe_owner(dup)}"
                                                            if dup else None)}
@@ -363,29 +369,25 @@ async def import_scan(request: Request, user: User = Depends(current_user)):
     return {"files": files}
 
 
-@app.post("/api/import/start")
-async def import_start(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    data = await json_body(request)
-    project, calib = resolve_owner(db, data)
-    root = safe_import_path(data.get("path", ""))
-    items = data.get("files") or []
-    if not items:
-        return err("No files selected")
-    sid = session_for(db, project, data.get("session_id"))
-    if project and not sid:
-        return err("Choose the session (night) the files belong to")
+IMPORT_MAX = 20000                # files per import request (same as the folder scan limit)
+
+
+def _import_create(db, project, calib, root: Path, items: list, sid, skip_dups: bool):
+    """Import job + one 'importing' row (with a reserved destination name) per existing file; None if no file
+    was accepted (nothing is kept then)."""
     job = ImportJob(project_id=project.id if project else None, calib_set_id=calib.id if calib else None,
-                    source_dir=str(root), skip_dups=bool(data.get("skip_dups", True)), total=0)
+                    source_dir=str(root), skip_dups=skip_dups, total=0)
     db.add(job)
     db.flush()
     base = owner_dir(project.id if project else None, calib.id if calib else None)
+    rroot = root.resolve()
     reserved = []
     try:
         for it in items:
             if not isinstance(it, dict):
                 continue
             src = (root / str(it.get("rel", ""))).resolve()
-            if root.resolve() not in src.parents:
+            if rroot not in src.parents:
                 continue
             ftype = it.get("type") if it.get("type") in FRAME_TYPES else "light"
             if not src.is_file():
@@ -398,12 +400,36 @@ async def import_start(request: Request, user: User = Depends(current_user), db:
                              size=src.stat().st_size, status="importing",
                              filter=none_if_empty(it.get("filter"))))
             job.total += 1
+        if not job.total:
+            db.rollback()
+            return None
         db.commit()
     except Exception:
         db.rollback()
         for d in reserved:                    # no rows -> no empty placeholder files left behind
             d.unlink(missing_ok=True)
         raise
+    return job
+
+
+@app.post("/api/import/start")
+async def import_start(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    data = await json_body(request)
+    project, calib = resolve_owner(db, data)
+    root = safe_import_path(data.get("path", ""))
+    items = data.get("files") or []
+    if not items:
+        return err("No files selected")
+    if not isinstance(items, list) or len(items) > IMPORT_MAX:
+        return err(f"Too many files at once (max. {IMPORT_MAX}) – import the folder in parts")
+    sid = session_for(db, project, data.get("session_id"))
+    if project and not sid:
+        return err("Choose the session (night) the files belong to")
+    # stat / reserve every file in a worker thread: thousands of files on a slow share must not block the server
+    job = await run_in_threadpool(_import_create, db, project, calib, root, items, sid,
+                                  bool(data.get("skip_dups", True)))
+    if job is None:
+        return err("None of the selected files exists any more in the import folder")
     worker.wake()
     flash(request, f"Import started: {job.total} files are being copied in the background")
     return {"ok": True, "job": job.id, "total": job.total,

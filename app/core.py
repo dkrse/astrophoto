@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import math
+import json
 import os
 import re
 import secrets
@@ -236,7 +237,16 @@ SETTINGS = {
     "bg_integrity": (True, bool, None, "Allow archive integrity checks"),
     "cond_auto_measure": (True, bool, None, "Measure seeing, transparency and sky brightness of new nights automatically"),
     "cond_auto_fill": (True, bool, None, "Fill in the session's Seeing and SQM from the measurements"),
+    "sessions_auto_fix": (False, bool, None, "Keep session names and nights in line with their files"),
+    # columns of the sessions table on the project page
+    "session_columns": ("name,night,set,equipment,scale,moon,measured,files", "multi",
+                        ["name", "night", "set", "equipment", "scale", "moon", "measured", "files"],
+                        "Sessions table columns"),
 }
+SESSION_COLUMN_LABELS = {"name": "Name", "night": "Night", "set": "Set (exposure · gain · filter · camera temp.)",
+                         "equipment": "Equipment", "scale": "Scale / FOV", "moon": "Moon",
+                         "measured": "Measured (focal length, seeing, SQM …)", "files": "Files"}
+templates.env.globals["SESSION_COLUMN_LABELS"] = SESSION_COLUMN_LABELS
 SORT_LABELS = {"date_desc": "Last night (newest)", "date_asc": "First night (oldest)",
                "name_asc": "Name A–Z", "name_desc": "Name Z–A", "created_desc": "Recently added",
                "size_desc": "Size (largest)"}
@@ -263,6 +273,9 @@ def coerce_setting(k, v):
             v = str(v).strip()
             ZoneInfo(v)                           # unknown zone -> exception -> default
             return v
+        if typ == "multi":                        # comma list of allowed values, in their canonical order
+            got = {x.strip() for x in (v if isinstance(v, (list, tuple)) else str(v).split(","))}
+            return ",".join(x for x in lim if x in got)
         if typ == "color":
             v = str(v).strip()
             return v if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else default
@@ -355,10 +368,19 @@ def as_dict(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+JSON_MAX_BYTES = 8 * 1024 ** 2    # largest JSON request (20 000 file entries of an import fit easily)
+
+
 async def json_body(request: Request) -> dict:
-    """Request body as a JSON object; malformed JSON or a non-object (list, string…) -> 400 instead of a 500."""
+    """Request body as a JSON object; malformed JSON or a non-object (list, string…) -> 400 instead of a 500;
+    larger than JSON_MAX_BYTES -> 413 (declared length, then the body read)."""
+    if to_int(request.headers.get("content-length"), 0) > JSON_MAX_BYTES:
+        raise HTTPException(413, "Request too large")
+    body = await request.body()
+    if len(body) > JSON_MAX_BYTES:                # chunked request without a length
+        raise HTTPException(413, "Request too large")
     try:
-        data = await request.json()
+        data = json.loads(body or b"null")
     except ValueError:
         raise HTTPException(400, "Invalid JSON body")
     if not isinstance(data, dict):
@@ -546,7 +568,12 @@ def move_file_storage(f: FrameFile, project_id=None, calib_set_id=None, frame_ty
     if not src.is_file():
         raise FileNotFoundError(f"{f.original_name}: file missing on disk")
     dest = unique_dest(owner_dir(project_id, calib_set_id) / ft, src.name)   # reserved empty file
-    os.replace(src, dest) if src.stat().st_dev == dest.stat().st_dev else shutil.move(src, dest)
+    try:
+        os.replace(src, dest) if src.stat().st_dev == dest.stat().st_dev else shutil.move(src, dest)
+    except BaseException:
+        if src.exists():                          # original still in place: drop the placeholder / partial copy
+            dest.unlink(missing_ok=True)
+        raise
     f.stored_path = str(dest.relative_to(DATA_DIR))
     if f.thumb_path:
         t = DATA_DIR / f.thumb_path

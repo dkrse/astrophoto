@@ -1,7 +1,7 @@
 """Astrophoto – FastAPI app entry point."""
 import os
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 
 import logging
 from datetime import date
@@ -103,6 +103,17 @@ def migrate_session_sets(db):
         print(f"session sets: {moved} light frame(s) sorted into per-set sessions")
 
 
+def migrate_session_names(db):
+    """Sessions created before names existed are named after their project once (marker in settings)."""
+    from .models import Setting
+    if db.get(Setting, "migr_session_names_v1"):
+        return
+    n = db.execute(text("UPDATE imaging_sessions s SET name = p.name FROM projects p "
+                        "WHERE s.project_id = p.id AND s.name IS NULL")).rowcount
+    db.add(Setting(key="migr_session_names_v1", value=str(n)))
+    db.commit()
+
+
 @app.on_event("startup")
 def startup():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,6 +144,10 @@ def startup():
         migrate_project_to_sessions(db)
         migrate_software_to_sessions(db)
         migrate_session_sets(db)
+        migrate_session_names(db)
+        if not db.get(Setting, worker.RESTAT_KEY):       # re-measure star FWHM of stored frames (background)
+            upto = db.scalar(select(func.max(FrameFile.id)).where(FrameFile.stat_fwhm.is_not(None))) or 0
+            db.add(Setting(key=worker.RESTAT_KEY, value=f"0/{upto}" if upto else "done"))
         if not db.get(Setting, "migr_moon_v2"):          # Meeus formula + site time zone
             from .core import recompute_moon
             recompute_moon(db, load_settings(db)["timezone"])
@@ -143,5 +158,7 @@ def startup():
     if os.environ.get("ASTRO_NO_WORKER") != "1":     # tests drive the worker manually
         worker.start()
         import threading
-        from .platesolve import catalogue                # OpenNGC (~14 000 objects): load once, in the background
+        from .platesolve import catalogue                # OpenNGC + Stellarium extras (~19 000 objects): once, in the background
         threading.Thread(target=catalogue, name="astro-catalogue", daemon=True).start()
+        from .skycat import stars                        # HYG (~99 000 named / HD stars)
+        threading.Thread(target=stars, name="star-catalogue", daemon=True).start()

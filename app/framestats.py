@@ -1,6 +1,8 @@
 """Frame quality statistics for light frames: background, noise, star count, FWHM."""
 from pathlib import Path
 
+import math
+
 import numpy as np
 
 from .preview import FITS_EXT, RAW_EXT, IMAGE_EXT, load_fits_raw, BAYER_PATTERNS, fits_cfa_pattern, clean_opts, to_image_planes
@@ -61,7 +63,7 @@ def frame_stats(src: Path) -> dict | None:
     idx = np.arange(1, n + 1)
     sizes = np.bincount(labels.ravel(), minlength=n + 1)[1:]      # no full-size float array
     peaks = ndimage.maximum(lum, labels, idx)
-    sat = float(lum.max()) * 0.97
+    sat = saturation_level(lum, 0.97)
     ok = (sizes >= 4) & (sizes <= 2500) & (peaks < sat)
     stars = int(ok.sum())
 
@@ -75,21 +77,61 @@ def frame_stats(src: Path) -> dict | None:
         y0, x0 = max(sl[0].start - 3, 0), max(sl[1].start - 3, 0)
         y1, x1 = min(sl[0].stop + 3, lum.shape[0]), min(sl[1].stop + 3, lum.shape[1])
         cut = lum[y0:y1, x0:x1] - bg
-        cut = np.clip(cut, 0, None)
-        tot = cut.sum()
-        if tot <= 0:
+        m = windowed_moments(cut, (sl[1].start + sl[1].stop) / 2 - x0 - 0.5, (sl[0].start + sl[0].stop) / 2 - y0 - 0.5,
+                             max(1.0, math.sqrt(sizes[i] / math.pi) / 1.5))
+        if m is None:
             continue
-        yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
-        cy, cx = (yy * cut).sum() / tot, (xx * cut).sum() / tot
-        vy = ((yy - cy) ** 2 * cut).sum() / tot
-        vx = ((xx - cx) ** 2 * cut).sum() / tot
-        sigma = np.sqrt(max((vx + vy) / 2, 0))
+        sigma = math.sqrt((m[2] + m[3]) / 2)
         if 0.3 < sigma < 30:
             fwhms.append(2.3548 * sigma * scale)
         if len(fwhms) >= MAX_STARS:
             break
     fwhm = float(np.median(fwhms)) if len(fwhms) >= 3 else None
     return {"bg": bg, "noise": noise, "stars": stars, "fwhm": fwhm}
+
+
+def saturation_level(img: np.ndarray, frac: float) -> float:
+    """Peaks at or above this are treated as saturated: frac × the image maximum, but only when the frame really
+    has clipped pixels (several at the maximum = a plateau). Without clipping nothing is excluded – a frame whose
+    brightest stars are merely bright must not lose them."""
+    mx = float(np.nanmax(img)) if img.size else 0.0
+    if not np.isfinite(mx) or mx <= 0:
+        return float("inf")
+    return mx * frac if int(np.count_nonzero(img >= mx * 0.999)) >= 4 else float("inf")
+
+
+def windowed_moments(cut: np.ndarray, cx: float, cy: float, s0: float, iters: int = 6):
+    """Second moments of a star with an adaptive Gaussian window, the window deconvolved
+    (C = (Cw⁻¹ − I/σw²)⁻¹, exact for a Gaussian star). cut: background-subtracted, NOT clipped – noise
+    pixels then average out instead of adding weight at large radii (plain box moments read 7–16 % too large).
+    Returns (cx, cy, mxx, myy, mxy) in cut coordinates or None."""
+    yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
+    cut = np.asarray(cut, dtype=np.float64)
+    sw = max(float(s0), 0.7)
+    C = None
+    for _ in range(iters):
+        dx, dy = xx - cx, yy - cy
+        w = np.exp(-(dx * dx + dy * dy) / (2 * sw * sw)) * cut
+        tot = w.sum()
+        if not tot > 0:
+            return None
+        cx, cy = cx + (w * dx).sum() / tot, cy + (w * dy).sum() / tot
+        if not (0 <= cx < cut.shape[1] and 0 <= cy < cut.shape[0]):
+            return None
+        dx, dy = xx - cx, yy - cy
+        cxy = (w * dx * dy).sum() / tot
+        cw = np.array([[(w * dx * dx).sum() / tot, cxy], [cxy, (w * dy * dy).sum() / tot]])
+        try:
+            C = np.linalg.inv(np.linalg.inv(cw) - np.eye(2) / (sw * sw))
+        except np.linalg.LinAlgError:
+            return None
+        ev = np.linalg.eigvalsh(C)
+        if not ev[0] > 0 or not math.isfinite(ev[1]):
+            return None
+        sw = math.sqrt(ev.mean())
+        if sw > 60:                                     # diverging (no star / flat patch)
+            return None
+    return cx, cy, float(C[0, 0]), float(C[1, 1]), float(C[0, 1])
 
 
 def flag_suspects(files) -> int:

@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+data/
+tests/
+screenshots/
+scripts/
+**/__pycache__
+*.md
+vendor/README.md

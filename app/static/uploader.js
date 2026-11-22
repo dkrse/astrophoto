@@ -42,6 +42,39 @@
       return cards;
     }).catch(function () { return {}; });
   }
+  /* astronomical night (YYYY-MM-DD) of a capture time; frames after midnight belong to the previous evening */
+  function nightOf(y, mo, d, h) {
+    var t = new Date(Date.UTC(y, mo - 1, d));
+    if (h < 12) t.setUTCDate(t.getUTCDate() - 1);
+    return t.toISOString().slice(0, 10);
+  }
+  function localParts(ms) {          // epoch ms -> [y, m, d, h] in the site time zone (else the browser's)
+    try {
+      var o = {}; new Intl.DateTimeFormat('en-CA', { timeZone: window.UPLOAD_TZ || undefined, hourCycle: 'h23',
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit' }).formatToParts(new Date(ms))
+        .forEach(function (p) { o[p.type] = +p.value; });
+      if (o.year) return [o.year, o.month, o.day, o.hour % 24];
+    } catch (e) {}
+    var d = new Date(ms); return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours()];
+  }
+  function nightFrom(cards, file) {
+    var m = /^(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d))?/.exec(cards['DATE-LOC'] || '');
+    if (m) return nightOf(+m[1], +m[2], +m[3], +(m[4] || 12));
+    m = /^(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d))?/.exec(cards['DATE-OBS'] || '');
+    if (m) { var p = localParts(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 12), +(m[5] || 0))); return nightOf(p[0], p[1], p[2], p[3]); }
+    if (!file.lastModified) return null;
+    var q = localParts(file.lastModified); return nightOf(q[0], q[1], q[2], q[3]);
+  }
+  /* most files of a drop taken in one night -> tell the page (it picks / creates that night's session) */
+  function majorityNight(list) {
+    if (!window.UPLOAD_NIGHT) return;
+    var use = list.filter(function (it) { return it.type === 'light' && it.night; });
+    if (!use.length) use = list.filter(function (it) { return it.night; });
+    if (!use.length) return;
+    var c = {}, best = null;
+    use.forEach(function (it) { c[it.night] = (c[it.night] || 0) + 1; if (!best || c[it.night] > c[best]) best = it.night; });
+    if (c[best] * 2 > use.length) window.UPLOAD_NIGHT(best, c[best], use.length);
+  }
   function detect(item) {
     var f = item.file, path = item.path || f.name;
     var byName = typeFromText(f.name.replace(/\.[^.]+$/, ''));
@@ -52,14 +85,16 @@
     if (/\.(fits?|fts)$/i.test(f.name)) {
       return fitsCards(f).then(function (c) {
         item.exp = c.EXPTIME || c.EXPOSURE || '';
+        item.night = nightFrom(c, f);
         return typeFromText(c.IMAGETYP || c.FRAME || c.IMAGETYPE || '') || byName || byDir || fallback;
       });
     }
+    item.night = nightFrom({}, f);
     return Promise.resolve(byName || byDir || fallback);
   }
 
   function addFiles(list) {
-    var added = [], inList = 0, supported = 0;
+    var added = [], inList = 0, supported = 0, waits = [];
     list.forEach(function (it) {
       if (!EXT.test(it.file.name) || it.file.name.startsWith('.')) return;
       supported++;
@@ -67,8 +102,9 @@
       it.state = 'queued'; it.sent = 0;
       items.push(it); added.push(it);
       renderRow(it);
-      detect(it).then(function (t) { it.type = TYPES.indexOf(t) >= 0 ? t : (window.UPLOAD_DEFAULT || TYPES[0]); it.sel.value = it.type; updateSummary(); });
+      waits.push(detect(it).then(function (t) { it.type = TYPES.indexOf(t) >= 0 ? t : (window.UPLOAD_DEFAULT || TYPES[0]); it.sel.value = it.type; updateSummary(); }));
     });
+    if (added.length) Promise.all(waits).then(function () { majorityNight(items.filter(function (x) { return x.state === 'queued'; })); });
     opts.hidden = items.length === 0;
     if (!supported && list.length) alert('No supported files (FITS, RAW, JPEG, PNG, TIFF, XISF …) found.');
     else if (inList && !added.length) alert(inList === 1 ? 'This file is already in the upload list.' : 'All ' + inList + ' files are already in the upload list.');

@@ -46,7 +46,9 @@ def path_project(rel: str, root_name: str) -> str:
     return root_name
 
 
-TIME_AFTER = re.compile(r"^[T_\-\s]?(\d\d)[-_:.]?(\d\d)")
+# a full time HH MM SS right after the date (same separator twice or none) – not a frame counter ('_0001') or an
+# exposure ('_0300s'), which would otherwise be read as an hour and move the file to the previous night
+TIME_AFTER = re.compile(r"^[T_\-\s]?(\d\d)([-_:.]?)(\d\d)\2(\d\d)(?!\d|s(?:ec)?(?![a-z]))", re.I)
 
 
 def path_night(rel: str):
@@ -65,7 +67,7 @@ def path_night(rel: str):
         except ValueError:
             continue
         t = TIME_AFTER.match(parts[-1][m.end():])
-        if t and int(t.group(1)) < 24:
+        if t and int(t.group(1)) < 24 and int(t.group(3)) < 60 and int(t.group(4)) < 60:
             return night_of(datetime(d.year, d.month, d.day, int(t.group(1))))
         return d
     return None
@@ -198,7 +200,7 @@ async def archive_start(request: Request, user: User = Depends(current_user), db
             return err("Every group needs a project name")
         if not parse_dmy(g.get("night") or ""):
             return err(f"Missing night date for “{g.get('project')}” – enter it (dd-mm-yyyy)")
-    if not _enough_space(root, groups):
+    if not await run_in_threadpool(_enough_space, root, groups):     # stats every listed file: not on the loop
         return err("Not enough free disk space for this import", 507)
     res = await run_in_threadpool(_archive_start, db, root, groups, bool(data.get("skip_dups", True)))
     if isinstance(res, str):

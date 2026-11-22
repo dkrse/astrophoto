@@ -166,7 +166,7 @@ def test_project_has_no_software_and_upload_needs_session(client, project):
 def test_add_files_button_markup(client, project):
     client.post(f"/projects/{project}/sessions", data={"date": "03-03-2026"})
     t = client.get(f"/projects/{project}").text
-    assert 'onclick="uploadTo(this.dataset.sid, this.dataset.label)"' in t and 'data-label="03-03-2026"' in t
+    assert 'onclick="uploadTo(this.dataset.sid, this.dataset.label)"' in t and '03-03-2026"' in t and 'data-label="' in t
 
 
 def test_session_table_compact_with_info_dialog(client, project):

@@ -1,18 +1,19 @@
 """Projects, imaging sessions (nights), calibration links, streaming ZIP downloads."""
 import json
+from datetime import date
 import re
 import shutil
 from collections import defaultdict
 from urllib.parse import quote
 
 from fastapi import Request, Form, Depends, HTTPException
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from .core import (clean_filename, download_name, app, page, flash, get_db, current_user, catalog, none_if_empty, parse_dmy, get_project,
                    get_calib, project_dir, DATA_DIR, load_settings, safe_name, fmt_dmy, fmt_dur,
-                   exposure_summary, moon_illumination, night_of, optics)
+                   exposure_summary, moon_illumination, night_of, optics, json_body, to_float)
 from .models import (User, Project, FrameFile, ImagingSession, CalibrationSet, FRAME_TYPES, RAW_FRAME_TYPES,
                      FRAME_LABELS)
 from .routes_main import project_cover
@@ -22,7 +23,7 @@ from .sessets import (SET_FIELDS, place_light, other_lights, waiting_lights, nor
 
 PROJECT_FIELDS = ["name", "target", "object_type", "tags", "description", "notes"]
 EQUIP_KINDS = ("location", "telescope", "camera", "mount", "software")
-SESSION_FIELDS = ["location", "telescope", "camera", "mount", "software", "seeing", "sqm", "temperature", "humidity", "notes"]
+SESSION_FIELDS = ["name", "location", "telescope", "camera", "mount", "software", "seeing", "sqm", "temperature", "humidity", "notes"]
 
 
 async def apply_form(request: Request, p: Project):
@@ -93,9 +94,11 @@ def session_rows(p: Project, cat=None, ref=None):
     by_sid = {}                                   # group once (was: every session scanned all project files)
     for f in p.files:
         by_sid.setdefault(f.session_id, []).append(f)
+    from .calibcheck import check, summary
     for s in p.sessions:
         files = by_sid.get(s.id, [])
-        out.append({"s": s, "files": files, "count": len(files),
+        cc = check(s, files)
+        out.append({"s": s, "files": files, "count": len(files), "calib": cc, "calib_sum": summary(cc),
                     "measured": session_values(cat, s, files, ref),
                     "lights": sum(1 for f in files if f.frame_type == "light"),
                     "exposure": exposure_summary(files)["total"], "expo": exposure_summary(files),
@@ -121,7 +124,25 @@ def calib_library(db) -> list:
             for c in db.scalars(select(CalibrationSet).order_by(CalibrationSet.capture_date.desc().nulls_last()))]
 
 
-SESSION_COLS = ("night", "set", "equipment", "scale", "moon", "measured", "files")
+COVER_LIGHTS = 60                 # light frames offered as a cover (stacks / processed images: all)
+
+
+def cover_choices(p) -> list:
+    """Files offered in the cover dialog: everything with a preview except light subs, which are capped –
+    a project with thousands of subs must not render thousands of choices; the current cover is always kept."""
+    out, lights = [], 0
+    for f in p.files:
+        if not f.thumb_path:
+            continue
+        if f.frame_type == "light" and f.id != p.cover_file_id:
+            lights += 1
+            if lights > COVER_LIGHTS:
+                continue
+        out.append(f)
+    return out
+
+
+SESSION_COLS = ("name", "night", "set", "equipment", "scale", "moon", "measured", "files")
 
 
 @app.get("/projects/{pid}")
@@ -135,9 +156,10 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
     sizes = {t: sum(f.size for f in fs) for t, fs in groups.items()}
     lights = groups["light"]
     med = {}
-    for k in ("stat_fwhm", "stat_stars", "stat_bg"):
-        vals = sorted(getattr(f, k) for f in lights if getattr(f, k) is not None)
-        med[k] = vals[len(vals) // 2] if vals else None
+    for k in ("stat_fwhm", "stat_stars", "stat_bg"):     # baseline of the kept frames (rejected ones excluded)
+        vals = sorted(getattr(f, k) for f in lights if getattr(f, k) is not None and not f.rejected)
+        n = len(vals)
+        med[k] = (vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2) if n else None
     others = db.execute(select(Project.id, Project.name).where(Project.id != p.id)
                         .order_by(func.lower(Project.name))).all()
     cat = catalog(db)
@@ -148,8 +170,10 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
     if scol:                                      # sort all sessions, then page (table + file blocks follow)
         m_of = lambda r: (r["measured"] or {})
         rows = sort_items(rows, {
+            "name": lambda r: nat_key(r["s"].name) if r["s"].name else None,
             "night": lambda r: r["s"].date,
-            "set": lambda r: (r["s"].exposure_s, nat_key(set_label(r["s"]))) if set_label(r["s"]) else None,
+            "set": lambda r: (r["s"].exposure_s is None, r["s"].exposure_s or 0, nat_key(set_label(r["s"])))
+            if set_label(r["s"]) else None,                       # a set without exposure: after the timed ones
             "equipment": lambda r: nat_key(" · ".join(x for x in (r["s"].telescope, r["s"].camera, r["s"].mount) if x)) or None,
             "scale": lambda r: r["optic"]["scale"] if r["optic"] else None,
             "moon": lambda r: r["s"].moon_illum,
@@ -170,6 +194,13 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                             "groups": {t: [f for f in unassigned if f.frame_type == t] for t in FRAME_TYPES}})
     for g in sess_groups:
         g["sizes"] = {t: sum(f.size for f in fs) for t, fs in g["groups"].items()}
+    calib_lib = calib_library(db)                # one query for every set + one count query (template uses counts)
+    calib_counts = {c["id"]: c["files"] for c in calib_lib}
+    calib_type_counts = {}                        # session id -> frame type -> files in its linked library sets
+    for s in p.sessions:
+        for c in s.calib_sets:
+            d = calib_type_counts.setdefault(s.id, {})
+            d[c.frame_type] = d.get(c.frame_type, 0) + calib_counts.get(c.id, 0)
     dates = [s.date for s in p.sessions if s.date]
     last_s = p.sessions[-1] if p.sessions else None
     from .integrity import project_duplicates
@@ -178,9 +209,11 @@ def project_detail(request: Request, pid: int, show: str = "", user: User = Depe
                 sess_groups=sess_groups, unassigned=len(unassigned), last_s=last_s, spg=spg,
                 page_rows=rows[spg["start"]:spg["end"]], session_page=session_page,
                 date_range=(min(dates), max(dates)) if dates else None,
-                cover=project_cover(p), thumbs=[f for f in p.files if f.thumb_path],
+                cover=project_cover(p), thumbs=cover_choices(p),
                 expo=exposure_summary(p.files), sessions=rows, cat=cat,
-                calib_lib=calib_library(db), all_calib=db.scalars(select(CalibrationSet)).all(), status=worker.queue_status(db, project_id=p.id),
+                calib_lib=calib_lib, all_calib=calib_lib, calib_counts=calib_counts,
+                calib_type_counts=calib_type_counts,
+                status=worker.queue_status(db, project_id=p.id),
                 suspects=sum(1 for f in lights if f.suspect and not f.rejected),
                 rejected=sum(1 for f in lights if f.rejected), med=med, others=others,
                 settings=cfg, show=show, scol=scol, sdir=sdir)
@@ -209,9 +242,16 @@ def optics_trend(user: User = Depends(current_user), db: Session = Depends(get_d
         out.append({"session_id": sid, "project_id": s.project_id, "project": s.project.name,
                     "date": s.date.isoformat() if s.date else None, "date_dmy": fmt_dmy(s.date),
                     "equipment": " · ".join(x for x in (s.telescope, s.camera) if x) or "(equipment not set)",
-                    **m})
+                    "backfocus_mm": s.backfocus_mm, **m})
     out.sort(key=lambda r: (r["equipment"], r["date"] or ""))
     return out
+
+
+@app.get("/api/stats/optics-advice")
+def optics_advice(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Recommendations per setup from the optics history (see opticsadvice.py)."""
+    from .opticsadvice import advise
+    return advise(optics_trend(user, db))
 
 
 @app.get("/api/projects/{pid}/status")
@@ -234,7 +274,12 @@ async def project_update(request: Request, pid: int, user: User = Depends(curren
                          db: Session = Depends(get_db)):
     p = get_project(db, pid)
     before = (name_key(p.name), name_key(p.target))
+    old_name = p.name
     await apply_form(request, p)
+    if p.name != old_name:                        # sessions named after the project follow its new name
+        for s in p.sessions:
+            if s.name == old_name:
+                s.name = p.name
     changed = before != (name_key(p.name), name_key(p.target))
     dups = similar_projects(db, p.name, p.target, p.id) if changed else []
     if dups and (await request.form()).get("confirm_dup") != "1":
@@ -305,6 +350,9 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     s = db.get(ImagingSession, int(sid)) if sid and sid.isdigit() else None
     if s and s.project_id != p.id:
         raise HTTPException(400)
+    if sid and not s:                             # edited in a page whose session was deleted meanwhile
+        flash(request, "This session no longer exists (deleted meanwhile) – nothing was saved", "err")
+        return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
     d = parse_dmy(form.get("date"))
     if not d:                                     # validate before a new row exists (no autoflush of a half session)
         flash(request, "Please enter a valid night date (dd-mm-yyyy)", "err")
@@ -325,6 +373,8 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
         v = none_if_empty(form.get(f))
         setattr(s, f, None if v == "__new__" else v)
     s.moon_illum = moon_illumination(s.date)
+    bf = to_float(form.get("backfocus_mm"))
+    s.backfocus_mm = round(bf, 2) if bf is not None and 0 < bf < 1000 else None
     # the acquisition set can be chosen while the session holds no light frames (afterwards it is fixed –
     # it is what the lights in it have; a different set goes to its own session)
     set_note = ""
@@ -352,6 +402,43 @@ async def session_save(request: Request, pid: int, user: User = Depends(current_
     db.commit()
     flash(request, "Session saved" + set_note)
     return RedirectResponse(f"/projects/{pid}#sessions", status_code=303)
+
+
+@app.post("/api/projects/{pid}/sessions/fix")
+def sessions_fix(pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Names and nights of the project's sessions from their files (also run by the worker when
+    “Keep session names and nights in line with their files” is on)."""
+    from .sessets import fix_sessions
+    out = fix_sessions(db, get_project(db, pid), rename=True)     # chosen in Analyse: names and nights both
+    db.commit()
+    return out
+
+
+@app.post("/api/projects/{pid}/sessions/for-night")
+async def session_for_night(request: Request, pid: int, user: User = Depends(current_user),
+                            db: Session = Depends(get_db)):
+    """Uploader: the session of the night most of the dropped files were taken in. The first existing
+    session of that night, else a new one with the equipment of the session the upload was opened on."""
+    p = get_project(db, pid)
+    data = await json_body(request)
+    try:
+        d = date.fromisoformat(str(data.get("date") or ""))
+    except ValueError:
+        return JSONResponse({"error": "Invalid date"}, status_code=400)
+    s = db.scalars(select(ImagingSession).where(ImagingSession.project_id == p.id, ImagingSession.date == d)
+                   .order_by(ImagingSession.id)).first()
+    created = False
+    if not s:
+        src = db.get(ImagingSession, int(data["from"])) if str(data.get("from") or "").isdigit() else None
+        s = ImagingSession(project_id=p.id, date=d, moon_illum=moon_illumination(d))
+        if src and src.project_id == p.id:
+            for k in EQUIP_KINDS:
+                setattr(s, k, getattr(src, k))
+        db.add(s)
+        db.commit()
+        created = True
+    label = " · ".join(x for x in (s.name, s.date.strftime("%d-%m-%Y"), set_label(s)) if x)
+    return {"id": s.id, "label": label, "created": created}
 
 
 @app.post("/sessions/{sid}/delete")

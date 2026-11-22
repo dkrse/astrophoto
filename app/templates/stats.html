@@ -80,6 +80,37 @@
   <details class="small"><summary>Table</summary><div class="tablewrap"><table class="kvt small" id="tr-table"></table></div></details>
   <div class="tr-tip" id="tr-tip" hidden></div>
 </section>
+<section class="card" id="advice">
+  <div class="head"><h3 class="mt0">Optics recommendations</h3></div>
+  <p class="muted small">From the 🔬 Optics analyses night by night, per setup (telescope · camera): recurring tilt (fixed side = mechanical, changing side = sag / flexure), soft corners against the <b>corrector spacing</b> logged in the sessions (best spacing fitted from your nights), changes between nights and elongation that points to guiding.</p>
+  <div id="adv-list"><p class="muted small">Loading…</p></div>
+</section>
+<script>
+(function(){
+  var box=document.getElementById('adv-list'),CLS={ok:'good',warn:'warn',bad:'bad'};
+  function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e;}
+  fetch('/api/stats/optics-advice').then(function(r){return r.json();}).then(function(d){
+    box.innerHTML='';
+    if(!d.length){box.append(el('p','muted small','No optics analyses yet – run 🔬 Optics on light frames (bulk bar or 🎯🔬 Analyse archive).'));return;}
+    var fine=d.filter(function(g){return g.items.every(function(x){return x.level==='ok';});});
+    var todo=d.filter(function(g){return fine.indexOf(g)<0;});
+    if(!todo.length)box.append(el('div','target-check good','No recurring optical problem on any setup.'));
+    todo.forEach(function(g){
+      var sec=el('div','adv-setup');sec.append(el('h4','adv-h',g.equipment+' · '+g.nights+' night(s)'));
+      g.items.forEach(function(x){var c=el('div','target-check '+(CLS[x.level]||''));c.append(el('b',null,x.title+': '),document.createTextNode(x.text));sec.append(c);});
+      var withData=g.series.filter(function(r){return r.corners_pct!=null||r.tilt_pct!=null;});
+      if(withData.length){var det=el('details','small');det.append(el('summary',null,'Nights'));
+        var t=el('table','kvt small');var h=t.createTHead().insertRow();['Night','Project','Spacing','Corners','Tilt','Tilt side (sensor)'].forEach(function(k){h.append(el('th',null,k));});
+        var tb=t.createTBody();withData.forEach(function(r){var tr=tb.insertRow();
+          var a=el('a',null,r.project||'');a.href='/projects/'+r.project_id+'#s'+r.session_id+'_';
+          [r.date_dmy||r.date||'',a,r.backfocus_mm!=null?r.backfocus_mm+' mm':'',r.corners_pct!=null?Math.round(r.corners_pct)+' %':'',
+           r.tilt_pct!=null?Math.round(r.tilt_pct)+' %':'',r.tilt_dir||''].forEach(function(v){var td=tr.insertCell();if(v instanceof Node)td.append(v);else td.textContent=v;});});
+        var w=el('div','tablewrap');w.append(t);det.append(w);sec.append(det);}
+      box.append(sec);});
+    if(fine.length)box.append(el('p','muted small','Without a recurring problem: '+fine.map(function(g){return g.equipment+' ('+g.nights+' night'+(g.nights>1?'s':'')+')';}).join(' · ')));
+  }).catch(function(){box.innerHTML='';box.append(el('p','muted small','✗ Could not load the recommendations.'));});
+})();
+</script>
 </div>
 <div class="tabpane" id="t-health">
 <section class="card" id="health">

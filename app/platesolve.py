@@ -79,6 +79,8 @@ def _ra_dec_hint(h: dict):
         dec = sexa(h.get("DEC"), False)
     if dec is None:
         return None, None
+    if obj_ra is not None and abs(ra - obj_ra) < abs(ra / 15.0 - obj_ra):
+        return ra, dec                            # numeric RA written in hours (OBJCTRA agrees with it)
     return ra / 15.0, dec
 
 
@@ -208,8 +210,7 @@ def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra
         res["photometry"] = {"error": "Not measured: 8-bit image (JPEG / PNG) is stretched, fluxes are not linear"}
     elif stars is not None:
         try:
-            res["photometry"] = _photometry(stars, res["ra_deg"], res["dec_deg"],
-                                            math.hypot(w_px, h_px) / 2 * scale_bin / 3600, scale_bin)
+            res["photometry"] = _photometry(stars, res, math.hypot(w_px, h_px) / 2 * scale_bin / 3600, scale_bin)
         except Exception as e:                  # photometry is a bonus – never fail the solve
             res["photometry"] = {"error": str(e)}
     if pixel_um:
@@ -219,12 +220,17 @@ def _solve_locked(src, header_text, lum, binf, h_px, w_px, h, xbin, pixel_um, ra
     return res
 
 
-def _photometry(stars, ra0, dec0, radius, scale_arcsec=1.0):
+def _photometry(stars, res, radius, scale_arcsec=1.0):
+    """Limiting magnitude + photometric quality. Star positions for the field uniformity come from the solved WCS
+    (same pixel frame as the overlays), not from ASTAP's own x / y."""
     from . import photometry
-    snr, flux, ra, dec = stars
-    cra, cdec, cmag = photometry.catalogue_stars(Path(ASTAP_DB), ra0, dec0, radius)
-    return photometry.limiting_magnitude(snr, flux, ra, dec, cra, cdec, cmag,
-                                         match_arcsec=max(3.0, scale_arcsec)) or \
+    snr, flux, ra, dec = stars[:4]
+    x = y = None
+    if len(ra):
+        x, y = _wcs(res).all_world2pix(np.column_stack([ra, dec]), 0).T
+    cra, cdec, cmag = photometry.catalogue_stars(Path(ASTAP_DB), res["ra_deg"], res["dec_deg"], radius)
+    return photometry.limiting_magnitude(snr, flux, ra, dec, cra, cdec, cmag, match_arcsec=max(3.0, scale_arcsec),
+                                         x=x, y=y, size=(res["wcs"]["w"], res["wcs"]["h"])) or \
         {"error": "Too few stars matched to the star database"}
 
 
@@ -303,11 +309,14 @@ def ident_key(v: str) -> str:
 
 
 def catalogue() -> list:
-    """OpenNGC (NGC/IC + addendum) as dicts; loaded once. Duplicates / non-existent entries are skipped."""
+    """OpenNGC (NGC/IC + addendum) plus the extra Stellarium objects (skycat) as dicts; loaded once.
+    Duplicates / non-existent OpenNGC entries are skipped."""
     global _CAT
     if _CAT is not None:
         return _CAT
     import csv
+    from . import skycat
+    extra = skycat.dso()
     out = []
     for fn in ("NGC.csv", "addendum.csv"):
         path = OPENNGC_DIR / fn
@@ -334,20 +343,60 @@ def catalogue() -> list:
                 keys.update(ident_key(c) for c in common)
                 for x in filter(None, r["Identifiers"].split(",")):
                     keys.add(ident_key(x))
-                out.append({"name": label, "messier": mess, "type": r["Type"],
+                cross = extra["cross"].get(ident_key(name)) or (extra["cross"].get(ident_key(mess)) if mess else None)
+                aliases = (cross or {}).get("aliases") or []
+                keys.update(ident_key(a) for a in aliases)
+                out.append({"name": label, "messier": mess, "type": r["Type"], "aliases": aliases,
+                            "dist_ly": (cross or {}).get("dist_ly"), "catalog": "OpenNGC",
                             "type_label": TYPE_LABELS.get(r["Type"], r["Type"]), "ra": ra, "dec": dec,
                             "maj": _float(r["MajAx"]), "min": _float(r["MinAx"]), "pa": _float(r["PosAng"]),
                             "mag": _float(r["V-Mag"]) if _float(r["V-Mag"]) is not None else _float(r["B-Mag"]), "common": common[0] if common else None,
                             "keys": keys})
+    by_key = {}
+    for o in out:                                    # OpenNGC entries by designation (e.g. its addendum "B033")
+        for k in o["keys"]:
+            by_key.setdefault(k, o)
+    for o in extra["objects"]:                       # Sharpless, Barnard, LBN, LDN, vdB … without NGC / IC
+        desig = [o["name"], *o["aliases"]]
+        keys = {ident_key(d) for d in desig}
+        twin = next((by_key[k] for k in keys if k in by_key), None)
+        if twin is not None:                         # already in OpenNGC: one object, designations merged
+            twin["aliases"] = [*twin.get("aliases", []),
+                               *(d for d in desig if ident_key(d) != ident_key(twin["name"])
+                                 and d not in twin.get("aliases", []))]
+            twin["keys"] |= keys
+            twin["common"] = twin["common"] or o["common"]
+            twin["dist_ly"] = twin.get("dist_ly") or o.get("dist_ly")
+            for k in keys:                           # later entries with one of these designations merge too
+                by_key.setdefault(k, twin)
+            continue
+        if o["common"]:
+            keys.add(ident_key(o["common"]))
+        new = {**o, "keys": keys}
+        out.append(new)
+        for k in keys - ({ident_key(o["common"])} if o["common"] else set()):
+            by_key.setdefault(k, new)                # common names are not unique designations
     _CAT = out
     return out
 
 
+_KEY_INDEX = None
+
+
 def find_object(text: str | None):
+    """Catalogue object by any of its names / designations (OpenNGC first, then the extras) – O(1)."""
+    global _KEY_INDEX
     k = ident_key(text)
     if not k:
         return None
-    return next((o for o in catalogue() if k in o["keys"]), None)
+    cat = catalogue()
+    if _KEY_INDEX is None or _KEY_INDEX[0] is not cat:
+        idx = {}
+        for o in cat:                             # first object with a key wins (same as the former scan)
+            for key in o["keys"]:
+                idx.setdefault(key, o)
+        _KEY_INDEX = (cat, idx)
+    return _KEY_INDEX[1].get(k)
 
 
 def _wcs(res: dict):
@@ -378,6 +427,44 @@ def _pa_deg(ra1, dec1, ra2, dec2) -> float:
     return float(np.degrees(np.arctan2(np.sin(d), np.cos(r(dec1)) * np.tan(r(dec2)) - np.sin(r(dec1)) * np.cos(d))) % 360)
 
 
+MAX_STARS = 150                   # brightest catalogued stars sent per field (the viewer filters them further)
+_CAT_ARR = None
+
+
+def _cat_arrays():
+    global _CAT_ARR
+    cat = catalogue()
+    if _CAT_ARR is None or _CAT_ARR[0] is not cat:
+        _CAT_ARR = (cat, np.array([o["ra"] for o in cat]), np.array([o["dec"] for o in cat]))
+    return _CAT_ARR
+
+
+def _measured_lookup(res: dict):
+    """Measured (zero-point calibrated, Gaia BP) magnitudes of the brightest matched stars of the solve:
+    (unit vectors, rows, tolerance in chord length) or None for solves without them."""
+    ph = res.get("photometry") or {}
+    rows = ph.get("matches")
+    if not rows:
+        return None
+    from scipy.spatial import cKDTree
+    a = np.radians([r[0] for r in rows])
+    d = np.radians([r[1] for r in rows])
+    tree = cKDTree(np.column_stack([np.cos(d) * np.cos(a), np.cos(d) * np.sin(a), np.sin(d)]))
+    tol_as = max(4.0, 2.0 * (res.get("scale_arcsec_px") or 1) * (res.get("lum_bin") or 1))
+    return tree, rows, 2 * math.sin(math.radians(tol_as / 3600) / 2), ph.get("qc") or {}
+
+
+def _attach_measured(rec: dict, look) -> None:
+    tree, rows, tol, qc = look
+    a, d = math.radians(rec["ra"]), math.radians(rec["dec"])
+    dist, j = tree.query([math.cos(d) * math.cos(a), math.cos(d) * math.sin(a), math.sin(d)])
+    if dist > tol:
+        return
+    ra, dec, cat, meas, snr = rows[j][:5]
+    rec["meas"] = {"mag": meas, "cat": cat, "delta": round(meas - cat, 2), "snr": snr, "band": "Gaia BP",
+                   "saturated": bool(qc.get("sat_mag") is not None and cat < qc["sat_mag"])}
+
+
 def _offset(ra, dec, pa_deg, dist_deg):
     """Point at distance / position angle from (ra, dec) – small-angle approximation (fine inside one frame)."""
     pa = math.radians(pa_deg)
@@ -392,11 +479,9 @@ def annotations(res: dict) -> dict:
     ra0, dec0 = w.all_pix2world([[W / 2 - 0.5, H / 2 - 0.5]], 0)[0]
     scale = math.sqrt(abs(np.linalg.det(np.array(wd["cd"]))))       # deg per array pixel
     radius = math.hypot(W, H) / 2 * scale
-    cat = catalogue()
+    cat, ras, decs = _cat_arrays()
     objs = []
     if cat:
-        ras = np.array([o["ra"] for o in cat])
-        decs = np.array([o["dec"] for o in cat])
         near = np.nonzero(_sep_deg(ras, decs, ra0, dec0) < radius * 1.2)[0]
         if len(near):
             px = w.all_world2pix(np.column_stack([ras[near], decs[near]]), 0)
@@ -408,7 +493,9 @@ def annotations(res: dict) -> dict:
                 u, v = _uv(res, x, y)
                 d = {"name": o["name"], "messier": o["messier"], "common": o["common"], "type": o["type_label"],
                      "mag": o["mag"], "maj": o["maj"], "min": o["min"], "u": float(u), "v": float(v),
-                     "inside": bool(-0.5 <= x <= W - 0.5 and -0.5 <= y <= H - 0.5)}
+                     "inside": bool(-0.5 <= x <= W - 0.5 and -0.5 <= y <= H - 0.5),
+                     "ra": round(o["ra"], 5), "dec": round(o["dec"], 5), "aliases": o.get("aliases") or [],
+                     "dist_ly": o.get("dist_ly"), "catalog": o.get("catalog", "OpenNGC")}
                 if o["maj"]:                               # end of the major axis -> ellipse size and angle
                     ra2, dec2 = _offset(o["ra"], o["dec"], o["pa"] or 0, o["maj"] / 60 / 2)
                     x2, y2 = w.all_world2pix([[ra2, dec2]], 0)[0]
@@ -416,6 +503,26 @@ def annotations(res: dict) -> dict:
                     d["axis"] = [float(u2), float(v2)]
                 objs.append(d)
     objs.sort(key=lambda o: (o["mag"] is None, o["mag"] or 0))
+    from . import skycat
+    st = skycat.stars()
+    if st:                                         # brightest catalogued stars inside the frame, after the DSOs
+        near = np.nonzero(_sep_deg(st["ra"], st["dec"], ra0, dec0) < radius * 1.05)[0]
+        near = near[np.argsort(st["mag"][near], kind="stable")]
+        look = _measured_lookup(res)
+        if len(near):
+            px = w.all_world2pix(np.column_stack([st["ra"][near], st["dec"][near]]), 0)
+            n = 0
+            for i, (x, y) in zip(near, px):
+                if not (-0.5 <= x <= W - 0.5 and -0.5 <= y <= H - 0.5):
+                    continue
+                u, v = _uv(res, x, y)
+                rec = {**skycat.star_record(st, int(i)), "u": float(u), "v": float(v), "inside": True}
+                if look:
+                    _attach_measured(rec, look)
+                objs.append(rec)
+                n += 1
+                if n >= MAX_STARS:
+                    break
     # N / E direction from the centre (10 % of the image height)
     arm = H * 0.1 * scale
     comp = {}
@@ -489,12 +596,13 @@ def fmt_ra(deg: float, short: bool = False) -> str:
 
 
 def fmt_dec(deg: float, short: bool = False) -> str:
-    s = "-" if deg < 0 else "+"
     d = abs(deg)
     if short:
         m = round(d * 60)
+        s = "-" if deg < 0 and m else "+"         # sign after rounding: -0.0001° is +0°00′
         return f"{s}{m // 60}°{m % 60:02d}′"
     t = round(d * 3600, 1)
+    s = "-" if deg < 0 and t else "+"
     dd, rest = divmod(t, 3600)
     mm, ss = divmod(rest, 60)
     return f"{s}{int(dd):02d}° {int(mm):02d}′ {ss:04.1f}″"

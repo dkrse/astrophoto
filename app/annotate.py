@@ -32,6 +32,32 @@ def to_display(u: float, v: float, orient: int, flip: str):
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
+def parse_filter(dso: str | int | None = 1, stars: str | int | None = 1, smag: str | float | None = None) -> dict:
+    """Viewer filter for objects in the field (query parameters of the annotated JPEG)."""
+    def on(v):
+        return str(v if v is not None else 1).strip().lower() not in ("0", "false", "no", "off", "")
+    try:
+        m = float(smag) if smag not in (None, "") else None
+    except (TypeError, ValueError):
+        m = None
+    return {"dso": on(dso), "stars": on(stars), "star_mag": m if m is not None and math.isfinite(m) else None}
+
+
+def filter_objects(objs: list, flt: dict | None) -> list:
+    """Objects kept by the filter: deep-sky objects on / off, stars on / off and up to a magnitude."""
+    if not flt:
+        return objs
+    out = []
+    for o in objs:
+        if o.get("star"):
+            if flt.get("stars", True) and (flt.get("star_mag") is None or (o.get("mag") is not None
+                                                                         and o["mag"] <= flt["star_mag"])):
+                out.append(o)
+        elif flt.get("dso", True):
+            out.append(o)
+    return out
+
+
 def north_up(ann: dict, orient: int, flip: str, W: int, H: int):
     """(mirror, angle): mirror horizontally first (if east is not left of north), then rotate clockwise by
     `angle` degrees (screen convention, like CSS rotate) so that north points up."""
@@ -57,6 +83,20 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
+def object_label(o: dict) -> str:
+    """Label drawn next to an object: 'M51 / NGC 5194 – Whirlpool Galaxy'; a star: 'Deneb · α Cyg' or 'HD 1234'."""
+    if o.get("star"):
+        return o.get("common") or o["name"]
+    return " / ".join(x for x in (o.get("messier"), o["name"]) if x) + (f" – {o['common']}" if o.get("common") else "")
+
+
+def _rgb(hexcol: str | None, default):
+    try:
+        return tuple(int(hexcol[i:i + 2], 16) for i in (1, 3, 5))
+    except (TypeError, ValueError, IndexError):
+        return default
+
+
 def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True, xf=None, size=None):
     """xf: optional mapping of pixel coordinates of the un-rotated image (size) onto `im` (north-up export)."""
     SW, SH = size or im.size                      # size of the image the (u, v) fractions refer to
@@ -75,7 +115,7 @@ def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True, x
             d.text((mx + 4, my - fs), g["label"], fill=GRID, font=small, stroke_width=2, stroke_fill=(0, 0, 0))
     for o in ann["objects"]:
         cx, cy = P(o["u"], o["v"])
-        rx = ry = fs * 0.6
+        rx = ry = fs * (0.4 if o.get("star") else 0.6)
         ang = 0.0
         if o.get("axis"):
             ax, ay = P(*o["axis"])
@@ -85,13 +125,15 @@ def draw_annotations(im, ann: dict, orient: int, flip: str, grid: bool = True, x
         ca, sa = math.cos(ang), math.sin(ang)
         poly = [(cx + rx * math.cos(t) * ca - ry * math.sin(t) * sa, cy + rx * math.cos(t) * sa + ry * math.sin(t) * ca)
                 for t in (2 * math.pi * i / 72 for i in range(73))]
-        d.line(poly, fill=OBJ, width=lw + 1)
-        label = " / ".join(x for x in (o.get("messier"), o["name"]) if x) + (f" – {o['common']}" if o.get("common") else "")
+        col = _rgb(o.get("color"), OBJ) if o.get("star") else OBJ
+        d.line(poly, fill=col, width=lw if o.get("star") else lw + 1)
+        label = object_label(o)
+        f = small if o.get("star") else font
         r = max(rx, ry) * 0.75
-        tw = d.textlength(label, font=font)
+        tw = d.textlength(label, font=f)
         tx = cx + r + 4 if cx + r + 4 + tw <= W - 4 else max(4, cx - r - 4 - tw)   # keep the label inside
         ty = min(max(cy - r - fs, 4), H - fs - 4)
-        d.text((tx, ty), label, fill=OBJ, font=font, stroke_width=3, stroke_fill=(0, 0, 0))
+        d.text((tx, ty), label, fill=col, font=f, stroke_width=3, stroke_fill=(0, 0, 0))
     # compass (top-left corner)
     c = ann["compass"]
     ox, oy = P(*c["c"])
@@ -127,7 +169,8 @@ def rotate_north_up(im, ann: dict, orient: int, flip: str):
     return out, xf
 
 
-def annotated_jpeg(src: Path, opts: dict, res: dict, flip: str, grid: bool = True, north: bool = False) -> bytes | None:
+def annotated_jpeg(src: Path, opts: dict, res: dict, flip: str, grid: bool = True, north: bool = False,
+                   flt: dict | None = None) -> bytes | None:
     im, _ = render(src, {**opts, "flip": flip}, max_side=None)
     if im is None:
         return None
@@ -135,6 +178,7 @@ def annotated_jpeg(src: Path, opts: dict, res: dict, flip: str, grid: bool = Tru
         im.thumbnail((MAX_SIDE, MAX_SIDE))
     im = im.convert("RGB")
     ann, orient = annotations(res), res.get("orient", 0)
+    ann["objects"] = filter_objects(ann["objects"], flt)
     if north:
         size = im.size
         im, xf = rotate_north_up(im, ann, orient, flip)

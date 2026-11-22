@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .framestats import _luminance
+from .framestats import _luminance, windowed_moments, saturation_level
 
 MAX_STARS = 3000
 GRID = (8, 6)          # cells for the elongation map (columns, rows)
@@ -56,7 +56,7 @@ def _stars(img: np.ndarray, noise: float) -> list:
     idx = np.arange(1, n + 1)
     sizes = np.bincount(labels.ravel(), minlength=n + 1)[1:]     # no full-size float array
     peaks = ndimage.maximum(img, labels, idx)
-    sat = float(img.max()) * 0.9
+    sat = saturation_level(img, 0.9)
     objs = ndimage.find_objects(labels)
     H, W = img.shape
     out = []
@@ -76,16 +76,11 @@ def _stars(img: np.ndarray, noise: float) -> list:
         lab = labels[y0:y1, x0:x1]
         if np.any((lab != 0) & (lab != i + 1)):         # neighbour inside the box -> not isolated
             continue
-        cut = np.clip(img[y0:y1, x0:x1], 0, None)
-        cut = np.where(cut > 2 * noise, cut, 0)
-        tot = cut.sum()
-        if tot <= 0:
+        mom = windowed_moments(img[y0:y1, x0:x1], cx0 - x0 - 0.5, cy0 - y0 - 0.5,
+                               max(1.0, math.sqrt(sizes[i] / math.pi) / 1.5))
+        if mom is None:
             continue
-        yy, xx = np.mgrid[0:cut.shape[0], 0:cut.shape[1]]
-        cy, cx = (yy * cut).sum() / tot, (xx * cut).sum() / tot
-        mxx = ((xx - cx) ** 2 * cut).sum() / tot
-        myy = ((yy - cy) ** 2 * cut).sum() / tot
-        mxy = ((xx - cx) * (yy - cy) * cut).sum() / tot
+        cx, cy, mxx, myy, mxy = mom
         t, d = (mxx + myy) / 2, math.sqrt(((mxx - myy) / 2) ** 2 + mxy ** 2)
         l1, l2 = t + d, t - d
         if l2 <= 0.05 or l1 > 400:

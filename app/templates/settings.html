@@ -48,6 +48,16 @@
       <select name="sort">{% for k, l in SORT_LABELS.items() %}<option value="{{ k }}" {% if S.sort == k %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
     <label class="check"><input type="checkbox" name="show_stats" {% if S.show_stats %}checked{% endif %}> Show statistics on overview</label>
   </div>
+
+  <h3>Sessions table</h3>
+  <p class="muted small">Columns shown in the Sessions panel of a project.</p>
+  <input type="hidden" name="session_columns" value="">
+  <div class="cols panels">
+    {% set on = S.session_columns.split(',') %}
+    {% for k, label in SESSION_COLUMN_LABELS.items() %}
+    <label class="check"><input type="checkbox" name="session_columns" value="{{ k }}" {% if k in on %}checked{% endif %}> {{ label }}</label>
+    {% endfor %}
+  </div>
   </div>
 
   <div class="tabpane" id="t-files">
@@ -80,6 +90,7 @@
       ('bg_analysis', 'Plate solves and optics analyses started with 🎯🔬 Analyse (or for more than 20 frames in the bulk bar). Off: they stay in the queue until switched on again. Solve / Optics in the viewer always work.'),
       ('bg_integrity', 'The quick / full archive check on the Stats page (reads every file).'),
       ('cond_auto_measure', 'When the frames of a new night are processed, 3 light frames of each night without results are plate-solved and analysed (needs “Run queued plate solves / optics analyses”). Off: use 🌡 Measure conditions in the session dialog or 🎯🔬 Analyse.'),
+      ('sessions_auto_fix', 'When the files of a project are processed: a session without a name gets the project name, and a session moves to the night most of its files were taken in (merged with that night’s session of the same set if there is one). The same check is offered in 🎯🔬 Analyse of a project.'),
       ('cond_auto_fill', 'Measured seeing and sky brightness are written into the session (marked “(measured)”); values you typed yourself are never replaced. Off: use “Use for Seeing / SQM” in the session dialog.')] %}
     <label class="bgrow"><input type="checkbox" name="{{ k }}" {% if S[k] %}checked{% endif %}>
       <span><b>{{ defs[k][3] }}</b><small class="muted">{{ hint }}</small></span></label>
