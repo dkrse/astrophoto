@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- 💤 Hourly housekeeping (expired chunked uploads, render cache cleanup) runs only after activity – a web
+  request or processed files. An idle server no longer walks `DATA_DIR` every hour, so a data disk with a
+  spindown timeout stays in standby instead of being woken up once an hour.
+
 ## [1.7.0] – 2026-11-22
 
 ### Added

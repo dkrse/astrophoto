@@ -206,6 +206,9 @@ limiting magnitude, tilt and elongation, followed by recommendations drawn from 
   **SQLAlchemy** on **PostgreSQL**.
 - A single **background worker** processes the queue: copies of server imports, SHA-256, previews and EXIF,
   frame statistics, plate solves and optics analyses – lowest priority after interactive work.
+- **Disk-friendly when idle:** the hourly housekeeping (expired uploads, render cache) runs only after
+  activity (a web request or processed files); an idle server never touches `DATA_DIR`, so a data disk
+  with a spindown timeout (e.g. `hdparm -S`) can stay asleep.
 - Measurements are stored as compact JSON next to each frame and aggregated per night on demand; nothing is
   derived from the originals in place.
 - All catalogues are local files loaded once per process; the application never opens a network connection.

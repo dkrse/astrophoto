@@ -1,4 +1,5 @@
 """Shared application objects: app, templates, settings, auth deps and helpers."""
+import threading
 import hashlib
 import hmac
 import math
@@ -36,6 +37,20 @@ BASE = Path(__file__).parent
 
 app = FastAPI(title="Astrophoto")
 
+# Set by any HTTP request; the worker runs its hourly housekeeping (which walks DATA_DIR) only after
+# activity, so an idle server never touches the data disk and lets it spin down.
+ACTIVITY = threading.Event()
+
+
+class ActivityMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            ACTIVITY.set()
+        return await self.app(scope, receive, send)
+
 
 class CSRFMiddleware:
     """Every state-changing request of a logged-in user must carry the per-session token
@@ -68,6 +83,7 @@ class CSRFMiddleware:
 
 
 app.add_middleware(CSRFMiddleware)          # added first = runs inside SessionMiddleware (session is decoded)
+app.add_middleware(ActivityMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, max_age=60 * 60 * 24 * 14)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import select, func
 
-from .core import DATA_DIR, IMPORT_DIR, night_of, thumb_rel, load_settings
+from .core import ACTIVITY, DATA_DIR, IMPORT_DIR, night_of, thumb_rel, load_settings
 from .sessets import place_light
 from .framestats import frame_stats, flag_suspects
 from .models import SessionLocal, FrameFile, ImportJob, ImagingSession, AnalysisTask, Setting
@@ -570,8 +570,11 @@ def loop():
             busy = False
             time.sleep(5)
         current.update(file=None, since=None)
-        if time.time() - last_cleanup > 3600:
+        if busy:
+            ACTIVITY.set()                        # processed files -> housekeeping is due
+        if time.time() - last_cleanup > 3600 and ACTIVITY.is_set():   # idle -> leave the disk asleep
             last_cleanup = time.time()
+            ACTIVITY.clear()
             for job in (cleanup_uploads, cleanup_cache, lambda: cleanup_tasks(requeue=False)):
                 try:
                     job()
